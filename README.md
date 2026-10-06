@@ -51,7 +51,7 @@ graph TD
 2. Click **+ Add Resource** (or **+ New**).
 3. Select **Public Repository**.
 4. Configure the repository:
-   * **Repository URL**: `https://github.com/brigada26/Central-AI-Hermes`
+   * **Repository URL**: `https://github.com/kramzzzy/Central-AI-Hermes`
    * **Branch**: `main`
    * **Build Pack**: **Docker Compose**
    * *(Docker Compose location will automatically detect `docker-compose.yml`)*
