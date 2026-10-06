@@ -26,8 +26,8 @@ def provision_business_phone(root):
     if home.is_symlink():
         raise RuntimeError('Invalid business phone profile')
     marker = home / 'phone-channel.json'
-    if (home / 'config.yaml').exists():
-        if not marker.exists() or json.loads(marker.read_text()) != binding:
+    if marker.exists():
+        if json.loads(marker.read_text()) != binding:
             raise RuntimeError('Business phone profile ownership mismatch')
         return member['profile']
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -63,7 +63,8 @@ def provision_business_phone(root):
                           (marker, json.dumps(binding))):
         path.write_text(content, encoding='utf-8')
         os.chmod(path, 0o600)
-    # Native source-aware OAuth locking and the existing selected API-key source;
-    # no personal state, private files, memories or credentials are copied.
-    (home / '.env').symlink_to(source / '.env')
+    env_file = home / '.env'
+    if env_file.exists() or env_file.is_symlink():
+        env_file.unlink()
+    env_file.symlink_to(source / '.env')
     return member['profile']

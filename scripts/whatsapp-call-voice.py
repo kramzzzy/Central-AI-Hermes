@@ -64,6 +64,10 @@ from central_ai_integrations import integration_config
 config = integration_config(config)
 if os.environ.get('FISH_API_KEY'):
     config['FISH_API_KEY'] = os.environ['FISH_API_KEY'].strip()
+if os.environ.get('FISH_VOICE_ID'):
+    config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
+else:
+    config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
 from native_call_speech import native_enabled
 if not native_enabled(config) and (not config.get('FISH_API_KEY') or not config.get('FISH_VOICE_ID')):
     raise RuntimeError('Native voice configuration required')
