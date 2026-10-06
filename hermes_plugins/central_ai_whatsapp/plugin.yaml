@@ -1,0 +1,4 @@
+name: central-ai-whatsapp
+version: 1.0.0
+description: Leo WhatsApp chat through the existing paired voice device
+kind: platform

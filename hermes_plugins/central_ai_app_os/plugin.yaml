@@ -1,0 +1,10 @@
+name: central-ai-app-os
+version: 1.0.0
+description: App OS dashboard and authenticated workspace integration for Central AI
+provides_tools:
+  - mcp__michael_os__inspect_workspace
+config_schema:
+  dashboard_url:
+    type: str
+    default: ""
+    description: Public App OS dashboard origin; no credentials

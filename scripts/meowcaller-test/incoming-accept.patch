@@ -1,0 +1,439 @@
+diff --git a/engine.go b/engine.go
+index e91bea7..530bd05 100644
+--- a/engine.go
++++ b/engine.go
+@@ -76,6 +76,10 @@ type engineCall struct {
+ 
+ 	// The callee <accept> is deferred until the caller's <mute_v2> arrives.
+ 	acceptPending bool
++	acceptSent bool
++	initialMuteSeen bool
++	initialMuteFrom types.JID
++	initialMuteCreator types.JID
+ }
+ 
+ // newEngine creates the engine for a Client.
+@@ -682,10 +686,18 @@ func (e *engine) answer(c *Call) error {
+ 		return nil
+ 	}
+ 	e.mu.Lock()
++	if m.acceptSent || m.acceptPending {
++		e.mu.Unlock()
++		return nil
++	}
+ 	m.acceptPending = true
++	muteSeen, muteFrom, muteCreator := m.initialMuteSeen, m.initialMuteFrom, m.initialMuteCreator
+ 	e.mu.Unlock()
+ 
+ 	c.setPhase(CallPhaseConnecting)
++	if muteSeen {
++		e.sendAccept(c.id, muteFrom, muteCreator)
++	}
+ 	e.maybeStartMedia(c.id)
+ 	return nil
+ }
+@@ -701,6 +713,7 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
+ 	}
+ 	isVideo := m.localVideo || m.remoteVideo
+ 	m.acceptPending = false
++	m.acceptSent = true
+ 	e.mu.Unlock()
+ 
+ 	accept := signaling.BuildAccept(&signaling.AcceptParams{
+@@ -709,8 +722,12 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
+ 		Metadata:   waBinary.Attrs{"peer_abtest_bucket_id_list": "125208,94276"},
+ 		Video:      isVideo,
+ 	})
+-	accept.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
+-	if err := e.c.wa.DangerousInternals().SendNode(context.Background(), accept); err != nil {
++	accept.Attrs["id"] = e.nextCallNodeID()
++	if e.c != nil && e.c.wa != nil {
++		// Preserve the upstream request-ID format used for direct-call accepts.
++		accept.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
++	}
++	if err := e.transmitCallNode(context.Background(), accept); err != nil {
+ 		e.c.log.Error().Err(err).Str("call_id", callID).Msg("send accept failed")
+ 		return
+ 	}
+@@ -765,10 +782,17 @@ func (e *engine) onRelay(callID string, data *waBinary.Node) {
+ 		e.mu.Unlock()
+ 		return
+ 	}
++	if m.started && m.relay != nil {
++		oldEndpoint, newEndpoint := getMediaRelayEndpoint(m.relay, m.direction == CallDirectionIncoming), getMediaRelayEndpoint(rd, m.direction == CallDirectionIncoming)
++		if oldEndpoint != nil && newEndpoint != nil && !reflect.DeepEqual(oldEndpoint, newEndpoint) {
++			e.c.log.Info().Msg("relay endpoint changed after media start")
++		}
++	}
+ 	m.relay = rd
+ 	if !rd.peerJID.IsEmpty() {
+ 		peerLID = rd.peerJID.String()
+ 		if peerLID != m.peerLID {
++			if m.started { e.c.log.Info().Msg("relay peer changed after media start") }
+ 			m.peerLID = peerLID
+ 			rekeyPeer = m.rekeyPeer
+ 		}
+@@ -797,6 +821,22 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
+ 	if rl == nil {
+ 		return
+ 	}
++	// Only endorse relays we can actually receive on. The caller's probes
++	// routinely include its own nearest edge, which is absent from the offer
++	// and holds no tokens for us; echoing that entry back tells the caller both
++	// sides reach it, the election picks it, and the caller's media moves to a
++	// relay we were never connected to.
++	e.mu.Lock()
++	offered := map[string]bool{}
++	if m.relay != nil {
++		for i := range m.relay.endpoints {
++			if name := m.relay.endpoints[i].relayName; name != "" {
++				offered[name] = true
++			}
++		}
++	}
++	e.mu.Unlock()
++
+ 	var probes []rlProbe
+ 	for i := range rl.GetChildren() {
+ 		te := &rl.GetChildren()[i]
+@@ -804,9 +844,14 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
+ 			continue
+ 		}
+ 		ag := te.AttrGetter()
++		name := ag.String("relay_name")
++		if !offered[name] {
++			e.c.log.Debug().Str("call_id", ev.CallID).Str("relay_name", name).Msg("skipping latency response for relay outside the offer")
++			continue
++		}
+ 		probes = append(probes, rlProbe{
+ 			latency:   decodeLatency(ag.String("latency")),
+-			relayName: ag.String("relay_name"),
++			relayName: name,
+ 			addr:      nodeBytes(te),
+ 		})
+ 	}
+@@ -819,8 +864,8 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
+ 			RelayName:    p.relayName,
+ 			AddressBytes: p.addr,
+ 		})
+-		resp.Attrs["id"] = e.c.wa.GenerateMessageID()
+-		if err := e.c.wa.DangerousInternals().SendNode(context.Background(), resp); err != nil {
++		resp.Attrs["id"] = e.nextCallNodeID()
++		if err := e.transmitCallNode(context.Background(), resp); err != nil {
+ 			e.c.log.Error().Err(err).Str("call_id", ev.CallID).Msg("send relaylatency failed")
+ 			return
+ 		}
+@@ -1056,6 +1101,29 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
+ 		return false
+ 	}
+ 	switch kids[0].Tag {
++	case "offer":
++		// The offer receipt is separate from the generic call ACK and must precede
++		// preaccept/Answer. Hypermeow dispatches offers but does not send this receipt.
++		// https://github.com/WhiskeySockets/wacrg/blob/main/docs/spec/signalling/flow-incoming-1to1.md
++		offer := kids[0].AttrGetter()
++		_, group, groupErr := signaling.ParseGroupInviteSnapshot(&kids[0])
++		if group || groupErr != nil || offer.OptionalString("is_call_ended") == "1" || offer.OptionalString("terminate_reason") != "" {
++			return false
++		}
++		requestID, from := callNode.AttrGetter().String("id"), callNode.AttrGetter().JID("from")
++		callID, creator := offer.String("call-id"), offer.JID("call-creator")
++		if requestID == "" || from.IsEmpty() || callID == "" || creator.IsEmpty() { return false }
++		attrs := waBinary.Attrs{"id": requestID, "to": from}
++		if e.c != nil && e.c.wa != nil && e.c.wa.Store != nil {
++			self := e.c.wa.Store.GetLID()
++			if from.Server == types.DefaultUserServer && e.c.wa.Store.ID != nil { self = *e.c.wa.Store.ID }
++			if !self.IsEmpty() && self.Server == from.Server { attrs["from"] = self }
++		}
++		receipt := waBinary.Node{Tag: "receipt", Attrs: attrs, Content: []waBinary.Node{{Tag: "offer", Attrs: waBinary.Attrs{"call-id": callID, "call-creator": creator}}}}
++		if err := e.transmitCallNode(context.Background(), receipt); err != nil {
++			e.c.log.Warn().Msg("incoming offer receipt failed")
++		} else { e.c.log.Info().Msg("sent incoming offer receipt") }
++		return false // Continue normal offer dispatch and its independent generic ACK.
+ 	case "group_update", "enc_rekey", "waiting_room_update", "user_action", "screen_share":
+ 		// Source of truth: https://github.com/purpshell/meowcaller/blob/36d54857c74e45ccb08f6444a32d2afa13f20be9/datasheets/group-video-reactions.md#L31-L56
+ 		ack, ok := signaling.BuildCallControlAck(callNode, kids[0].Tag)
+@@ -1073,10 +1141,18 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
+ 		e.onUnknownCallEvent(callNode)
+ 		return true
+ 	case "mute_v2":
++		ack, typedAck := signaling.BuildCallControlAck(callNode, "mute_v2")
++		if typedAck {
++			if err := e.transmitCallNode(context.Background(), ack); err != nil {
++				e.c.log.Warn().Msg("microphone-state acknowledgement failed")
++			} else {
++				e.c.log.Info().Msg("sent typed microphone-state acknowledgement")
++			}
++		}
+ 		mv := kids[0].AttrGetter()
+ 		callID := mv.String("call-id")
+ 		if callID == "" {
+-			return false
++			return typedAck
+ 		}
+ 		muteState := mv.String("mute-state")
+ 		muted := muteState == "1"
+@@ -1085,6 +1161,11 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
+ 		// (e.g. 1→0) and must not re-run the accept path on an already-accepted call.
+ 		e.mu.Lock()
+ 		m := e.calls[callID]
++		if m != nil && m.direction == CallDirectionIncoming && !m.initialMuteSeen {
++			m.initialMuteSeen = true
++			m.initialMuteFrom = callNode.AttrGetter().JID("from")
++			m.initialMuteCreator = mv.JID("call-creator")
++		}
+ 		pending := m != nil && m.acceptPending
+ 		e.mu.Unlock()
+ 		if m != nil && m.call != nil {
+@@ -1098,7 +1179,7 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
+ 				Str("mute_state", muteState).
+ 				Bool("muted", muted).
+ 				Msg("mute_v2 observed; call not awaiting accept")
+-			return false
++			return typedAck
+ 		}
+ 		e.c.log.Info().
+ 			Str("call_id", callID).
+@@ -1106,7 +1187,7 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
+ 			Bool("muted", muted).
+ 			Msg("first mute_v2 received; sending deferred accept")
+ 		e.sendAccept(callID, callNode.AttrGetter().JID("from"), mv.JID("call-creator"))
+-		return false
++		return typedAck
+ 	case "video":
+ 		// Acknowledge the <video> stanza with type="video" — the mid-call video-upgrade
+ 		// (state=11) acceptance signal. whatsmeow's generic typeless ack does not satisfy the
+diff --git a/engine_media.go b/engine_media.go
+index ec5fd56..56c7404 100644
+--- a/engine_media.go
++++ b/engine_media.go
+@@ -107,13 +107,80 @@ func (e *engine) maybeStartMedia(callID string) {
+ 	}()
+ }
+ 
+-// connectAndAllocate opens the relay DataChannel and sends the STUN allocate, returning
+-// the channel and the allocate bytes (re-sent by the keepalive).
++// connectAndAllocateAll opens a relay DataChannel and sends the STUN allocate
++// on every usable relay in the offer, returning them as one fanout. Phones run
++// client relay election shortly after accept and migrate their media to the
++// offered relay they measured closest; being bound everywhere makes that
++// migration a non-event. The preferred endpoint stays first so anything with
++// primary-relay semantics (the experimental group path) is unchanged.
++//
++// multi=false preserves the original single-relay behavior (group calls).
++//
++// NOT VALIDATED: live-relay only.
++func (e *engine) connectAndAllocateAll(ctx context.Context, rd *relayData, streamSsrcs [9]uint32, inbound bool, multi bool) (*relayFanout, error) {
++	primary := getMediaRelayEndpoint(rd, inbound)
++	if primary == nil || len(primary.addresses) == 0 {
++		return nil, fmt.Errorf("relay has no usable endpoint")
++	}
++	targets := []*relayEndpoint{primary}
++	if multi {
++		seen := map[string]bool{fmt.Sprintf("%s:%d", primary.addresses[0].ipv4, primary.addresses[0].port): true}
++		for i := range rd.endpoints {
++			ep := &rd.endpoints[i]
++			if len(ep.addresses) == 0 {
++				continue
++			}
++			key := fmt.Sprintf("%s:%d", ep.addresses[0].ipv4, ep.addresses[0].port)
++			if seen[key] {
++				continue
++			}
++			seen[key] = true
++			targets = append(targets, ep)
++		}
++	}
++
++	// Establish all offered routes concurrently so a slow alternate does not
++	// multiply the initial call setup delay. The media itself uses the call ctx.
++	setupCtx, stopSetup := context.WithTimeout(ctx, 6*time.Second)
++	defer stopSetup()
++	type connectedRelay struct { ch *relay.RelayMediaChannel; allocate []byte; err error }
++	results := make([]connectedRelay, len(targets))
++	var pending sync.WaitGroup
++	for i, ep := range targets {
++		pending.Add(1)
++		go func(i int, ep *relayEndpoint) { defer pending.Done(); results[i].ch, results[i].allocate, results[i].err = e.connectOneRelay(setupCtx, rd, ep, streamSsrcs) }(i, ep)
++	}
++	pending.Wait()
++	var chans []relayMediaConnection
++	var allocs [][]byte
++	var names []string
++	for i, ep := range targets {
++		ch, allocate, err := results[i].ch, results[i].allocate, results[i].err
++		if err != nil {
++			// Secondary relays failing is survivable; the primary failing with
++			// no fallback is not.
++			e.c.log.Warn().Err(err).Str("relay_name", ep.relayName).Msg("relay connect failed; continuing without it")
++			continue
++		}
++		chans = append(chans, ch)
++		allocs = append(allocs, allocate)
++		names = append(names, ep.relayName)
++	}
++	if ctx.Err() != nil { for _, ch := range chans { _ = ch.Close() }; return nil, ctx.Err() }
++	if len(chans) == 0 {
++		return nil, fmt.Errorf("no relay reachable (%d offered)", len(targets))
++	}
++	e.c.log.Info().Int("connected", len(chans)).Int("offered", len(targets)).Strs("relays", names).Msg("relay fanout established")
++	return newRelayFanout(chans, allocs, names), nil
++}
++
++// connectOneRelay opens the relay DataChannel and sends the STUN allocate for a
++// single endpoint, returning the channel and the allocate bytes (re-sent by the
++// keepalive).
+ //
+ // NOT VALIDATED: live-relay only.
+-func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSsrcs [9]uint32, inbound bool) (*relay.RelayMediaChannel, []byte, error) {
++func (e *engine) connectOneRelay(ctx context.Context, rd *relayData, ep *relayEndpoint, streamSsrcs [9]uint32) (*relay.RelayMediaChannel, []byte, error) {
+ 	log := e.c.log
+-	ep := getMediaRelayEndpoint(rd, inbound)
+ 	if ep == nil || len(ep.addresses) == 0 {
+ 		return nil, nil, fmt.Errorf("relay has no usable endpoint")
+ 	}
+@@ -128,10 +195,12 @@ func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSs
+ 		ch  *relay.RelayMediaChannel
+ 		err error
+ 	}
+-	done := make(chan result, 1)
++	connectCtx, stopConnect := context.WithTimeout(ctx, 12*time.Second)
++	defer stopConnect()
++	done := make(chan result)
+ 	go func() {
+ 		ch, err := relay.ConnectRelayMedia(addr, relay.WithLogger(log))
+-		done <- result{ch, err}
++		select { case done <- result{ch, err}: case <-connectCtx.Done(): if ch != nil { _ = ch.Close() } }
+ 	}()
+ 	var ch *relay.RelayMediaChannel
+ 	select {
+@@ -140,10 +209,8 @@ func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSs
+ 			return nil, nil, fmt.Errorf("relay connect: %w", r.err)
+ 		}
+ 		ch = r.ch
+-	case <-time.After(12 * time.Second):
+-		return nil, nil, fmt.Errorf("relay connect timed out (DTLS didn't complete)")
+-	case <-ctx.Done():
+-		return nil, nil, ctx.Err()
++	case <-connectCtx.Done():
++		return nil, nil, connectCtx.Err()
+ 	}
+ 	log.Info().Str("relay_name", ep.relayName).Msg("relay DataChannel open")
+ 
+@@ -220,13 +287,22 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
+ 	if err != nil {
+ 		return err
+ 	}
+-	ch, allocate, err := e.connectAndAllocate(ctx, rd, streamSsrcs, inbound)
++	e.mu.Lock()
++	isGroup := false
++	if mm := e.calls[callID]; mm != nil {
++		isGroup = mm.group
++	}
++	e.mu.Unlock()
++
++	ch, err := e.connectAndAllocateAll(ctx, rd, streamSsrcs, inbound, inbound && !isGroup)
+ 	if err != nil {
+ 		return err
+ 	}
+ 	defer ch.Close()
++	stopClose := context.AfterFunc(ctx, func() { _ = ch.Close() })
++	defer stopClose()
+ 	allocateState := newGroupRelayAllocateStateWithHBHFEC(
+-		allocate,
++		ch.allocs[0],
+ 		rd.relayKeyASCII,
+ 		[2]uint32{hbhFECTXSSRC, hbhFECRXSSRC},
+ 	)
+@@ -517,7 +593,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
+ 							connectedRemoteParticipantPIDs(*update, audioReceivers.selfID),
+ 							relayTx,
+ 							func(packet []byte) error {
+-								_, sendErr := ch.Send(packet)
++								// Group allocations are relay-specific state; they stay
++								// on the primary relay, matching the pre-fanout behavior.
++								_, sendErr := ch.PrimarySend(packet)
+ 								return sendErr
+ 							},
+ 						)
+@@ -539,10 +617,16 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
+ 				}
+ 			}
+ 			if !allocateSent {
+-				if err := allocateState.SendCurrent(func(packet []byte) error {
+-					_, sendErr := ch.Send(packet)
+-					return sendErr
+-				}); err != nil {
++				if isGroup {
++					if err := allocateState.SendCurrent(func(packet []byte) error {
++						_, sendErr := ch.PrimarySend(packet)
++						return sendErr
++					}); err != nil {
++						return
++					}
++				} else if err := ch.ResendAllocates(); err != nil {
++					// Allocates embed per-relay tokens, so each relay must be
++					// refreshed with its own payload rather than a broadcast.
+ 					return
+ 				}
+ 			}
+@@ -804,6 +888,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
+ 	}()
+ 
+ 	buf := make([]byte, 1500)
++	rtpDedup := newRtpReplayFilter()
+ 	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail, groupForwardingInvalid uint64
+ 	for {
+ 		if ctx.Err() != nil {
+@@ -908,6 +993,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
+ 		}
+ 		vh, vok := rtp.ParseRtpHeader(pkt)
+ 		if vok {
++			if inbound || rtpSeen < 4 || rtpSeen%25 == 0 {
++				log.Info().Int("packets", int(rtpSeen)).Uint8("payload_type", vh.PayloadType).Msg("received RTP progress")
++			}
+ 			if rtpInspect < 20 || vh.PayloadType == rtp.RtpPayloadTypeH264 || vh.PayloadType == rtp.RtpPayloadTypeAppData {
+ 				log.Debug().
+ 					Uint8("payload_type", vh.PayloadType).
+@@ -923,6 +1011,12 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
+ 		if !vok {
+ 			continue
+ 		}
++		// With bind-to-all, the same packet can arrive once per relay. A
++		// duplicate reaching the playout buffer reads as a zero timestamp delta
++		// and resets it, so drop replays before any processing.
++		if rtpDedup.Duplicate(vh.Ssrc, vh.SequenceNumber) {
++			continue
++		}
+ 		kind := classifyMediaPayload(vh)
+ 		if kind == mediaPayloadAppData {
+ 			media, ok := audioReceivers.UnprotectAppData(pkt)
+@@ -1087,6 +1181,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
+ 			continue
+ 		}
+ 		audioReception.Observe(audio.SSRC, vh.SequenceNumber, audio.Timestamp, uint64(time.Now().UnixMilli()), SampleRate)
++		if inbound || rtpIn < 3 || rtpIn%25 == 0 {
++			log.Info().Int("frames", int(rtpIn)+1).Int("samples", len(audio.PCM)).Uint32("timestamp", audio.Timestamp).Msg("incoming audio progress")
++		}
+ 		e.c.diag.Emit("rtp", map[string]any{
+ 			"event": "in", "ssrc": audio.SSRC, "seq": vh.SequenceNumber,
+ 			"ts": audio.Timestamp, "pt": vh.PayloadType, "marker": vh.Marker,
+@@ -1277,11 +1374,17 @@ func videoRtpDurationSamples(duration time.Duration) uint32 {
+ // fed encoded H.264 (e.g. from the VideoBridge / WebCodecs), not raw frames.
+ //
+ // NOT VALIDATED: the video send media path is unproven.
++// relayMediaSender is the write half shared by the single relay channel and the
++// fanout, so senders don't care whether one relay or all of them are behind it.
++type relayMediaSender interface {
++	Send(data []byte) (int, error)
++}
++
+ type videoSender struct {
+ 	mu               sync.Mutex
+ 	pipe             *MediaPipeline
+ 	stream           *rtp.VideoRtpStream
+-	ch               *relay.RelayMediaChannel
++	ch               relayMediaSender
+ 	ssrc             uint32
+ 	callID           string
+ 	frame            uint64

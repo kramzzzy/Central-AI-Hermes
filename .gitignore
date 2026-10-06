@@ -1,0 +1,8 @@
+.env
+.env.local
+.runtime/
+backups/
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
