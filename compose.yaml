@@ -40,6 +40,7 @@ services:
       - hermes-profiles:/opt/data
     networks:
       - hermes-net
+      - coolify
 
   # ----------------------------------------------------------------------------
   # 2. Superpower 1: Hindsight Long-Term Vector Memory (:8888)
@@ -166,3 +167,5 @@ volumes:
 networks:
   hermes-net:
     driver: bridge
+  coolify:
+    external: true
