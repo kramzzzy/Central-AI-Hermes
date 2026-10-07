@@ -26,8 +26,8 @@ func validateCallback(c taskCallback) error {
 }
 
 func callbackTargetAllowed(target string) bool {
-	return (target != "" && managedCallerAllowed(target) && os.Getenv("LEO_WHATSAPP_OWNER") == target) ||
-		(target != "" && managedCallerAllowed(target) && os.Getenv("LEO_WHATSAPP_BUSINESS_CONTACT") == target)
+	return (target != "" && managedCallerAllowed(target) && getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER") == target) ||
+		(target != "" && managedCallerAllowed(target) && getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT") == target)
 }
 
 func callbackControl(ctx context.Context, target, path string, body []byte) ([]byte, error) {
@@ -50,7 +50,7 @@ func claimTaskCallback(ctx context.Context) (taskCallback, error) {
 
 func claimTaskCallbackUsing(ctx context.Context, control func(context.Context, string, string, []byte) ([]byte, error)) (taskCallback, error) {
 	var request taskCallback
-	for _, target := range []string{os.Getenv("LEO_WHATSAPP_OWNER"), os.Getenv("LEO_WHATSAPP_BUSINESS_CONTACT")} {
+	for _, target := range []string{getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"), getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT")} {
 		if !callbackTargetAllowed(target) { continue }
 		data, err := control(ctx, target, "/callbacks/claim", nil)
 		if err != nil { return taskCallback{}, err }

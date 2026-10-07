@@ -8,6 +8,22 @@ import (
  "strings"
 )
 
+func getEnv(keys ...string) string {
+	for _, k := range keys {
+		if val := strings.TrimSpace(os.Getenv(k)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+func getEnvDefault(defaultVal string, keys ...string) string {
+	if val := getEnv(keys...); val != "" {
+		return val
+	}
+	return defaultVal
+}
+
 func getSetupKey(keyPath string) string {
 	if data, err := os.ReadFile(keyPath); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
 		return strings.TrimSpace(string(data))

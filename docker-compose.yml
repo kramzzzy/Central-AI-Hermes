@@ -40,6 +40,7 @@ services:
       - hermes-profiles:/opt/data
     networks:
       - hermes-net
+      - coolify
 
   # ----------------------------------------------------------------------------
   # 2. Superpower 1: Hindsight Long-Term Vector Memory (:8888)
@@ -93,11 +94,13 @@ services:
     ports:
       - "8085:8080"
     environment:
-      LEO_VOICE_URL: "http://voice:8081"
-      LEO_AUDIO_URL: "http://voice:8082"
-      LEO_TEXT_CHAT_ENABLED: "true"
+      VOICE_URL: "http://voice:8081"
+      AUDIO_URL: "http://voice:8082"
+      TEXT_CHAT_ENABLED: "true"
       WHATSAPP_CONVERSATION_MODE: "fish"
-      LEO_ENGINE_ENABLED_FILE: /data/remote-engine-enabled
+      ENGINE_ENABLED_FILE: /data/remote-engine-enabled
+      WHATSAPP_LINE_ID: "executive"
+      WHATSAPP_DEVICE_NAME: "Central AI Executive Line"
     volumes:
       - phone-state:/data
     networks:
@@ -105,6 +108,36 @@ services:
         aliases:
           - caller
           - whatsapp-connector
+
+  # ----------------------------------------------------------------------------
+  # 4b. Superpower 3b: WhatsApp Customer Connector (:8086:8080)
+  # Dedicated channel for customer inquiries, assigned to customer or custom agents
+  # ----------------------------------------------------------------------------
+  whatsapp-customer-connector:
+    build:
+      context: .
+      dockerfile: deploy/whatsapp/Dockerfile.caller
+    image: central-ai-whatsapp-caller:latest
+    restart: unless-stopped
+    depends_on:
+      - voice
+    ports:
+      - "8086:8080"
+    environment:
+      VOICE_URL: "http://voice:8081"
+      AUDIO_URL: "http://voice:8082"
+      TEXT_CHAT_ENABLED: "true"
+      WHATSAPP_CONVERSATION_MODE: "fish"
+      ENGINE_ENABLED_FILE: /data/remote-engine-enabled
+      WHATSAPP_LINE_ID: "customer"
+      WHATSAPP_DEVICE_NAME: "Central AI Customer Support"
+    volumes:
+      - customer-phone-state:/data
+    networks:
+      hermes-net:
+        aliases:
+          - customer-caller
+          - whatsapp-customer-connector
 
   # ----------------------------------------------------------------------------
   # 5. Superpower 4: Scrapling Stealth Web Scraper & Cloudflare Bypass (:8008)
@@ -142,7 +175,7 @@ services:
       HERMES_HOME: /opt/data/profiles/leo
       ORBIT_HERMES_PROFILE: leo
       HOME: /data/voice
-      LEO_TEXT_CHAT_ENABLED: "true"
+      TEXT_CHAT_ENABLED: "true"
       WHATSAPP_CONVERSATION_MODE: "fish"
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
@@ -162,7 +195,10 @@ volumes:
   hermes-profiles:
   hindsight-data:
   phone-state:
+  customer-phone-state:
 
 networks:
   hermes-net:
     driver: bridge
+  coolify:
+    external: true

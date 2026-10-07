@@ -21,9 +21,9 @@ def routing():
         return json.loads(ROUTING_FILE.read_text())
     # Clean default routing; dynamic contacts are configured by owner
     import os
-    owner = os.environ.get('LEO_WHATSAPP_OWNER', '')
-    business = os.environ.get('LEO_WHATSAPP_BUSINESS_CONTACT', '')
-    group = os.environ.get('LEO_WHATSAPP_GROUP', '')
+    owner = os.environ.get('WHATSAPP_OWNER', os.environ.get('LEO_WHATSAPP_OWNER', ''))
+    business = os.environ.get('WHATSAPP_BUSINESS_CONTACT', os.environ.get('LEO_WHATSAPP_BUSINESS_CONTACT', ''))
+    group = os.environ.get('WHATSAPP_GROUP', os.environ.get('LEO_WHATSAPP_GROUP', ''))
     contacts = []
     if owner:
         contacts.append({

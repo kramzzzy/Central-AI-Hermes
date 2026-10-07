@@ -258,7 +258,7 @@ func(b *textBridge)receive(ctx context.Context,socket *wa.Client,event *events.M
 }
 
 func installTextBridge(ctx context.Context,socket *wa.Client,keyfile string)error{
- if os.Getenv("LEO_TEXT_CHAT_ENABLED")!="true"{return nil}
+ if getEnv("TEXT_CHAT_ENABLED","LEO_TEXT_CHAT_ENABLED")!="true"{return nil}
  key, err := os.ReadFile(keyfile)
  if err != nil {
   for i := 0; i < 20; i++ {
@@ -270,7 +270,7 @@ func installTextBridge(ctx context.Context,socket *wa.Client,keyfile string)erro
   }
  }
  if err != nil || len(strings.TrimSpace(string(key))) < 32 {
-  if envKey := strings.TrimSpace(os.Getenv("LEO_VOICE_KEY")); len(envKey) >= 32 {
+  if envKey := strings.TrimSpace(getEnv("VOICE_KEY","LEO_VOICE_KEY","WHATSAPP_SETUP_KEY","HERMES_API_KEY")); len(envKey) >= 32 {
    key = []byte(envKey)
    _ = os.WriteFile(keyfile, key, 0660)
   } else {
@@ -281,9 +281,8 @@ func installTextBridge(ctx context.Context,socket *wa.Client,keyfile string)erro
    key = []byte(genKey)
   }
  }
- enabledMarker:=os.Getenv("LEO_ENGINE_ENABLED_FILE")
- if enabledMarker==""{enabledMarker="/data/remote-engine-enabled"}
- bridge,err:=newTextBridge("/data/text.db",strings.TrimSpace(string(key)),os.Getenv("LEO_WHATSAPP_GROUP"),enabledMarker,
+ enabledMarker:=getEnvDefault("/data/remote-engine-enabled","ENGINE_ENABLED_FILE","LEO_ENGINE_ENABLED_FILE")
+ bridge,err:=newTextBridge("/data/text.db",strings.TrimSpace(string(key)),getEnv("WHATSAPP_GROUP","LEO_WHATSAPP_GROUP"),enabledMarker,
   func(ctx context.Context,target types.JID,message *waE2E.Message)(string,error){response,err:=socket.SendMessage(ctx,target,message);return string(response.ID),err})
  if err!=nil{return fmt.Errorf("text initialization: %w",err)}
  bridge.upload=socket.Upload

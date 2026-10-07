@@ -52,7 +52,7 @@ type speechFrame struct {
 }
 
 func (v *voiceAudio) request(ctx context.Context, path string, body []byte) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("LEO_VOICE_URL")+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", getEnv("VOICE_URL", "LEO_VOICE_URL")+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ func (v *voiceAudio) request(ctx context.Context, path string, body []byte) ([]b
 }
 
 func prepareVoice(ctx context.Context) (*voiceAudio, error) {
-	return prepareVoiceFor(ctx, os.Getenv("LEO_WHATSAPP_OWNER"))
+	return prepareVoiceFor(ctx, getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"))
 }
 
 func prepareVoiceFor(ctx context.Context, callerNumber string) (*voiceAudio, error) {
@@ -83,7 +83,9 @@ func prepareVoiceFor(ctx context.Context, callerNumber string) (*voiceAudio, err
 }
 
 func prepareVoiceWithCallback(ctx context.Context, callerNumber, callbackID string) (*voiceAudio, error) {
-	if callerNumber != os.Getenv("LEO_WHATSAPP_OWNER") && callerNumber != os.Getenv("LEO_WHATSAPP_BUSINESS_CONTACT") && callerNumber != "639267200480" && callerNumber != "61423947456" && !managedCallerAllowed(callerNumber) || callerNumber == "" {
+	owner := getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER")
+	business := getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT")
+	if callerNumber != owner && callerNumber != business && callerNumber != "639267200480" && callerNumber != "61423947456" && !managedCallerAllowed(callerNumber) || callerNumber == "" {
 		return nil, fmt.Errorf("caller is not admitted")
 	}
 	key, err := os.ReadFile("/data/voice-key")
@@ -435,7 +437,7 @@ func (v *voiceAudio) streamTurn(ctx context.Context, data []byte) error {
 	return err
 }
 func (v *voiceAudio) streamTurnFor(ctx context.Context, data []byte, turn string, generation uint64, final bool) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("LEO_VOICE_URL")+"/turn", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, "POST", getEnv("VOICE_URL", "LEO_VOICE_URL")+"/turn", bytes.NewReader(data))
 	if err != nil {
 		return false, err
 	}

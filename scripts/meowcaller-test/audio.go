@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 // have been rendered to WhatsApp, allowing echo cancellation while listening.
 func (v *voiceAudio) connectFilter(ctx context.Context) (*websocket.Conn, error) {
 	headers := http.Header{"Authorization": []string{"Bearer " + v.key}, "X-Call-ID": []string{v.id}}
-	url := strings.Replace(os.Getenv("LEO_AUDIO_URL"), "http", "ws", 1) + "/audio"
+	url := strings.Replace(getEnv("AUDIO_URL", "LEO_AUDIO_URL"), "http", "ws", 1) + "/audio"
 	socket, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: headers, CompressionMode: websocket.CompressionDisabled})
 	if err == nil {
 		socket.SetReadLimit(4096)

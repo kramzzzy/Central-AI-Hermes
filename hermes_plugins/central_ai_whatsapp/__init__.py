@@ -25,11 +25,11 @@ def route_binding(config):
     if route not in ROUTES:raise ValueError('Select an admitted Leo WhatsApp route')
     member=dict(ROUTES[route])
     if route=='michael':
-        member['profile']=os.environ.get('LEO_MICHAEL_TEXT_PROFILE',member['profile'])
+        member['profile']=os.environ.get('CENTRAL_AI_TEXT_PROFILE',os.environ.get('LEO_MICHAEL_TEXT_PROFILE',member['profile']))
         if member['profile'] not in {'team-whatsapp-michael-business','team-whatsapp-michael-text'}:raise ValueError('Invalid Michael profile binding')
     home=Path(os.environ.get('HERMES_HOME','')).resolve(strict=True)
     if home.name!=member['profile'] or home.parent.name!='profiles' or not (home/'config.yaml').is_file():raise ValueError('WhatsApp route does not match this native profile')
-    group=os.environ.get('LEO_WHATSAPP_GROUP','') if member['group'] else ''
+    group=os.environ.get('WHATSAPP_GROUP',os.environ.get('LEO_WHATSAPP_GROUP','')) if member['group'] else ''
     if member['group'] and not group.endswith('@g.us'):raise ValueError('Configure the admitted team group in Hermes')
     return route,member,home,group
 

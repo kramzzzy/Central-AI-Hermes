@@ -94,11 +94,13 @@ services:
     ports:
       - "8085:8080"
     environment:
-      LEO_VOICE_URL: "http://voice:8081"
-      LEO_AUDIO_URL: "http://voice:8082"
-      LEO_TEXT_CHAT_ENABLED: "true"
+      VOICE_URL: "http://voice:8081"
+      AUDIO_URL: "http://voice:8082"
+      TEXT_CHAT_ENABLED: "true"
       WHATSAPP_CONVERSATION_MODE: "fish"
-      LEO_ENGINE_ENABLED_FILE: /data/remote-engine-enabled
+      ENGINE_ENABLED_FILE: /data/remote-engine-enabled
+      WHATSAPP_LINE_ID: "executive"
+      WHATSAPP_DEVICE_NAME: "Central AI Executive Line"
     volumes:
       - phone-state:/data
     networks:
@@ -109,7 +111,7 @@ services:
 
   # ----------------------------------------------------------------------------
   # 4b. Superpower 3b: WhatsApp Customer Connector (:8086:8080)
-  # Dedicated channel for customer inquiries, assigned to Sarah or custom agents
+  # Dedicated channel for customer inquiries, assigned to customer or custom agents
   # ----------------------------------------------------------------------------
   whatsapp-customer-connector:
     build:
@@ -122,12 +124,13 @@ services:
     ports:
       - "8086:8080"
     environment:
-      LEO_VOICE_URL: "http://voice:8081"
-      LEO_AUDIO_URL: "http://voice:8082"
-      LEO_TEXT_CHAT_ENABLED: "true"
+      VOICE_URL: "http://voice:8081"
+      AUDIO_URL: "http://voice:8082"
+      TEXT_CHAT_ENABLED: "true"
       WHATSAPP_CONVERSATION_MODE: "fish"
-      LEO_ENGINE_ENABLED_FILE: /data/remote-engine-enabled
+      ENGINE_ENABLED_FILE: /data/remote-engine-enabled
       WHATSAPP_LINE_ID: "customer"
+      WHATSAPP_DEVICE_NAME: "Central AI Customer Support"
     volumes:
       - customer-phone-state:/data
     networks:
@@ -172,7 +175,7 @@ services:
       HERMES_HOME: /opt/data/profiles/leo
       ORBIT_HERMES_PROFILE: leo
       HOME: /data/voice
-      LEO_TEXT_CHAT_ENABLED: "true"
+      TEXT_CHAT_ENABLED: "true"
       WHATSAPP_CONVERSATION_MODE: "fish"
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}

@@ -60,17 +60,17 @@ type status struct {
 }
 var current = status{State:"starting", Call:"idle"}
 func allowedPeer(peer, resolved string) bool {
-	owner:=os.Getenv("LEO_WHATSAPP_OWNER")
+	owner:=getEnv("WHATSAPP_OWNER","LEO_WHATSAPP_OWNER")
 	if owner=="" || !managedCallerAllowed(owner) {return false}
 	return peer==owner || resolved==owner || (owner=="61423947456" && (peer=="279374905495566" || resolved=="279374905495566")) || (owner=="639267200480" && (peer=="131568421073069" || resolved=="131568421073069"))
 }
 func admittedCaller(peer,resolved string) string {
 
-	owner:=os.Getenv("LEO_WHATSAPP_OWNER")
+	owner:=getEnv("WHATSAPP_OWNER","LEO_WHATSAPP_OWNER")
 	if owner!="" && managedCallerAllowed(owner) {
 		if peer==owner || resolved==owner || (owner=="61423947456" && (peer=="279374905495566" || resolved=="279374905495566")) || (owner=="639267200480" && (peer=="131568421073069" || resolved=="131568421073069")) {return owner}
 	}
-	business:=os.Getenv("LEO_WHATSAPP_BUSINESS_CONTACT")
+	business:=getEnv("WHATSAPP_BUSINESS_CONTACT","LEO_WHATSAPP_BUSINESS_CONTACT")
 	if business!="" && managedCallerAllowed(business) {
 		if peer==business || resolved==business || (business=="639267200480" && (peer=="131568421073069" || resolved=="131568421073069")) || (business=="61423947456" && (peer=="279374905495566" || resolved=="279374905495566")) {return business}
 	}
@@ -97,7 +97,7 @@ func wireAudio(ctx context.Context, call *meow.Call, voice *voiceAudio) error {
 func main() {
  if len(os.Args)==2 && os.Args[1]=="readycheck" { if serverReady("http://127.0.0.1:8080/ready") {return};os.Exit(1) }
  if len(os.Args)==2 && os.Args[1]=="healthcheck" { if engineHealthy("http://127.0.0.1:8080/health") {return};os.Exit(1) }
- owner:=os.Getenv("LEO_WHATSAPP_OWNER")
+ owner:=getEnv("WHATSAPP_OWNER","LEO_WHATSAPP_OWNER")
  routes,managed:=managedPhoneRouting()
  unconfigured:=owner=="" || (managed && len(routes.Contacts)==0)
  if !unconfigured && !managedCallerAllowed(owner) { log.Fatal("configured owner required") }
@@ -133,7 +133,7 @@ func main() {
  db,err:=sqlstore.New(ctx,"sqlite","file:/data/calls.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)",walog.Zerolog(logger));if err!=nil {log.Fatal(err)}
  defer db.Close()
  device,err:=db.GetFirstDevice(ctx);if err!=nil {log.Fatal(err)}
- store.DeviceProps.Os=ptr("Leo WhatsApp Voice")
+ store.DeviceProps.Os=ptr(getEnvDefault("Central AI Assistant","WHATSAPP_DEVICE_NAME","LEO_WHATSAPP_DEVICE_NAME"))
  socket:=wa.NewClient(device,walog.Zerolog(logger))
  http.HandleFunc("/setup/groups",groupsHandler(socket))
  http.HandleFunc("/pairing/disconnect",disconnectHandler("/run/secrets/whatsapp_setup_key",func()error{
@@ -215,7 +215,8 @@ func main() {
   current.Lock();defer current.Unlock()
   switch event.(type) { case *events.Connected:current.State="connected";current.code=""
    go func(){
-    if socket.Store.PushName=="" || socket.Store.PushName=="Leo call test" {socket.Store.PushName="Leo - youraiagent"}
+    defaultPush:=getEnvDefault("Central AI Assistant","WHATSAPP_DEVICE_NAME","LEO_WHATSAPP_DEVICE_NAME")
+    if socket.Store.PushName=="" || socket.Store.PushName=="Leo call test" || socket.Store.PushName=="Leo - youraiagent" {socket.Store.PushName=defaultPush}
     if err:=socket.SendPresence(ctx,types.PresenceAvailable);err!=nil {log.Print("call presence announcement failed")}
    }()
   case *events.Disconnected:current.State="reconnecting"
@@ -250,7 +251,7 @@ func main() {
   call.OnMuteState(func(muted bool){current.Lock();current.RemoteMuted=&muted;current.Unlock();log.Printf("incoming microphone state: muted=%t",muted)})
   answerIncomingWithVoice(ctx,call,func(callCtx context.Context)(*voiceAudio,error){return prepareVoiceFor(callCtx,member)})
  })
- if marker:=os.Getenv("LEO_ENGINE_ENABLED_FILE");marker!="" {
+ if marker:=getEnv("ENGINE_ENABLED_FILE","LEO_ENGINE_ENABLED_FILE");marker!="" {
   current.Lock();current.State="standby";current.Unlock()
   if err:=waitEngineEnabled(ctx,marker);err!=nil {log.Print("engine startup cancelled");return}
  }

@@ -915,7 +915,7 @@ for phrase in ((RECOVERY, TASK_ACK) if fish_service and CONVERSATION_MODE=='stre
     except Exception:
         failure_counts['fixed_speech_warmup'] = failure_counts.get('fixed_speech_warmup', 0) + 1
 ready = True
-if os.environ.get('LEO_TEXT_CHAT_ENABLED') == 'true':
+if os.environ.get('TEXT_CHAT_ENABLED', os.environ.get('LEO_TEXT_CHAT_ENABLED')) == 'true':
     from whatsapp_text_supervisor import TextSupervisor
     text_supervisor = TextSupervisor()
 print('Owner-only phone conversation backend ready', flush=True)

@@ -25,7 +25,8 @@ func readOutgoingRequest(path string,now time.Time)(outgoingRequest,error) {
  if err!=nil || len(data)>8192 {return r,fmt.Errorf("invalid call request file")}
  if json.Unmarshal(data,&r)!=nil {return r,fmt.Errorf("invalid call request JSON")}
  if r.Mode=="" {r.Mode="native"}
- if r.Mode=="native" && (r.Target==os.Getenv("LEO_WHATSAPP_OWNER") || (r.Target=="639267200480" && os.Getenv("LEO_WHATSAPP_OWNER")=="61423947456") || (os.Getenv("LEO_WHATSAPP_OWNER")=="61423947456" && managedCallerAllowed(r.Target))) && r.Target!="" {return r,nil}
+ owner:=getEnv("WHATSAPP_OWNER","LEO_WHATSAPP_OWNER")
+ if r.Mode=="native" && (r.Target==owner || (r.Target=="639267200480" && owner=="61423947456") || (owner=="61423947456" && managedCallerAllowed(r.Target))) && r.Target!="" {return r,nil}
  if r.Mode=="availability_check" && r.Target==teamProbeTarget && r.ExpiresAt.After(now) && !r.ExpiresAt.After(now.Add(5*time.Minute)) {return r,nil}
  return r,fmt.Errorf("call request is unauthorized or expired")
 }
