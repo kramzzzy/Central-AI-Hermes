@@ -92,8 +92,26 @@ def clean_reply_punctuation(content):
         r'[ \t]*\u2014[ \t]*|[ \t]+\u2013[ \t]+', ', ', part)
         for index, part in enumerate(parts))
 
-CHANNEL_CONTEXT = """[Owner WhatsApp system context]
-You are Leo, the same configured native assistant behind Your AI Agent OS (Michael OS).
+def get_configured_assistant_name(home=None):
+    roots = ['/opt/data/profiles/leo', '/opt/data/profiles/leo-whatsapp-text']
+    if home:
+        roots.insert(0, str(home))
+    for r in roots:
+        p = Path(r) / '.assistant-name.json'
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding='utf-8'))
+                if data.get('name'):
+                    return str(data['name']).strip()
+            except Exception:
+                pass
+    return 'Leo'
+
+
+def get_channel_context(assistant_name=None):
+    name = assistant_name or get_configured_assistant_name()
+    return f"""[Owner WhatsApp system context]
+You are {name}, the same configured native assistant behind Your AI Agent OS (Michael OS).
 The OS is the dashboard; Central AI owns reasoning, tools, skills and native history.
 PostgreSQL stores OS accounts, memberships, tasks, knowledge, schedules and attachments.
 Native sessions and Hindsight memory are separate from that PostgreSQL database.
@@ -115,6 +133,9 @@ and memory-server health are not checked by this snapshot. Never invent access.
 Answer naturally and concisely. Do not include tool names, argument previews,
 internal diagnostic chatter, or an automatic name/header in normal replies.
 [/Owner WhatsApp system context]""" + '\n' + REPLY_STYLE
+
+
+CHANNEL_CONTEXT = get_channel_context()
 
 
 def quiet_whatsapp_display(home):
@@ -165,13 +186,14 @@ def _native_health():
         return None
 
 
-async def owner_channel_context(text):
+async def owner_channel_context(text, assistant_name=None):
     # Ordinary conversation needs no extra network wait. Relevant questions get
     # fresh probes in parallel, with independent failures and no cached success.
+    base_context = get_channel_context(assistant_name)
     if not re.search(r'\b(system|health|status|database|db|workspace|michael|os|app|'
                      r'connection|connected|working|hermes|laya|gumagana|koneksyon|sistema)\b',
                      text or '', re.I):
-        return CHANNEL_CONTEXT
+        return base_context
     app, native = await asyncio.gather(
         asyncio.to_thread(_probe, 'http://web:3000/api/health'),
         asyncio.to_thread(_native_health))
@@ -189,4 +211,4 @@ async def owner_channel_context(text):
         'not_checked': ['worker', 'Google account connections', 'Hindsight server',
                         'private workspace records', 'end-to-end voice quality'],
     }
-    return CHANNEL_CONTEXT + '\n[Fresh system checks]\n' + json.dumps(snapshot) + '\n[/Fresh system checks]'
+    return base_context + '\n[Fresh system checks]\n' + json.dumps(snapshot) + '\n[/Fresh system checks]'

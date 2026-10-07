@@ -30,14 +30,33 @@ def central_ai_identity(prompt):
 def configure_identity(home):
     """Change only prompt/persona copy in an already selected native home."""
     import yaml
+    import json
     home = Path(home)
     path = home / 'config.yaml'
     config = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
     agent = config.setdefault('agent', {})
     prompt = agent.get('system_prompt') or ''
-    name_note = 'Your configured assistant name is Leo.' if home.name in {'leo', 'leo-whatsapp-text'} else ''
-    if name_note and name_note not in prompt:
-        prompt = name_note + '\n' + prompt
+
+    # Check for custom configured name in .assistant-name.json
+    name_path = home / '.assistant-name.json'
+    configured_name = None
+    if name_path.is_file():
+        try:
+            data = json.loads(name_path.read_text(encoding='utf-8'))
+            if isinstance(data, dict) and data.get('name'):
+                configured_name = str(data['name']).strip()
+        except Exception:
+            pass
+    if not configured_name:
+        if home.name in {'leo', 'leo-whatsapp-text'}:
+            configured_name = 'Leo'
+        elif home.name in {'sarah', 'sarah-social'}:
+            configured_name = 'Sarah'
+
+    name_note = f'Your configured assistant name is {configured_name}.' if configured_name else ''
+    if name_note:
+        prompt = re.sub(r'Your configured assistant name is [^.\n]+\.\n?', '', prompt)
+        prompt = name_note + '\n' + prompt.strip()
     agent['system_prompt'] = central_ai_identity(prompt)
     for name, personality in agent.get('personalities', {}).items():
         if isinstance(personality, str):
@@ -48,8 +67,9 @@ def configure_identity(home):
     soul = home / 'SOUL.md'
     if soul.is_file():
         prompt = soul.read_text(encoding='utf-8')
-        if name_note and name_note not in prompt:
-            prompt = name_note + '\n' + prompt
+        if name_note:
+            prompt = re.sub(r'Your configured assistant name is [^.\n]+\.\n?', '', prompt)
+            prompt = name_note + '\n' + prompt.strip()
         updates.append((soul, central_ai_identity(prompt) + '\n'))
     for target, content in updates:
         original = target.read_text(encoding='utf-8')
