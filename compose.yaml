@@ -108,6 +108,35 @@ services:
           - whatsapp-connector
 
   # ----------------------------------------------------------------------------
+  # 4b. Superpower 3b: WhatsApp Customer Connector (:8086:8080)
+  # Dedicated channel for customer inquiries, assigned to Sarah or custom agents
+  # ----------------------------------------------------------------------------
+  whatsapp-customer-connector:
+    build:
+      context: .
+      dockerfile: deploy/whatsapp/Dockerfile.caller
+    image: central-ai-whatsapp-caller:latest
+    restart: unless-stopped
+    depends_on:
+      - voice
+    ports:
+      - "8086:8080"
+    environment:
+      LEO_VOICE_URL: "http://voice:8081"
+      LEO_AUDIO_URL: "http://voice:8082"
+      LEO_TEXT_CHAT_ENABLED: "true"
+      WHATSAPP_CONVERSATION_MODE: "fish"
+      LEO_ENGINE_ENABLED_FILE: /data/remote-engine-enabled
+      WHATSAPP_LINE_ID: "customer"
+    volumes:
+      - customer-phone-state:/data
+    networks:
+      hermes-net:
+        aliases:
+          - customer-caller
+          - whatsapp-customer-connector
+
+  # ----------------------------------------------------------------------------
   # 5. Superpower 4: Scrapling Stealth Web Scraper & Cloudflare Bypass (:8008)
   # ----------------------------------------------------------------------------
   scrapling:
@@ -163,6 +192,7 @@ volumes:
   hermes-profiles:
   hindsight-data:
   phone-state:
+  customer-phone-state:
 
 networks:
   hermes-net:
