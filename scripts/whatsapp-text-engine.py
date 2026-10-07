@@ -13,21 +13,15 @@ sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 from hermes_profile import load_profile
 from whatsapp_system_context import REPLY_STYLE, quiet_whatsapp_display, attach_assistant_skills, clean_reply_punctuation
 
-ROUTES={
- 'mark':{'profile':'leo-whatsapp-text','number':'639267200480','group':False},
- 'michael':{'profile':'team-whatsapp-michael-business','number':'61423947456','group':False},
- 'team':{'profile':'team-whatsapp-social','group':True},
-}
-
 async def run_route(route):
     from whatsapp_routing import text_routes, routing
-    member=dict(text_routes()[route])
-    if route=='michael' and not Path('/run/secrets/whatsapp_routing').exists():
-        member['profile']=os.environ.get('LEO_MICHAEL_TEXT_PROFILE',member['profile'])
-        if member['profile'] not in {'team-whatsapp-michael-business','team-whatsapp-michael-text'}:
-            raise RuntimeError('Unsupported Michael text profile')
-    home,_=load_profile()
-    if home.name!=member['profile']:raise RuntimeError('Text profile binding mismatch')
+    all_routes = text_routes()
+    if route not in all_routes:
+        raise RuntimeError(f'Unknown WhatsApp text route: {route}')
+    member = dict(all_routes[route])
+    home, _ = load_profile()
+    if home.name != member['profile']:
+        raise RuntimeError(f"Text profile binding mismatch: expected {member['profile']}, got {home.name}")
     quiet_whatsapp_display(home)
     group=routing()['group'] if member['group'] else ''
     owner=member.get('number','')
