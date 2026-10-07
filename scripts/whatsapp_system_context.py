@@ -105,13 +105,13 @@ def get_configured_assistant_name(home=None):
                     return str(data['name']).strip()
             except Exception:
                 pass
-    return 'Leo'
+    return os.environ.get('DEFAULT_ASSISTANT_NAME', 'Assistant')
 
 
 def get_channel_context(assistant_name=None):
     name = assistant_name or get_configured_assistant_name()
     return f"""[Owner WhatsApp system context]
-You are {name}, the same configured native assistant behind Your AI Agent OS (Michael OS).
+You are {name}, the same configured native assistant behind Central OS.
 The OS is the dashboard; Central AI owns reasoning, tools, skills and native history.
 PostgreSQL stores OS accounts, memberships, tasks, knowledge, schedules and attachments.
 Native sessions and Hindsight memory are separate from that PostgreSQL database.

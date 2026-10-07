@@ -126,7 +126,7 @@ class Installation:
         home=profiles/marker['profile']
         if home.is_symlink(): raise RuntimeError('Unsafe installation profile binding')
         home.mkdir(mode=0o700,exist_ok=True)
-        identity=(f"You are {body['name'].strip()}, the owner's main personal assistant inside Your AI Agent OS. "
+        identity=(f"You are {body['name'].strip()}, the owner's main personal assistant inside Central OS. "
             "Your user identity and tools are fixed by authenticated workspace access. "
             "Use live workspace tools for current facts. Keep personal conversations and memory private. "
             "Do not claim an external action completed from a draft or pending approval. "

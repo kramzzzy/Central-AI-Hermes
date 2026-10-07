@@ -1,4 +1,4 @@
-"""Hermes-owned Michael OS integration. No DB credentials or model-side actor selection."""
+"""Hermes-owned Central OS integration. No DB credentials or model-side actor selection."""
 import json
 import os
 import re
@@ -8,8 +8,8 @@ from pathlib import Path
 from central_ai_identity import central_ai_identity
 
 SECTIONS = {'status', 'overview', 'tasks', 'knowledge', 'agents', 'runs', 'activity', 'members', 'calendar'}
-CONTEXT = """[Michael OS integration]
-You are the assistant behind Michael OS (also called Your AI Agents OS), the custom gateway/dashboard for Central AI. Use your configured identity; agent names are deployment configuration, not product defaults.
+CONTEXT = """[Central OS integration]
+You are the assistant behind Central OS, the custom gateway/dashboard for Central AI. Use your configured identity; agent names are deployment configuration, not product defaults.
 Central AI owns your reasoning, persistent native SQLite/memory files, tools, skills, model/provider settings, delegation and external integrations. The OS displays them and enforces signed-in workspace permissions. Its separate PostgreSQL database stores OS accounts, memberships, tasks, knowledge, run results, activity and attachments; it is not your native agent memory.
 
 [Active Capabilities and Tools]
@@ -24,7 +24,7 @@ You have a comprehensive suite of real native and integration tools that you mus
    - Use web_search to search the web for live facts, current events, research, and technical documentation.
    - Use web_extract to extract readable markdown text from articles and static pages.
 3. App OS Workspace Inspection (mcp__michael_os__inspect_workspace):
-   - For questions about 'the app', 'our system', 'Michael OS', 'the database connection', or workspace records, use mcp__michael_os__inspect_workspace.
+   - For questions about 'the app', 'our system', 'Central OS', 'the database connection', or workspace records, use mcp__michael_os__inspect_workspace.
    - Supported sections: status (health/DB), overview (counts), tasks, knowledge, agents, runs, activity, members, calendar.
    - State what was actually checked; failed or unavailable checks are not healthy results. Never infer live status from your memory.
 4. Google Workspace (mcp__michael_os__google_workspace):
@@ -59,7 +59,7 @@ You have a comprehensive suite of real native and integration tools that you mus
      * The updated rules are immediately synchronized across Web Chat, Voice, and WhatsApp without a restart.
 
 In voice calls use a short natural answer, grounded in the tool result. Do not redirect routine status questions to Chat. Only actual approval/review requires that flow.
-[/Michael OS integration]"""
+[/Central OS integration]"""
 
 
 def validate_inspection(body):
@@ -95,23 +95,23 @@ def authenticated_exchange(chat, body, endpoint):
     with chat.guard:
         grant = chat.workspace_grant
         if not grant or chat.workspace_actor != chat.actor or time.monotonic() > chat.lease:
-            raise PermissionError('No active authenticated OS conversation. Reconnect in Michael OS.')
+            raise PermissionError('No active authenticated OS conversation. Reconnect in Central OS.')
         binding = (chat.workspace_actor, chat.workspace_turn, chat.epoch)
     url = os.environ.get('MICHAEL_OS_URL', '').rstrip('/')
     if not url:
-        raise RuntimeError('Michael OS inspection is not connected in this deployment.')
+        raise RuntimeError('Central OS inspection is not connected in this deployment.')
     request = urllib.request.Request(url + endpoint,
         data=json.dumps(body).encode(), headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + grant,
-                                               'User-Agent': 'YourAIAgentOS/1.0'})
+                                               'User-Agent': 'CentralOS/1.0'})
     try:
         with urllib.request.urlopen(request, timeout=70 if endpoint.endswith('/tool') else 8) as response:
             data = json.load(response)
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
-            raise PermissionError('Workspace access expired or was revoked. Reconnect in Michael OS.') from None
-        raise RuntimeError('Michael OS could not verify this information. Do not assume it is healthy.') from None
+            raise PermissionError('Workspace access expired or was revoked. Reconnect in Central OS.') from None
+        raise RuntimeError('Central OS could not verify this information. Do not assume it is healthy.') from None
     except (OSError, ValueError):
-        raise RuntimeError('Michael OS inspection is unavailable. No live status was verified.') from None
+        raise RuntimeError('Central OS inspection is unavailable. No live status was verified.') from None
     # A response from a canceled/replaced connection must not reach another turn.
     with chat.guard:
         if binding != (chat.workspace_actor, chat.workspace_turn, chat.epoch) or time.monotonic() > chat.lease:
@@ -147,7 +147,7 @@ def configure_profile(home, plugin=None, allow_enable=False):
 def _without_app_blocks(prompt):
     # Refresh our two managed blocks before appending them. Otherwise removing
     # the identity block after insertion adds blank lines on every reconnect.
-    for label in ('Michael OS integration', 'Central AI identity'):
+    for label in ('Central OS integration', 'Michael OS integration', 'Central AI identity'):
         prompt = re.sub(r'\s*\[' + re.escape(label) + r'\].*?\[/' + re.escape(label) + r'\]\s*', '\n\n', prompt, flags=re.S)
     return prompt.strip()
 
@@ -172,7 +172,7 @@ def _configure_profile(home, plugin, allow_enable):
     servers = config.setdefault('mcp_servers', {})
     existing_server = servers.get('michael_os', {})
     if not isinstance(existing_server, dict):
-        raise RuntimeError('Unsupported existing Michael OS integration definition')
+        raise RuntimeError('Unsupported existing Central OS integration definition')
     servers['michael_os'] = {**existing_server, **server}
     if plugin:
         # The native plugin owns this exact stable tool identifier. Keep Google

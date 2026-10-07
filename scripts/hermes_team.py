@@ -85,7 +85,7 @@ class TeamPool:
         voice_matches = model['provider'] == self.settings.get('HERMES_VOICE_PROVIDER', model['provider'])
         # Company documents are data, never permission to expand the native tools.
         knowledge = json.dumps(definition.get('knowledge', []), ensure_ascii=False)[:125000]
-        identity = (f"You are {definition['name']}, a team assistant inside Michael OS. "
+        identity = (f"You are {definition['name']}, a team assistant inside Central OS. "
             "Each member has private conversations and memory. The owner's personal assistant is separate and private; "
             "you cannot read his history, memory, files or connections. Be honest about available capabilities. "
             "You can chat, draft, analyze attached content and remember this member's preferences. "

@@ -3,7 +3,7 @@ import os
 AUSTRALIAN_VOICE_ID = '31d3dd937d2944a1b06da3db533d27f9'
 PREFERRED_LOCALE = 'en-AU'
 FALLBACK_LOCALE = 'en'
-ENGLISH_KEYTERMS = ['Leo', 'Mark Tech', 'Michael Vazquez', 'Your AI Agent',
+ENGLISH_KEYTERMS = ['Central OS', 'Central AI',
     'Brisbane', 'Melbourne', 'Sydney', 'Canberra', 'Adelaide', 'Perth', 'Hobart',
     'Darwin', 'Cairns', 'Toowoomba', 'Gold Coast', 'Sunshine Coast', 'Queensland',
     'New South Wales', 'Denpasar', 'Bali', 'DPS', 'BNE', 'OOL', 'Australian dollars']
