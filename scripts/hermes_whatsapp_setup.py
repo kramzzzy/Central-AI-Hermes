@@ -24,7 +24,22 @@ class WhatsAppSetup:
     def fetch(self, path, start=False):
         headers = {}
         if start:
-            key = self.token_file.read_text(encoding='utf-8').strip()
+            import os
+            key = ''
+            if self.token_file.is_file():
+                try:
+                    key = self.token_file.read_text(encoding='utf-8').strip()
+                except Exception:
+                    key = ''
+            if not key:
+                alt = Path('/data/whatsapp_setup_key')
+                if alt.is_file():
+                    try:
+                        key = alt.read_text(encoding='utf-8').strip()
+                    except Exception:
+                        key = ''
+            if not key:
+                key = os.environ.get('WHATSAPP_SETUP_KEY', '').strip() or os.environ.get('HERMES_API_KEY', '').strip()
             if len(key) < 32: raise SetupError('WhatsApp setup authentication is unavailable')
             headers['Authorization'] = 'Bearer ' + key
         request = urllib.request.Request('http://caller:8080' + path, data=b'{}' if start else None, headers=headers)

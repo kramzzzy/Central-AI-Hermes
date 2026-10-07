@@ -8,14 +8,30 @@ import (
  "strings"
 )
 
+func getSetupKey(keyPath string) string {
+	if data, err := os.ReadFile(keyPath); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
+		return strings.TrimSpace(string(data))
+	}
+	if data, err := os.ReadFile("/data/whatsapp_setup_key"); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
+		return strings.TrimSpace(string(data))
+	}
+	if envKey := strings.TrimSpace(os.Getenv("WHATSAPP_SETUP_KEY")); len(envKey) >= 32 {
+		return envKey
+	}
+	if envKey := strings.TrimSpace(os.Getenv("HERMES_API_KEY")); len(envKey) >= 32 {
+		return envKey
+	}
+	return ""
+}
+
 // Only the authenticated backend may begin pairing. Never clear an existing device.
 func pairingHandler(keyPath, marker string, connected func() bool) http.HandlerFunc {
  return func(w http.ResponseWriter,r *http.Request) {
   w.Header().Set("Cache-Control","no-store")
   if r.Method!=http.MethodPost {w.WriteHeader(http.StatusMethodNotAllowed);return}
-  key,err:=os.ReadFile(keyPath)
-  if err!=nil || len(strings.TrimSpace(string(key)))<32 {http.Error(w,"Pairing authentication unavailable",503);return}
-  expected:="Bearer "+strings.TrimSpace(string(key))
+  key := getSetupKey(keyPath)
+  if len(key)<32 {http.Error(w,"Pairing authentication unavailable",503);return}
+  expected:="Bearer "+key
   if !hmac.Equal([]byte(r.Header.Get("Authorization")),[]byte(expected)) {http.Error(w,"Unauthorized",401);return}
   if !connected() {
    if err:=os.WriteFile(marker,[]byte("enabled\n"),0600);err!=nil {http.Error(w,"Pairing could not start",503);return}

@@ -12,8 +12,8 @@ import (
 
 func groupsHandler(socket *wa.Client) http.HandlerFunc {
  return func(w http.ResponseWriter,r *http.Request) {
-  key,err:=os.ReadFile("/run/secrets/whatsapp_setup_key")
-  if r.Method!="POST" || err!=nil || len(key)<32 || !hmac.Equal([]byte(r.Header.Get("Authorization")),append([]byte("Bearer "),key...)) {http.Error(w,"Unauthorized",401);return}
+  key := getSetupKey("/run/secrets/whatsapp_setup_key")
+  if r.Method!="POST" || len(key)<32 || !hmac.Equal([]byte(r.Header.Get("Authorization")),[]byte("Bearer "+key)) {http.Error(w,"Unauthorized",401);return}
   ctx,cancel:=context.WithTimeout(r.Context(),4*time.Second);defer cancel()
   groups,err:=socket.GetJoinedGroups(ctx)
   if err!=nil {http.Error(w,"Connect WhatsApp before loading groups",503);return}
