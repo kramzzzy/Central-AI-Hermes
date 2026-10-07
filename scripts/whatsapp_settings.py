@@ -14,7 +14,7 @@ def validate(value):
     def phone(value,required=False):
         if not isinstance(value,str): raise ValueError('Use a phone number with country code.')
         number=re.sub(r'[+ ()-]','',value)
-        if (required or number) and not re.fullmatch(r'[1-9][0-9]{7,14}',number): raise ValueError('Use an international number with country code, for example +63 912 345 6789.')
+        if (required or number) and not re.fullmatch(r'[1-9][0-9]{7,14}',number): raise ValueError('Use an international number with country code, for example +63 900 000 0000.')
         return number
     owner,business=phone(value['owner'],True),phone(value['business'])
     group=value['group'].strip() if isinstance(value['group'],str) else None
