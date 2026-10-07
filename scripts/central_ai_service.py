@@ -126,9 +126,14 @@ def bootstrap(mode, config):
         try:
             profiles = list(preserved_profiles(settings))
         except Exception as e:
-            print(f'Preserved profiles failed: {e}; using fallback leo', file=sys.stderr)
-            profiles = [{'native_profile': 'leo'}]
-        all_homes = [Path('/opt/data')] + [Path('/opt/data/profiles') / item['native_profile'] for item in profiles]
+            print(f'Preserved profiles failed: {e}; using fallback leo and sarah', file=sys.stderr)
+            profiles = [{'native_profile': 'leo'}, {'native_profile': 'sarah'}]
+        root_data = Path('/opt/data')
+        root_data.mkdir(parents=True, exist_ok=True)
+        root_config = root_data / 'config.yaml'
+        if not root_config.is_file():
+            root_config.write_text('plugins:\n  enabled: []\n', encoding='utf-8')
+        all_homes = [Path('/opt/data/profiles') / item['native_profile'] for item in profiles]
         for home in all_homes:
             home.mkdir(parents=True, exist_ok=True)
             path = home / 'config.yaml'
