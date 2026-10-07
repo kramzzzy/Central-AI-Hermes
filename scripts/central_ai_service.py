@@ -116,13 +116,14 @@ def bootstrap(mode, config):
         except Exception as e:
             print(f'Preserved profiles failed: {e}; using fallback leo', file=sys.stderr)
             profiles = [{'native_profile': 'leo'}]
-        for item in profiles:
-            home = Path('/opt/data/profiles') / item['native_profile']
+        all_homes = [Path('/opt/data')] + [Path('/opt/data/profiles') / item['native_profile'] for item in profiles]
+        for home in all_homes:
             home.mkdir(parents=True, exist_ok=True)
             path = home / 'config.yaml'
             if not path.is_file():
                 path.write_text('plugins:\n  enabled: []\n', encoding='utf-8')
             install_memory(home)
+            install_whatsapp(home)
             with profile_lock(home):
                 original = path.read_text(encoding='utf-8')
                 native = yaml.safe_load(original) or {}
