@@ -1,0 +1,164 @@
+# ==============================================================================
+# BOX 1: Central AI Hermes Intelligence Runtime & Superpowers Stack
+# Deployed via Coolify
+# Services: Hermes Engine (:8642) + Hindsight Memory (:8888) + Laya Router (:8001)
+#           + WhatsApp Connector (:8085->:8080) + Scrapling (:8008)
+# ==============================================================================
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Hermes AI Reasoning Engine (:8642)
+  # ----------------------------------------------------------------------------
+  hermes:
+    build:
+      context: .
+      dockerfile: deploy/hermes/Dockerfile
+    image: central-ai-backend:latest
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    ports:
+      - "8642:8642"
+    environment:
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
+      HERMES_BRIDGE_BIND: "0.0.0.0"
+      HERMES_PORT: "8642"
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      HERMES_CHAT_PROVIDER: ${HERMES_CHAT_PROVIDER:-openrouter}
+      HERMES_CHAT_MODEL: ${HERMES_CHAT_MODEL:-nousresearch/hermes-4-405b}
+      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-deepseek/deepseek-v4.1-flash}
+      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-meta-llama/llama-3.3-70b-instruct}
+      HINDSIGHT_URL: http://hindsight:8888
+      LAYA_URL: http://laya:8000
+      SCRAPLING_URL: http://scrapling:8008
+      FISH_API_KEY: ${FISH_API_KEY:-}
+      FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
+      HOME: /opt/data
+    volumes:
+      - hermes-profiles:/opt/data
+    networks:
+      - hermes-net
+
+  # ----------------------------------------------------------------------------
+  # 2. Superpower 1: Hindsight Long-Term Vector Memory (:8888)
+  # ----------------------------------------------------------------------------
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:0.10.2-slim
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      HINDSIGHT_API_LLM_PROVIDER: openai
+      HINDSIGHT_API_LLM_BASE_URL: https://openrouter.ai/api/v1
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_MODEL:-deepseek/deepseek-chat-v3.1}
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-${OPENROUTER_API_KEY:-}}
+      HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
+      HINDSIGHT_API_EMBEDDINGS_PROVIDER: openrouter
+      HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL: ${HINDSIGHT_EMBEDDINGS_MODEL:-openai/text-embedding-3-small}
+      HINDSIGHT_API_OPENROUTER_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-${OPENROUTER_API_KEY:-}}
+      HINDSIGHT_API_RERANKER_PROVIDER: rrf
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - hindsight-data:/var/lib/hindsight
+    networks:
+      - hermes-net
+
+  # ----------------------------------------------------------------------------
+  # 3. Superpower 2: Laya Fast Intent Classifier & Decision Router (:8001:8000)
+  # ----------------------------------------------------------------------------
+  laya:
+    build:
+      context: .
+      dockerfile: deploy/laya/Dockerfile
+    image: central-ai-laya:latest
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    networks:
+      - hermes-net
+
+  # ----------------------------------------------------------------------------
+  # 4. Superpower 3: WhatsApp Connector (Meowcaller VoIP & Chat Telephony) (:8085:8080)
+  # ----------------------------------------------------------------------------
+  whatsapp-connector:
+    build:
+      context: .
+      dockerfile: deploy/whatsapp/Dockerfile.caller
+    image: central-ai-whatsapp-caller:latest
+    restart: unless-stopped
+    ports:
+      - "8085:8080"
+    environment:
+      LEO_VOICE_URL: "http://voice:8081"
+      LEO_AUDIO_URL: "http://voice:8082"
+      LEO_TEXT_CHAT_ENABLED: "true"
+      WHATSAPP_CONVERSATION_MODE: "fish"
+      LEO_ENGINE_ENABLED_FILE: /data/remote-engine-enabled
+    volumes:
+      - phone-state:/data
+    networks:
+      hermes-net:
+        aliases:
+          - caller
+          - whatsapp-connector
+
+  # ----------------------------------------------------------------------------
+  # 5. Superpower 4: Scrapling Stealth Web Scraper & Cloudflare Bypass (:8008)
+  # ----------------------------------------------------------------------------
+  scrapling:
+    image: ghcr.io/d4vinci/scrapling:latest
+    restart: unless-stopped
+    ports:
+      - "8008:8008"
+    command: ["mcp", "--http", "--host", "0.0.0.0", "--port", "8008", "--no-auth"]
+    networks:
+      - hermes-net
+
+  # ----------------------------------------------------------------------------
+  # 6. Superpower 5: Voice Pipeline (:8081 / :8082) - WhatsApp Call Voice (Jarvis)
+  # ----------------------------------------------------------------------------
+  voice:
+    build:
+      context: .
+      dockerfile: deploy/hermes/Dockerfile
+    image: central-ai-backend:latest
+    entrypoint:
+      - /opt/hermes/.venv/bin/python
+      - /opt/os-adapter/scripts/central_ai_service.py
+      - voice
+    user: 10000:10000
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+      - "8082:8082"
+    environment:
+      HERMES_REPO: /opt/hermes
+      HERMES_HOME: /opt/data/profiles/leo
+      ORBIT_HERMES_PROFILE: leo
+      HOME: /data/voice
+      LEO_TEXT_CHAT_ENABLED: "true"
+      WHATSAPP_CONVERSATION_MODE: "fish"
+      FISH_API_KEY: ${FISH_API_KEY:-}
+      FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - hermes-profiles:/opt/data
+      - phone-state:/data
+    networks:
+      hermes-net:
+        aliases:
+          - voice
+
+# ------------------------------------------------------------------------------
+# Persistent Volumes
+# ------------------------------------------------------------------------------
+volumes:
+  hermes-profiles:
+  hindsight-data:
+  phone-state:
+
+networks:
+  hermes-net:
+    driver: bridge
