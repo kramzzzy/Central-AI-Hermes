@@ -123,7 +123,7 @@ services:
     build:
       context: .
       dockerfile: deploy/hermes/Dockerfile
-    image: central-ai-backend:latest
+    image: central-ai-voice:latest
     entrypoint:
       - /opt/hermes/.venv/bin/python
       - /opt/os-adapter/scripts/central_ai_service.py
