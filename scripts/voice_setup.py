@@ -33,9 +33,10 @@ def validate(value):
             raise ValueError('Economy voice does not need a provider key')
         return
     key = value.get('api_key', '')
-    if not isinstance(key, str) or len(key) > 4096 or (key and not re.fullmatch(r'[\x21-\x7e]+', key)):
+    if key and (not isinstance(key, str) or len(key) > 4096 or not re.fullmatch(r'[\x21-\x7e]+', key)):
         raise ValueError('Enter a valid Fish API key')
-    if not isinstance(value.get('voice_id'), str) or not re.fullmatch(r'[a-fA-F0-9]{32}', value['voice_id']):
+    voice_id = value.get('voice_id')
+    if voice_id is not None and (not isinstance(voice_id, str) or not re.fullmatch(r'[a-fA-F0-9]{32}', voice_id)):
         raise ValueError('Enter the 32-character Fish Voice ID')
 
 
@@ -49,9 +50,12 @@ def configure(settings, value):
     changes = {**saved, 'CENTRAL_AI_CALL_SPEECH': 'piper' if value['provider'] == 'native' else 'fish'}
     if value['provider'] == 'fish':
         key = value.get('api_key') or provider.config.get('FISH_API_KEY', '')
+        voice_id = value.get('voice_id') or provider.config.get('FISH_VOICE_ID', '')
         if not key:
-            raise ValueError('Enter your Fish API key')
-        changes.update(FISH_API_KEY=key, FISH_VOICE_ID=value['voice_id'],
+            raise ValueError('Fish API key is not configured in backend')
+        if not voice_id:
+            raise ValueError('Fish Voice ID is not configured in backend')
+        changes.update(FISH_API_KEY=key, FISH_VOICE_ID=voice_id,
                        FISH_VOICE_NAME='Fish Audio', FISH_OS_CALL_ENGINE='stream', FISH_ASR_ENABLED='true')
     provider.config.update(changes)
     if not provider.status().get('realtime'):
