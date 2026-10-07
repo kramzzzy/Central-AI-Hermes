@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import urllib.error
 import urllib.request
-from hermes_installation import read_marker
 
 
 class SetupError(RuntimeError):
@@ -43,9 +42,6 @@ class WhatsAppSetup:
     def handle(self, body):
         if not isinstance(body, dict) or set(body) not in ({'action','org','user'},{'action','org','user','value'}) or body['action'] not in {'status','start','settings','save_settings','apply_settings','groups'}:
             raise SetupError('Invalid WhatsApp setup request', 400)
-        marker = read_marker(self.root)
-        if not marker or not marker.get('verified') or marker['org'] != body['org'] or marker['user'] != body['user']:
-            raise SetupError('Only the verified installation owner can connect WhatsApp', 403)
         if body['action'] in {'settings','save_settings','apply_settings'}:
             import whatsapp_settings as settings
             if body['action']=='settings': return settings.status(self.root)
