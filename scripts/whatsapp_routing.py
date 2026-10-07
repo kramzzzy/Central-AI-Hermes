@@ -19,13 +19,31 @@ def routing():
                 pass
     if ROUTING_FILE.is_file():
         return json.loads(ROUTING_FILE.read_text())
-    # Retained standalone fixtures; managed deployments always provision the file.
+    # Clean default routing; dynamic contacts are configured by owner
     import os
-    return {'owner':'61423947456','business':'639267200480','group':os.environ.get('LEO_WHATSAPP_GROUP',''),
-        'group_profile':'team-whatsapp-social','contacts':[
-        {'number':'61423947456','name':'Michael Vazquez','role':'owner','route':'michael','profile':'team-whatsapp-michael-business','text_profile':os.environ.get('LEO_MICHAEL_TEXT_PROFILE','team-whatsapp-michael-business'),'calls':True,'inbound':True,'outbound':True},
-        {'number':'639267200480','name':'Mark Tech','role':'business','route':'mark','profile':'leo','text_profile':'leo-whatsapp-text','calls':True,'inbound':True,'outbound':True},
-        {'number':'639606637666','name':'May Sambitan','role':'accounts','route':'contact-639606637666','profile':'leo','text_profile':'leo-whatsapp-text','calls':True,'inbound':True,'outbound':True}]}
+    owner = os.environ.get('LEO_WHATSAPP_OWNER', '')
+    business = os.environ.get('LEO_WHATSAPP_BUSINESS_CONTACT', '')
+    group = os.environ.get('LEO_WHATSAPP_GROUP', '')
+    contacts = []
+    if owner:
+        contacts.append({
+            'number': owner, 'name': 'Owner', 'role': 'owner', 'route': 'owner',
+            'profile': 'leo', 'text_profile': 'leo-whatsapp-text',
+            'calls': True, 'inbound': True, 'outbound': True
+        })
+    if business:
+        contacts.append({
+            'number': business, 'name': 'Business contact', 'role': 'business', 'route': 'business',
+            'profile': 'leo', 'text_profile': 'leo-whatsapp-text',
+            'calls': True, 'inbound': True, 'outbound': True
+        })
+    return {
+        'owner': owner,
+        'business': business,
+        'group': group,
+        'group_profile': 'team-whatsapp-social',
+        'contacts': contacts
+    }
 
 def text_routes():
     value = routing()
@@ -47,6 +65,4 @@ def caller(number):
     raise PermissionError('Caller is not admitted')
 
 def caller_data(base, number):
-    if number == '639267200480': return base
-    if number == '61423947456': return base / 'business-michael'
-    return base / ('contact-' + number)
+    return base / ('contact-' + str(number))

@@ -9,8 +9,8 @@ export function whatsappRouting(env) {
       );
     return number;
   };
-  const owner = phone(env.WHATSAPP_OWNER === undefined ? "61423947456" : env.WHATSAPP_OWNER);
-  const business = phone(env.WHATSAPP_BUSINESS_CONTACT);
+  const owner = phone(env.WHATSAPP_OWNER || "");
+  const business = phone(env.WHATSAPP_BUSINESS_CONTACT || "");
   const group = String(env.WHATSAPP_GROUP || "").trim();
   if (group && !/^[0-9]{5,30}(?:-[0-9]{5,20})?@g\.us$/.test(group))
     throw new Error("Use a WhatsApp group ID ending in @g.us.");
@@ -20,14 +20,14 @@ export function whatsappRouting(env) {
   const contacts = owner
     ? [{
         number: owner,
-        name: owner === "61423947456" ? "Michael Vazquez" : owner === "639267200480" ? "Mark Tech" : "Owner",
+        name: "Owner",
         role: "owner",
       }]
     : [];
   if (business)
     contacts.push({
       number: business,
-      name: business === "61423947456" ? "Michael Vazquez" : business === "639267200480" ? "Mark Tech" : "Business contact",
+      name: "Business contact",
       role: "business",
     });
   for (const item of team) {
@@ -50,29 +50,12 @@ export function whatsappRouting(env) {
   if (new Set(contacts.map((c) => c.number)).size !== contacts.length)
     throw new Error("Each WhatsApp number can be assigned only once.");
   const bindings = contacts.map((c) => {
-    // Preserve the two existing private identities, without reassigning their histories.
-    const legacy =
-      c.number === "639267200480"
-        ? "mark"
-        : c.number === "61423947456"
-          ? "michael"
-          : null;
-    const profile =
-      legacy === "mark"
-        ? "leo"
-        : legacy === "michael"
-          ? "team-whatsapp-michael-business"
-          : "team-phone-" + c.number;
+    const profile = c.role === "owner" ? "leo" : "team-phone-" + c.number;
     return {
       ...c,
-      route: legacy || "contact-" + c.number,
+      route: c.role === "owner" ? "owner" : "contact-" + c.number,
       profile,
-      text_profile:
-        legacy === "mark"
-          ? "leo-whatsapp-text"
-          : legacy === "michael"
-            ? "team-whatsapp-michael-text"
-            : profile + "-text",
+      text_profile: profile + "-text",
       calls: c.calls !== undefined ? Boolean(c.calls) : c.role !== "team",
     };
   });
