@@ -34,7 +34,7 @@ RUN ln -s /opt/os-adapter/scripts /opt/setup \
 ADD --checksum=sha256:1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3 https://raw.githubusercontent.com/snakers4/silero-vad/1e261b036686cd0017d500ee96acd1c4ba572a9d/src/silero_vad/data/silero_vad.onnx /opt/os-adapter/scripts/silero-vad.onnx
 ENV CENTRAL_AI_APP_OS_PLUGIN=1 PYTHONPATH=/opt/hermes:/opt/os-adapter/scripts:/opt/os-adapter
 RUN uv pip check --python /opt/hermes/.venv/bin/python && /opt/hermes/.venv/bin/python scripts/check-backend-build.py \
-    && mkdir -p .runtime && chmod 644 scripts/silero-vad.onnx \
-    && chown -R 10000:10000 /opt/os-adapter
+    && mkdir -p .runtime /opt/data/logs && chmod 644 scripts/silero-vad.onnx \
+    && chown -R 10000:10000 /opt/os-adapter /opt/data
 USER 10000:10000
 ENTRYPOINT ["/opt/hermes/.venv/bin/python", "/opt/os-adapter/scripts/central_ai_service.py", "hermes"]
