@@ -56,6 +56,7 @@ def install_whatsapp(home):
 def install_memory(home):
     """Ship the official pinned plugin in the image; no old profile export."""
     import shutil
+    import yaml
     from app_os_plugin import profile_lock
     with profile_lock(home) as home:
         source = Path('/opt/hindsight-plugin')
@@ -66,6 +67,17 @@ def install_memory(home):
             raise RuntimeError('Plugin storage must be local')
         shutil.copytree(source, target, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns('.git', '__pycache__', 'docs', 'tests'))
+        path = home / 'config.yaml'
+        if path.is_file():
+            try:
+                cfg = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+                plugins = cfg.setdefault('plugins', {})
+                enabled = plugins.setdefault('enabled', [])
+                if 'hindsight' not in enabled:
+                    enabled.append('hindsight')
+                atomic_write(path, yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+            except Exception:
+                pass
 
 
 def get_standalone_config():
