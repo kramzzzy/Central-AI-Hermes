@@ -88,6 +88,8 @@ services:
       dockerfile: deploy/whatsapp/Dockerfile.caller
     image: central-ai-whatsapp-caller:latest
     restart: unless-stopped
+    depends_on:
+      - voice
     ports:
       - "8085:8080"
     environment:
@@ -130,6 +132,8 @@ services:
       - voice
     user: 10000:10000
     restart: unless-stopped
+    depends_on:
+      - hermes
     ports:
       - "8081:8081"
       - "8082:8082"
