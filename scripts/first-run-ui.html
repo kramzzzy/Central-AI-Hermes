@@ -1,13 +1,224 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Set up your workspace · Central AI</title><link rel="stylesheet" href="/setup.css"><script src="/setup.js" defer></script></head>
-<body><main><div class="brand">Central OS <span>Central AI</span></div><h1>Set up your workspace</h1><p>Connect your database and model account. Your owner account and assistants come next.</p>
-<nav aria-label="Setup progress"><span data-step="server">1 · Server</span><span data-step="database">2 · Supabase</span><span data-step="model">3 · Model</span><span data-step="review">4 · Install</span></nav>
-<div id="notice" role="status" aria-live="polite"></div>
-<form id="unlock"><h2>Private setup access</h2><label>Setup token<input id="access" type="password" autocomplete="off" required></label><p class="help">In Coolify, open this application → Environment Variables → SERVICE_PASSWORD_SETUP.</p><button>Open setup</button></form>
-<form id="server" hidden><h2>Connect your server</h2><p>Connect this new Coolify resource once. Setup will save your settings and launch the app automatically.</p><label>Coolify HTTPS URL<input name="url" type="url" placeholder="https://server.example.com" required></label><label>Application ID<input name="application" placeholder="From the application’s Coolify URL" required></label><label>Coolify API token<input name="token" type="password" autocomplete="off" required></label><p class="help">Coolify → Keys & Tokens → API tokens. Allow read, read:sensitive, write and deploy. This token stays on your server.</p><button>Connect server</button></form>
-<form id="database" hidden><h2>Connect Supabase</h2><label>Where is Supabase?<select name="kind" id="kind"><option value="cloud">Supabase Cloud — my own project</option><option value="server">Supabase on my server</option></select></label><label>Project HTTPS URL<input name="url" id="project-url" type="url" placeholder="https://your-project.supabase.co" required></label><label>Public / publishable key<input name="publicKey" type="password" autocomplete="off" required></label><label>Private service-role / secret key<input name="adminKey" type="password" autocomplete="off" required></label><p class="help">Find both keys in your Supabase project’s API settings. The private key is stored server-side.</p>
-<fieldset><legend>Database connection</legend><p id="database-hint" class="help">Supabase → Connect → Session pooler. Copy its host and username below. Use port 5432.</p><label>Database host<input name="host" placeholder="aws-0-region.pooler.supabase.com" required></label><div class="row"><label>Username<input name="username" value="postgres" required></label><label>Database name<input name="database" value="postgres" required></label></div><label>Database password<input name="password" type="password" autocomplete="new-password" required></label><input name="port" value="5432" type="hidden"><p class="help">We build the PostgreSQL connection string for you. Existing App OS databases are protected from replacement.</p></fieldset><div class="actions"><button type="button" class="secondary" data-back="server">Back</button><button>Test & save database</button></div></form>
-<form id="model" hidden><h2>Connect your model account</h2><label>Assistant provider<select name="provider" id="provider"><option value="openrouter">OpenRouter — API key</option><option value="openai">OpenAI — API key</option><option value="openai-codex">ChatGPT / Codex — subscription sign-in</option><option value="anthropic">Anthropic — API key</option><option value="gemini">Google Gemini — API key</option></select></label><p id="provider-help" class="help"></p><label id="api-key-label">Provider API key<input name="apiKey" type="password" autocomplete="off"></label><div id="subscription" hidden><button type="button" id="signin">Sign in with ChatGPT</button><p id="signin-status" role="status"></p><a id="signin-link" target="_blank" rel="noopener noreferrer" hidden>Open ChatGPT sign-in</a><p id="signin-code"></p><p class="help">Sign in using the link and one-time code. Account eligibility and provider usage limits apply. We never ask for your ChatGPT password.</p></div><label>Assistant model ID<input name="model" id="model-id" value="openai/gpt-4.1-mini" required></label><label id="openrouter-label" hidden>OpenRouter key for calls and memory<input name="openrouterKey" type="password" autocomplete="off"></label><p class="help">The assistant uses your selected provider. Streaming calls and memory currently use OpenRouter separately. Economy speech runs on your VPS.</p><div class="actions"><button type="button" class="secondary" data-back="database">Back</button><button>Verify & save provider</button></div></form>
-<section id="review" hidden><h2>Ready to install</h2><p>Database credentials and model access have been checked. Model catalog access does not confirm available credit or a successful inference request.</p><ul><li>Create the application’s private tables and restricted database login.</li><li>Prepare your assistants and local economy voice.</li><li>Continue to create your owner account and name your assistants.</li></ul><p>Google, WhatsApp and Fish/Jarvis can be connected later.</p><div class="actions"><button type="button" class="secondary" data-back="model">Back</button><button id="install">Save settings & install</button></div></section>
-<section id="deploying" hidden><h2>Installing your workspace</h2><p>Your settings are saved in Coolify. The first build downloads the assistant and local voice models and can take several minutes.</p><p id="deployment-status" role="status">Waiting for the app to become ready…</p><button id="retry" hidden>Retry installation</button><a id="continue" href="/setup" hidden>Continue to owner setup →</a><p class="help">Keep your setup token for owner registration. If installation fails, check this resource’s deployment status in Coolify before retrying.</p></section>
-</main></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Set up your workspace · Central AI</title>
+    <link rel="stylesheet" href="/setup.css">
+    <script src="/setup.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        Central OS <span>Central AI</span>
+      </div>
+
+      <h1>Set up your workspace</h1>
+      <p>Connect your database and model account. Your owner account and assistants come next.</p>
+
+      <nav aria-label="Setup progress">
+        <span data-step="server">1 · Server</span>
+        <span data-step="database">2 · Supabase</span>
+        <span data-step="model">3 · Model</span>
+        <span data-step="review">4 · Install</span>
+      </nav>
+
+      <div id="notice" role="status" aria-live="polite"></div>
+
+      <!-- Step 0: Unlock Token -->
+      <form id="unlock">
+        <h2>Private setup access</h2>
+        <label>
+          Setup token
+          <input id="access" type="password" autocomplete="off" required>
+        </label>
+        <p class="help">
+          In Coolify, open this application → Environment Variables → SERVICE_PASSWORD_SETUP.
+        </p>
+        <button>Open setup</button>
+      </form>
+
+      <!-- Step 1: Connect Coolify Server -->
+      <form id="server" hidden>
+        <h2>Connect your server</h2>
+        <p>Connect this new Coolify resource once. Setup will save your settings and launch the app automatically.</p>
+        
+        <label>
+          Coolify HTTPS URL
+          <input name="url" type="url" placeholder="https://server.example.com" required>
+        </label>
+
+        <label>
+          Application ID
+          <input name="application" placeholder="From the application’s Coolify URL" required>
+        </label>
+
+        <label>
+          Coolify API token
+          <input name="token" type="password" autocomplete="off" required>
+        </label>
+
+        <p class="help">
+          Coolify → Keys & Tokens → API tokens. Allow read, read:sensitive, write and deploy. This token stays on your server.
+        </p>
+        <button>Connect server</button>
+      </form>
+
+      <!-- Step 2: Connect Supabase Database -->
+      <form id="database" hidden>
+        <h2>Connect Supabase</h2>
+        
+        <label>
+          Where is Supabase?
+          <select name="kind" id="kind">
+            <option value="cloud">Supabase Cloud — my own project</option>
+            <option value="server">Supabase on my server</option>
+          </select>
+        </label>
+
+        <label>
+          Project HTTPS URL
+          <input name="url" id="project-url" type="url" placeholder="https://your-project.supabase.co" required>
+        </label>
+
+        <label>
+          Public / publishable key
+          <input name="publicKey" type="password" autocomplete="off" required>
+        </label>
+
+        <label>
+          Private service-role / secret key
+          <input name="adminKey" type="password" autocomplete="off" required>
+        </label>
+
+        <p class="help">
+          Find both keys in your Supabase project’s API settings. The private key is stored server-side.
+        </p>
+
+        <fieldset>
+          <legend>Database connection</legend>
+          <p id="database-hint" class="help">
+            Supabase → Connect → Session pooler. Copy its host and username below. Use port 5432.
+          </p>
+
+          <label>
+            Database host
+            <input name="host" placeholder="aws-0-region.pooler.supabase.com" required>
+          </label>
+
+          <div class="row">
+            <label>
+              Username
+              <input name="username" value="postgres" required>
+            </label>
+            <label>
+              Database name
+              <input name="database" value="postgres" required>
+            </label>
+          </div>
+
+          <label>
+            Database password
+            <input name="password" type="password" autocomplete="new-password" required>
+          </label>
+
+          <input name="port" value="5432" type="hidden">
+
+          <p class="help">
+            We build the PostgreSQL connection string for you. Existing App OS databases are protected from replacement.
+          </p>
+        </fieldset>
+
+        <div class="actions">
+          <button type="button" class="secondary" data-back="server">Back</button>
+          <button>Test & save database</button>
+        </div>
+      </form>
+
+      <!-- Step 3: Connect Model Account -->
+      <form id="model" hidden>
+        <h2>Connect your model account</h2>
+
+        <label>
+          Assistant provider
+          <select name="provider" id="provider">
+            <option value="openrouter">OpenRouter — API key</option>
+            <option value="openai">OpenAI — API key</option>
+            <option value="openai-codex">ChatGPT / Codex — subscription sign-in</option>
+            <option value="anthropic">Anthropic — API key</option>
+            <option value="gemini">Google Gemini — API key</option>
+          </select>
+        </label>
+
+        <p id="provider-help" class="help"></p>
+
+        <label id="api-key-label">
+          Provider API key
+          <input name="apiKey" type="password" autocomplete="off">
+        </label>
+
+        <div id="subscription" hidden>
+          <button type="button" id="signin">Sign in with ChatGPT</button>
+          <p id="signin-status" role="status"></p>
+          <a id="signin-link" target="_blank" rel="noopener noreferrer" hidden>Open ChatGPT sign-in</a>
+          <p id="signin-code"></p>
+          <p class="help">
+            Sign in using the link and one-time code. Account eligibility and provider usage limits apply. We never ask for your ChatGPT password.
+          </p>
+        </div>
+
+        <label>
+          Assistant model ID
+          <input name="model" id="model-id" value="openai/gpt-4.1-mini" required>
+        </label>
+
+        <label id="openrouter-label" hidden>
+          OpenRouter key for calls and memory
+          <input name="openrouterKey" type="password" autocomplete="off">
+        </label>
+
+        <p class="help">
+          The assistant uses your selected provider. Streaming calls and memory currently use OpenRouter separately. Economy speech runs on your VPS.
+        </p>
+
+        <div class="actions">
+          <button type="button" class="secondary" data-back="database">Back</button>
+          <button>Verify & save provider</button>
+        </div>
+      </form>
+
+      <!-- Step 4: Review & Install -->
+      <section id="review" hidden>
+        <h2>Ready to install</h2>
+        <p>Database credentials and model access have been checked. Model catalog access does not confirm available credit or a successful inference request.</p>
+        
+        <ul>
+          <li>Create the application’s private tables and restricted database login.</li>
+          <li>Prepare your assistants and local economy voice.</li>
+          <li>Continue to create your owner account and name your assistants.</li>
+        </ul>
+
+        <p>Google, WhatsApp and Fish/Jarvis can be connected later.</p>
+
+        <div class="actions">
+          <button type="button" class="secondary" data-back="model">Back</button>
+          <button id="install">Save settings & install</button>
+        </div>
+      </section>
+
+      <!-- Step 5: Deploying Status -->
+      <section id="deploying" hidden>
+        <h2>Installing your workspace</h2>
+        <p>Your settings are saved in Coolify. The first build downloads the assistant and local voice models and can take several minutes.</p>
+        
+        <p id="deployment-status" role="status">Waiting for the app to become ready…</p>
+        <button id="retry" hidden>Retry installation</button>
+        <a id="continue" href="/setup" hidden>Continue to owner setup →</a>
+        
+        <p class="help">
+          Keep your setup token for owner registration. If installation fails, check this resource’s deployment status in Coolify before retrying.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
