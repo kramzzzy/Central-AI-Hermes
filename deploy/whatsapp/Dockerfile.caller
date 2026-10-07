@@ -4,17 +4,17 @@ WORKDIR /src
 RUN git clone --filter=blob:none --no-checkout https://github.com/purpshell/meowcaller.git . && git checkout c48c3e2a243c672c942cbf0c941d14161720d540 && test "$(git rev-parse HEAD)" = c48c3e2a243c672c942cbf0c941d14161720d540
 COPY deploy/whatsapp/meowcaller.patch /tmp/meowcaller.patch
 RUN sed -i 's/\r$//' /tmp/meowcaller.patch && git apply --check /tmp/meowcaller.patch && git apply /tmp/meowcaller.patch
-COPY scripts/meowcaller-test/*.go /owned/
-RUN mkdir -p cmd/leo-call-test && for file in /owned/*.go; do if grep -q '^package main' "$file"; then cp "$file" cmd/leo-call-test/; else cp "$file" .; fi; done
-RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go test -timeout=60s -mod=readonly ./cmd/leo-call-test .
-RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -mod=readonly -trimpath -o /call-test ./cmd/leo-call-test
+COPY scripts/whatsapp-caller/*.go /owned/
+RUN mkdir -p cmd/whatsapp-caller && for file in /owned/*.go; do if grep -q '^package main' "$file"; then cp "$file" cmd/whatsapp-caller/; else cp "$file" .; fi; done
+RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go test -timeout=60s -mod=readonly ./cmd/whatsapp-caller .
+RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -mod=readonly -trimpath -o /whatsapp-caller ./cmd/whatsapp-caller
 RUN mkdir -p -m 0777 /data && chown 10000:10000 /data
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=build /call-test /call-test
+COPY --from=build /whatsapp-caller /whatsapp-caller
 COPY --from=build /src/LICENSE /licenses/meowcaller-MIT.txt
 COPY --from=build --chown=10000:10000 /data /data
 USER 10000:10000
 
 WORKDIR /data
-ENTRYPOINT ["/call-test"]
+ENTRYPOINT ["/whatsapp-caller"]

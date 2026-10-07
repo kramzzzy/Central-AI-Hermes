@@ -18,7 +18,7 @@ function excluded(path) {
   return /(^|\/)(?:\.env(?:\..*)?|\.runtime|\.git|__pycache__|node_modules|tests|test-results)(\/|$)/.test(path) ||
     /\.(?:pyc|clixml|tsbuildinfo|log)$/.test(path) ||
     /(^|\/)(?:test_|.*-fixture\.|.*-integration\.|.*-smoke\.)/.test(path) ||
-    (path.startsWith("scripts/meowcaller-test/") && !path.endsWith(".go"));
+    (path.startsWith("scripts/whatsapp-caller/") && !path.endsWith(".go"));
 }
 async function copy(path) {
   const source = join(root, path), metadata = await lstat(source);
