@@ -41,6 +41,22 @@ func pairingHandler(keyPath, marker string, connected func() bool) http.HandlerF
  }
 }
 
+func disconnectHandler(keyPath string, onDisconnect func() error) http.HandlerFunc {
+ return func(w http.ResponseWriter,r *http.Request) {
+  w.Header().Set("Cache-Control","no-store")
+  if r.Method!=http.MethodPost {w.WriteHeader(http.StatusMethodNotAllowed);return}
+  key := getSetupKey(keyPath)
+  if len(key)<32 {http.Error(w,"Pairing authentication unavailable",503);return}
+  expected:="Bearer "+key
+  if !hmac.Equal([]byte(r.Header.Get("Authorization")),[]byte(expected)) {http.Error(w,"Unauthorized",401);return}
+  if onDisconnect!=nil {
+   if err:=onDisconnect();err!=nil {http.Error(w,"Disconnect failed: "+err.Error(),500);return}
+  }
+  w.Header().Set("Content-Type","application/json")
+  json.NewEncoder(w).Encode(map[string]bool{"disconnected":true})
+ }
+}
+
 func serverReady(url string) bool {
  client:=&http.Client{Timeout:5_000_000_000}
  response,err:=client.Get(url)

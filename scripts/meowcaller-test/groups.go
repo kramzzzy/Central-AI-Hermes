@@ -5,7 +5,6 @@ import (
  "crypto/hmac"
  "encoding/json"
  "net/http"
- "os"
  "time"
  wa "github.com/polymorfa/hypermeow"
 )

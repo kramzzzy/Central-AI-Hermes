@@ -136,6 +136,18 @@ func main() {
  store.DeviceProps.Os=ptr("Leo WhatsApp Voice")
  socket:=wa.NewClient(device,walog.Zerolog(logger))
  http.HandleFunc("/setup/groups",groupsHandler(socket))
+ http.HandleFunc("/pairing/disconnect",disconnectHandler("/run/secrets/whatsapp_setup_key",func()error{
+  current.Lock();current.State="logged_out";current.code="";current.Unlock()
+  go func(){
+   if socket.Store!=nil {
+    _=socket.Store.Delete(ctx)
+    socket.Store.ID=nil
+   }
+   socket.Disconnect()
+   go connectPairedDevice(ctx,socket)
+  }()
+  return nil
+ }))
  if err:=installTextBridge(ctx,socket,"/data/voice-key");err!=nil {log.Fatal(err)}
  callerLogger:=zerolog.New(callProgressWriter{}).Level(zerolog.InfoLevel)
  caller:=meow.NewClient(socket,meow.WithLogger(callerLogger))
@@ -207,7 +219,17 @@ func main() {
     if err:=socket.SendPresence(ctx,types.PresenceAvailable);err!=nil {log.Print("call presence announcement failed")}
    }()
   case *events.Disconnected:current.State="reconnecting"
-  case *events.LoggedOut:current.State="logged_out";current.code="" }
+  case *events.LoggedOut:
+   current.State="logged_out";current.code=""
+   go func(){
+    if socket.Store!=nil {
+     _=socket.Store.Delete(ctx)
+     socket.Store.ID=nil
+    }
+    socket.Disconnect()
+    go connectPairedDevice(ctx,socket)
+   }()
+  }
  })
  caller.OnIncomingCall(func(call *meow.Call){
   peer:=call.Peer().ToNonAD();resolved:=peer.User

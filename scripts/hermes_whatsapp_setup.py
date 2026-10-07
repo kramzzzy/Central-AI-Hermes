@@ -55,7 +55,7 @@ class WhatsAppSetup:
             raise SetupError('WhatsApp connection is unavailable') from None
 
     def handle(self, body):
-        if not isinstance(body, dict) or set(body) not in ({'action','org','user'},{'action','org','user','value'}) or body['action'] not in {'status','start','settings','save_settings','apply_settings','groups'}:
+        if not isinstance(body, dict) or set(body) not in ({'action','org','user'},{'action','org','user','value'}) or body['action'] not in {'status','start','disconnect','settings','save_settings','apply_settings','groups'}:
             raise SetupError('Invalid WhatsApp setup request', 400)
         if body['action'] in {'settings','save_settings','apply_settings'}:
             import whatsapp_settings as settings
@@ -67,6 +67,17 @@ class WhatsAppSetup:
         if body['action']=='groups':
             return json.loads(self.fetch('/setup/groups',start=True))
         if body['action'] == 'start': self.fetch('/pairing/start', start=True)
+        if body['action'] == 'disconnect':
+            try:
+                self.fetch('/pairing/disconnect', start=True)
+            except Exception:
+                pass
+            phone_dir = Path('/data')
+            for f in [phone_dir / 'remote-engine-enabled', phone_dir / 'call-request.json']:
+                if f.is_file():
+                    try: f.unlink()
+                    except Exception: pass
+            return {'state': 'logged_out', 'connected': False, 'voice_ready': False}
         state = json.loads(self.fetch('/status'))
         if not isinstance(state, dict): raise SetupError('Invalid WhatsApp status')
         allowed = {'starting', 'standby', 'pairing', 'connected', 'reconnecting', 'qr_timeout', 'logged_out'}
