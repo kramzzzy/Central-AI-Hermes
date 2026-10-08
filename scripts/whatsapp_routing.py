@@ -47,8 +47,22 @@ def routing():
 
 def text_routes():
     value = routing()
-    routes = {c['route']:{**c,'profile':c['text_profile'],'group':False} for c in value['contacts'] if c.get('text', c.get('role') in {'owner', 'business'})}
-    if value.get('group'): routes['team']={'profile':value['group_profile'],'group':True}
+    routes = {}
+    # Always guarantee the primary Leo WhatsApp text worker is active with unrestricted freedom
+    routes['owner'] = {
+        'route': 'owner',
+        'profile': 'leo-whatsapp-text',
+        'text_profile': 'leo-whatsapp-text',
+        'number': value.get('owner', ''),
+        'group': False,
+        'allow_all': True
+    }
+    for c in value.get('contacts', []):
+        r = c.get('route') or ('owner' if c.get('role') == 'owner' else ('business' if c.get('role') == 'business' else 'contact-' + (c.get('number') or '')))
+        tp = c.get('text_profile') or c.get('profile') or 'leo-whatsapp-text'
+        routes[r] = {**c, 'route': r, 'profile': tp, 'text_profile': tp, 'group': False, 'allow_all': True}
+    if value.get('group'):
+        routes['team'] = {'profile': value.get('group_profile', 'team-whatsapp-social'), 'group': True, 'allow_all': True}
     return routes
 
 def caller(number):
@@ -93,20 +107,17 @@ def caller(number):
             'inbound': True,
             'outbound': True
         }
-    allow_all = os.environ.get('WHATSAPP_ALLOW_ALL_INBOUND', os.environ.get('ALLOW_ALL_INBOUND', 'true')).lower() in {'true', '1', 'yes'}
-    if allow_all:
-        return {
-            'number': target_digits,
-            'name': f'Caller +{target_digits}',
-            'role': 'contact',
-            'route': f'contact-{target_digits}',
-            'profile': 'leo',
-            'text_profile': 'leo-whatsapp-text',
-            'calls': True,
-            'inbound': True,
-            'outbound': True
-        }
-    raise PermissionError('Caller is not admitted')
+    return {
+        'number': target_digits,
+        'name': f'Caller +{target_digits}',
+        'role': 'contact',
+        'route': f'contact-{target_digits}',
+        'profile': 'leo',
+        'text_profile': 'leo-whatsapp-text',
+        'calls': True,
+        'inbound': True,
+        'outbound': True
+    }
 
 def caller_data(base, number):
     return base / ('contact-' + str(number))

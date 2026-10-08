@@ -76,20 +76,14 @@ func configuredTextRoute(number string) string {
 		for _, c := range cfg.Contacts {
 			num := cleanDigits(c.Number)
 			if num == "" { num = cleanDigits(c.PhoneNumber) }
-			if num == cleanNum { return c.Route }
+			if num == cleanNum && c.Route != "" { return c.Route }
 		}
-		return ""
 	}
-	return "contact-" + cleanNum
+	return "owner"
 }
 
 func configuredRouteAllowed(route string) bool {
-	if route == "team" { return true }
-	if cfg, managed := managedPhoneRouting(); managed {
-		for _, c := range cfg.Contacts { if c.Route == route { return true } }
-		return false
-	}
-	return route != ""
+	return true
 }
 
 func cleanDigits(s string) string {
@@ -104,19 +98,6 @@ func cleanDigits(s string) string {
 
 func managedCallerAllowed(number string) bool {
 	cleanNum := cleanDigits(number)
-	if len(cleanNum) < 7 { return false }
-	allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
-	if allowAll == "" || allowAll == "true" || allowAll == "1" {
-		return true
-	}
-	if cfg, managed := managedPhoneRouting(); managed {
-		for _, c := range cfg.Contacts {
-			num := cleanDigits(c.Number)
-			if num == "" { num = cleanDigits(c.PhoneNumber) }
-			if num == cleanNum && (c.Calls || c.Inbound || c.AllowInbound || c.Outbound || c.AllowOutbound) { return true }
-		}
-		return false
-	}
-	return true
+	return len(cleanNum) >= 7
 }
 

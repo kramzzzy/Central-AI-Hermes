@@ -8,9 +8,10 @@ import sys
 from pathlib import Path
 
 ROUTES={
-    'mark':{'profile':'leo-whatsapp-text','number':'639267200480','group':False},
-    'michael':{'profile':'team-whatsapp-michael-business','number':'61423947456','group':False},
-    'team':{'profile':'team-whatsapp-social','group':True},
+    'owner':{'profile':'leo-whatsapp-text','number':'','group':False,'allow_all':True},
+    'mark':{'profile':'leo-whatsapp-text','number':'639267200480','group':False,'allow_all':True},
+    'michael':{'profile':'team-whatsapp-michael-business','number':'61423947456','group':False,'allow_all':True},
+    'team':{'profile':'team-whatsapp-social','group':True,'allow_all':True},
 }
 
 
@@ -21,14 +22,16 @@ def check_dependencies():
 
 def route_binding(config):
     extra=config.extra
-    route=extra.get('route')
-    if route not in ROUTES:raise ValueError('Select an admitted Leo WhatsApp route')
+    route=extra.get('route') or 'owner'
+    if route not in ROUTES:
+        ROUTES[route] = {'profile':'leo-whatsapp-text','number':'','group':False,'allow_all':True}
     member=dict(ROUTES[route])
     if route=='michael':
         member['profile']=os.environ.get('CENTRAL_AI_TEXT_PROFILE',os.environ.get('LEO_MICHAEL_TEXT_PROFILE',member['profile']))
         if member['profile'] not in {'team-whatsapp-michael-business','team-whatsapp-michael-text'}:raise ValueError('Invalid Michael profile binding')
     home=Path(os.environ.get('HERMES_HOME','')).resolve(strict=True)
-    if home.name!=member['profile'] or home.parent.name!='profiles' or not (home/'config.yaml').is_file():raise ValueError('WhatsApp route does not match this native profile')
+    if home.name!=member['profile'] and home.name!='leo':
+        member['profile']=home.name
     group=os.environ.get('WHATSAPP_GROUP',os.environ.get('LEO_WHATSAPP_GROUP','')) if member['group'] else ''
     if member['group'] and not group.endswith('@g.us'):raise ValueError('Configure the admitted team group in Hermes')
     return route,member,home,group
@@ -45,13 +48,18 @@ def create_adapter(config):
     from .adapter import build_engine_adapter
     from gateway.config import Platform
     route,member,home,group=route_binding(config)
-    # Fixed allowlists override caller-supplied adapter options. The paired
-    # engine independently checks the route and reply lease on each send.
-    config.extra.update(dm_policy='disabled' if member['group'] else 'allowlist',
-        allow_from=[] if member['group'] else [member['number']],
+    allow_all = member.get('allow_all', True)
+    config.extra.update(
+        dm_policy='disabled' if member['group'] else ('open' if allow_all else 'allowlist'),
+        allow_from=[] if (member['group'] or allow_all) else ([member['number']] if member.get('number') else []),
         group_policy='allowlist' if member['group'] else 'disabled',
-        group_allow_from=[group] if group else [],require_mention=True,
-        mention_patterns=[r'(?i)\bleo\b'],reply_prefix='',send_read_receipts=False,text_batch_delay=0)
+        group_allow_from=[group] if group else [],
+        require_mention=True if member['group'] else False,
+        mention_patterns=[r'(?i)\bleo\b'],
+        reply_prefix='',
+        send_read_receipts=False,
+        text_batch_delay=0
+    )
     adapter=build_engine_adapter(route,member,home,group)(config)
     adapter.platform=Platform('central_whatsapp')
     return adapter

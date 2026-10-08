@@ -82,32 +82,13 @@ func admittedCaller(peer, resolved string) string {
 	peerClean := cleanDigits(peer)
 	resolvedClean := cleanDigits(resolved)
 
-	allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
-	if allowAll == "" || allowAll == "true" || allowAll == "1" {
-		if len(resolvedClean) >= 7 { return resolvedClean }
-		if len(peerClean) >= 7 { return peerClean }
-	}
+	if len(resolvedClean) >= 7 { return resolvedClean }
+	if len(peerClean) >= 7 { return peerClean }
 
 	owner := cleanDigits(getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"))
 	if owner != "" && (peerClean == owner || resolvedClean == owner) {
 		return owner
 	}
-	business := cleanDigits(getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT"))
-	if business != "" && (peerClean == business || resolvedClean == business) {
-		return business
-	}
-	if cfg, managed := managedPhoneRouting(); managed {
-		for _, c := range cfg.Contacts {
-			if c.Inbound || c.Calls || c.AllowInbound {
-				cNum := cleanDigits(c.Number)
-				if cNum == "" { cNum = cleanDigits(c.PhoneNumber) }
-				if cNum != "" && (peerClean == cNum || resolvedClean == cNum) {
-					return cNum
-				}
-			}
-		}
-	}
-
 	return ""
 }
 func wireAudio(ctx context.Context, call *meow.Call, voice *voiceAudio) error {
@@ -216,17 +197,6 @@ func main() {
 				"error": fmt.Sprintf("Target %s is the phone number of the linked WhatsApp account itself (%s). WhatsApp does not permit an account to place a call to its own number.", req.Target, socket.Store.ID.User),
 			})
 			return
-		}
-		allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
-		if allowAll != "" && allowAll != "true" && allowAll != "1" {
-			owner := cleanDigits(getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"))
-			business := cleanDigits(getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT"))
-			if cleanTarget != owner && cleanTarget != business && !managedCallerAllowed(cleanTarget) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": fmt.Sprintf("Target %s is not authorized for calls.", req.Target)})
-				return
-			}
 		}
 		current.Lock()
 		if current.State != "connected" || current.busy {

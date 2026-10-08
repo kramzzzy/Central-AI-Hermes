@@ -24,10 +24,14 @@ async def run_route(route):
         raise RuntimeError(f"Text profile binding mismatch: expected {member['profile']}, got {home.name}")
     quiet_whatsapp_display(home)
     group=routing()['group'] if member['group'] else ''
-    owner=member.get('number','')
-    os.environ.update(WHATSAPP_MODE='bot',WHATSAPP_ALLOW_ALL_USERS='false',GATEWAY_ALLOW_ALL_USERS='false',
+    allow_all=member.get('allow_all', True)
+    owner=member.get('number', '')
+    os.environ.update(WHATSAPP_MODE='bot',
+        WHATSAPP_ALLOW_ALL_USERS='true' if allow_all else 'false',
+        GATEWAY_ALLOW_ALL_USERS='true' if allow_all else 'false',
         WHATSAPP_FORWARD_OWNER_MESSAGES='false',WHATSAPP_REPLY_PREFIX='',
-        WHATSAPP_DM_POLICY='disabled' if group else 'allowlist',WHATSAPP_ALLOWED_USERS=owner,
+        WHATSAPP_DM_POLICY='disabled' if group else ('open' if allow_all else 'allowlist'),
+        WHATSAPP_ALLOWED_USERS='' if allow_all else owner,
         WHATSAPP_GROUP_POLICY='allowlist' if group else 'disabled',WHATSAPP_GROUP_ALLOWED_USERS=group,
         HERMES_KANBAN_DISPATCH_IN_GATEWAY='false')
     from gateway.config import Platform,PlatformConfig,load_gateway_config
@@ -44,9 +48,10 @@ async def run_route(route):
     config.multiplex_profiles=False
     config.group_sessions_per_user=False
     config.platforms={Platform.WHATSAPP:PlatformConfig(enabled=True,gateway_restart_notification=False,
-        extra={'dm_policy':'disabled' if group else 'allowlist','allow_from':[] if group else [owner],
+        extra={'dm_policy':'disabled' if group else ('open' if allow_all else 'allowlist'),
+            'allow_from':[] if (group or allow_all) else [owner],
             'group_policy':'allowlist' if group else 'disabled','group_allow_from':[group] if group else [],
-            'require_mention':True,'mention_patterns':[r'(?i)\bleo\b'],
+            'require_mention':True if group else False,'mention_patterns':[r'(?i)\bleo\b'],
             'group_sessions_per_user':False,'send_read_receipts':False,'reply_prefix':'','text_batch_delay':0})}
     runner=EngineRunner(config)
     marker=Path('/data/text/ready-'+route)

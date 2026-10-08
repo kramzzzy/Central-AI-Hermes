@@ -95,16 +95,6 @@ func prepareVoiceInternal(ctx context.Context, callerNumber, callbackID string, 
 	if cleanCaller == "" {
 		return nil, fmt.Errorf("valid phone number required")
 	}
-	if !isOutbound {
-		allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
-		if allowAll != "" && allowAll != "true" && allowAll != "1" {
-			owner := cleanDigits(getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"))
-			business := cleanDigits(getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT"))
-			if cleanCaller != owner && cleanCaller != business && !managedCallerAllowed(cleanCaller) {
-				return nil, fmt.Errorf("caller is not admitted")
-			}
-		}
-	}
 	key, err := os.ReadFile("/data/voice-key")
 	if err != nil {
 		return nil, fmt.Errorf("voice backend is not ready")

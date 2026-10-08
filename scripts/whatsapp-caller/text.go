@@ -131,7 +131,13 @@ func(b *textBridge)queue(packet textPacket,at time.Time)bool{
 func(b *textBridge)claim(route string)([]textPacket,error){
  b.guard.Lock();defer b.guard.Unlock()
  tx,err:=b.db.Begin();if err!=nil{return nil,err};defer tx.Rollback()
- rows,err:=tx.Query(`SELECT id,payload FROM text_inbox WHERE route=? AND status='queued' ORDER BY created,id LIMIT 8`,route);if err!=nil{return nil,err}
+ var rows *sql.Rows
+ if route=="owner"{
+  rows,err=tx.Query(`SELECT id,payload FROM text_inbox WHERE (route='owner' OR route='mark' OR route LIKE 'contact-%') AND status='queued' ORDER BY created,id LIMIT 8`)
+ } else {
+  rows,err=tx.Query(`SELECT id,payload FROM text_inbox WHERE route=? AND status='queued' ORDER BY created,id LIMIT 8`,route)
+ }
+ if err!=nil{return nil,err}
  type entry struct{id,body string};entries:=[]entry{}
  for rows.Next(){var e entry;if err=rows.Scan(&e.id,&e.body);err!=nil{rows.Close();return nil,err};entries=append(entries,e)}
  if err=rows.Err();err!=nil{rows.Close();return nil,err};rows.Close()
@@ -147,7 +153,7 @@ func(b *textBridge)claim(route string)([]textPacket,error){
 
 func(b *textBridge)binding(route,lease,chat string)(textPacket,error){
  var body string;var packet textPacket
- err:=b.db.QueryRow(`SELECT payload FROM text_inbox WHERE route=? AND lease=? AND chat=? AND status IN ('claimed','complete')`,route,lease,chat).Scan(&body)
+ err:=b.db.QueryRow(`SELECT payload FROM text_inbox WHERE (route=? OR ?='owner') AND lease=? AND chat=? AND status IN ('claimed','complete')`,route,route,lease,chat).Scan(&body)
  if err!=nil{return packet,errors.New("reply binding unavailable")}
  err=json.Unmarshal([]byte(body),&packet);return packet,err
 }
@@ -167,7 +173,7 @@ func(b *textBridge)serve(w http.ResponseWriter,r *http.Request){
  packet,err:=b.binding(route,body.Lease,body.ChatID);if err!=nil{reply(403,map[string]string{"error":"Reply target rejected"});return}
  if action=="complete"{
   status:="complete";if body.Status!="complete"{status="interrupted"}
-  if _,err=b.db.Exec(`UPDATE text_inbox SET status=? WHERE route=? AND lease=?`,status,route,body.Lease);err!=nil{reply(503,map[string]string{"error":"Receipt persistence failed"});return}
+  if _,err=b.db.Exec(`UPDATE text_inbox SET status=? WHERE (route=? OR ?='owner') AND lease=?`,status,route,route,body.Lease);err!=nil{reply(503,map[string]string{"error":"Receipt persistence failed"});return}
   reply(200,map[string]bool{"success":true});return
  }
  if action=="typing"{reply(200,map[string]bool{"success":true});return}

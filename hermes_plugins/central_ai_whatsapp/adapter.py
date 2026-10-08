@@ -71,15 +71,15 @@ def build_engine_adapter(route,member,home,group):
 
         async def _build_message_event(self,data):
             if bool(data.get('isGroup'))!=member['group']:return None
-            if member['group'] and data.get('chatId')!=group:return None
-            if not member['group'] and data.get('senderId')!=owner:return None
+            if member['group'] and group and data.get('chatId')!=group:return None
+            if not member.get('allow_all', True) and not member['group'] and owner and data.get('senderId')!=owner:return None
             event=await super()._build_message_event(data)
             if event is not None:
                 event.channel_prompt='\n\n'.join(filter(None,[event.channel_prompt,REPLY_STYLE,
                     'Use this native profile’s configured memory tools for saved facts; do not invent memories. '
                     'When the user instructs characteristics, voice emotions, speaking tone, or personal preferences, immediately record and save them into memory so they persist across WhatsApp and App OS. '
                     'If an attachment is marked unavailable, ask for its contents or a smaller copy; never claim to have read it.']))
-                if route=='mark':attach_assistant_skills(event,home)
+                if route in {'mark', 'owner'}:attach_assistant_skills(event,home)
             return event
 
         async def _collect_bridge_media(self,data,msg_type):
