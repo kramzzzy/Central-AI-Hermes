@@ -78,6 +78,8 @@ class TeamPool:
         # Backend provider configuration is shared deliberately; identities/state are not.
         base = yaml.safe_load((source / 'config.yaml').read_text())
         model = dict(base['model'])
+        if definition.get('model'):
+            model['default'] = str(definition['model']).strip()
         if not isinstance(model.get('provider'),str) or not model.get('default'):
             raise RuntimeError('Configure and authenticate the backend model before creating a team context.')
         # Keep the shared text/business model. NativeChat selects the voice model

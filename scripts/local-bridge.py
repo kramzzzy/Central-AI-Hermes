@@ -139,7 +139,20 @@ class Handler(BaseHTTPRequestHandler):
          val=str(m) if isinstance(m,str) else str(m.get('id',m.get('name','')))
          if val and val not in models:models.append(val)
      except Exception:pass
-     if models:data['available_models']=models
+     if not models:
+      models=[os.environ.get('HERMES_CHAT_MODEL','nousresearch/hermes-4-405b'),
+              os.environ.get('WHATSAPP_CHAT_MODEL','deepseek/deepseek-v4.1-flash'),
+              os.environ.get('HERMES_VOICE_MODEL','meta-llama/llama-3.3-70b-instruct'),
+              'anthropic/claude-3-5-sonnet',
+              'anthropic/claude-3-7-sonnet',
+              'openai/gpt-4o',
+              'openai/gpt-4o-mini',
+              'openai/o3-mini',
+              'deepseek/deepseek-chat-v3.1',
+              'meta-llama/llama-3.3-70b-instruct',
+              'google/gemini-2.5-pro',
+              'google/gemini-2.5-flash']
+     data['available_models']=list(dict.fromkeys(m for m in models if m))
      catalog_cache.update(at=time.monotonic(),data=data)
      return self.reply(200,data)
     except Exception:return self.reply(503,{'error':'Hermes inventory unavailable'})

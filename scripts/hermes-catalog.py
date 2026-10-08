@@ -31,4 +31,19 @@ with contextlib.redirect_stdout(sys.stderr):
  except Exception:
   tools = []
   modes = ['draft-only']
-print(json.dumps({'mode':'profile-aware','modes':modes,'tools':tools, 'auth_ready':ready,'model':model,'provider':provider,'runtime_profile':os.environ['ORBIT_HERMES_PROFILE'],'runtime_host':os.environ.get('HERMES_RUNTIME_HOST','native-windows'),'skills':skills}))
+ available_models = list(dict.fromkeys([
+   model,
+   os.environ.get('HERMES_CHAT_MODEL', 'nousresearch/hermes-4-405b'),
+   os.environ.get('WHATSAPP_CHAT_MODEL', 'deepseek/deepseek-v4.1-flash'),
+   os.environ.get('HERMES_VOICE_MODEL', 'meta-llama/llama-3.3-70b-instruct'),
+   'anthropic/claude-3-5-sonnet',
+   'anthropic/claude-3-7-sonnet',
+   'openai/gpt-4o',
+   'openai/gpt-4o-mini',
+   'openai/o3-mini',
+   'deepseek/deepseek-chat-v3.1',
+   'meta-llama/llama-3.3-70b-instruct',
+   'google/gemini-2.5-pro',
+   'google/gemini-2.5-flash',
+ ]))
+print(json.dumps({'mode':'profile-aware','modes':modes,'tools':tools, 'auth_ready':ready,'model':model,'provider':provider,'runtime_profile':os.environ['ORBIT_HERMES_PROFILE'],'runtime_host':os.environ.get('HERMES_RUNTIME_HOST','native-windows'),'skills':skills,'available_models':available_models}))
