@@ -35,7 +35,8 @@ chat=NativeChat(settings,ROOT)
 from hermes_team import TeamPool
 team_chats=TeamPool(settings,ROOT)
 from hermes_google import GoogleWorkspace, GoogleError
-google_workspace=GoogleWorkspace(ROOT/'.runtime')
+google_storage_root=Path(os.environ.get('HERMES_PROFILE_ROOT','/opt/data')) if Path(os.environ.get('HERMES_PROFILE_ROOT','/opt/data')).is_dir() else (ROOT/'.runtime')
+google_workspace=GoogleWorkspace(google_storage_root)
 from hermes_voice import VoiceProvider
 voice=VoiceProvider(settings)
 team_voice=VoiceProvider(dict(settings,HERMES_PROFILE='os-team-voice'),defaults=voice.config)

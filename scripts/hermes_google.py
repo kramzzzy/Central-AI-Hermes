@@ -177,8 +177,21 @@ def normalize_write(operation, args):
 class GoogleWorkspace:
     def __init__(self, root, transport=provider_request, clock=time.time):
         # Store in the adapter's persistent volume, outside OS source/profile prompts.
-        self.root = Path(root)/'google'
+        profile_root = os.environ.get('HERMES_PROFILE_ROOT')
+        if profile_root and Path(profile_root).is_dir():
+            base_root = Path(profile_root)
+        else:
+            base_root = Path(root)
+        self.root = base_root / 'google'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Migrate from legacy ephemeral path if needed
+        legacy_root = Path(root) / 'google'
+        if legacy_root != self.root and (legacy_root / 'connections.sqlite').is_file() and not (self.root / 'connections.sqlite').is_file():
+            import shutil
+            try:
+                shutil.copytree(legacy_root, self.root, dirs_exist_ok=True)
+            except Exception:
+                pass
         self.transport, self.clock, self.lock = transport, clock, threading.RLock()
         from cryptography.fernet import Fernet
         keyfile = self.root/'encryption.key'
@@ -221,7 +234,25 @@ class GoogleWorkspace:
     def config(self):
         with self.database() as db:
             row = db.execute('SELECT encrypted FROM configuration WHERE id=1').fetchone()
-        return self.decrypt(row['encrypted']) if row else None
+        if row:
+            return self.decrypt(row['encrypted'])
+        # Fallback to environment variables if provided in Coolify / Docker
+        client_id = os.environ.get('GOOGLE_CLIENT_ID', '').strip()
+        client_secret = os.environ.get('GOOGLE_CLIENT_SECRET', '').strip()
+        redirect_uri = os.environ.get('GOOGLE_REDIRECT_URI', '').strip() or os.environ.get('GOOGLE_CALLBACK_URL', '').strip()
+        if client_id and re.fullmatch(r'[A-Za-z0-9_-]+\.apps\.googleusercontent\.com', client_id):
+            env_config = {
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'redirect_uri': redirect_uri or 'https://api.centralai.app/api/connections/google/callback'
+            }
+            try:
+                with self.database() as db:
+                    db.execute('INSERT OR REPLACE INTO configuration VALUES(1,?)', (self.encrypt(env_config),))
+            except Exception:
+                pass
+            return env_config
+        return None
 
     def connection(self, org, user):
         with self.database() as db:
