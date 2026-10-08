@@ -235,7 +235,12 @@ class VoiceProvider:
                 overrides.pop('first_message_prompt', None)
                 if isinstance(overrides.get('system_prompt'), str):
                     overrides['system_prompt'] = central_ai_identity(overrides['system_prompt'])
+                overrides['first_message_mode'] = 'fixed'
                 overrides['first_message'] = greeting
+                prompt_dict = dict(overrides.get('prompt') or {})
+                prompt_dict['first_message'] = greeting
+                prompt_dict['first_message_mode'] = 'fixed'
+                overrides['prompt'] = prompt_dict
                 body['overrides'] = overrides
                 data = json.dumps(body).encode()
             target = '/v1/agent/' + path.removeprefix('/voice/agent/')
