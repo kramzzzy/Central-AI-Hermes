@@ -57,7 +57,12 @@ func (v *voiceAudio) runFilter(socket *websocket.Conn) {
 						if json.Unmarshal(data, &state) != nil || state.Type != "state" || state.Generation == 0 { return }
 						v.mu.Lock()
 						interrupted := state.Generation > v.generation
-						if interrupted { v.generation = state.Generation }
+						if interrupted {
+							v.generation = state.Generation
+							for len(v.playback) > 0 {
+								<-v.playback
+							}
+						}
 						v.mu.Unlock()
 						current.Lock(); current.VoiceState = state.State; if interrupted { current.Interruptions++ }; current.Unlock()
 						continue

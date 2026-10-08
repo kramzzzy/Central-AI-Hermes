@@ -26,8 +26,7 @@ func validateCallback(c taskCallback) error {
 }
 
 func callbackTargetAllowed(target string) bool {
-	return (target != "" && managedCallerAllowed(target) && getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER") == target) ||
-		(target != "" && managedCallerAllowed(target) && getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT") == target)
+	return target != "" && managedCallerAllowed(target)
 }
 
 func callbackControl(ctx context.Context, target, path string, body []byte) ([]byte, error) {

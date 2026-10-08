@@ -575,10 +575,10 @@ export async function provisionFiles(root, settings, state) {
         ...voice,
         CENTRAL_AI_VOICE_CONFIG: `/opt/data/profiles/${name}/config.yaml`,
       });
-      if (name === "team-whatsapp-michael-business")
+      if (name === "team-whatsapp-michael-business" || name === "team-whatsapp-business")
         await atomic(
           join(home, "phone-channel.json"),
-          { number: "61423947456", purpose: "private-whatsapp-business" },
+          { number: env.WHATSAPP_BUSINESS_CONTACT || "", purpose: "private-whatsapp-business" },
           10000,
         );
     }

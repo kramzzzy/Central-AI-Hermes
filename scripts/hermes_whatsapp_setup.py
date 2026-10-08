@@ -90,6 +90,10 @@ class WhatsAppSetup:
         name = state.get('state')
         if name not in allowed: raise SetupError('Unrecognized WhatsApp connection state')
         result = {'state': name, 'connected': name == 'connected', 'voice_ready': False, 'line': line}
+        if state.get('linked_number'):
+            result['linked_number'] = state['linked_number']
+        if state.get('push_name'):
+            result['push_name'] = state['push_name']
         if name == 'pairing':
             pixels = self.fetch('/qr.png', line=line)
             if pixels and pixels.startswith(b'\x89PNG\r\n\x1a\n'):

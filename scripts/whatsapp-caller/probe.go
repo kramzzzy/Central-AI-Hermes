@@ -9,10 +9,6 @@ import (
  meow "github.com/purpshell/meowcaller"
 )
 
-// This number was explicitly authorized for a single availability check.
-// Incoming admission and native/private conversations remain owner-only.
-const teamProbeTarget = "639690395476"
-
 type outgoingRequest struct {
  Target string `json:"target"`
  Mode string `json:"mode"`
@@ -26,8 +22,9 @@ func readOutgoingRequest(path string,now time.Time)(outgoingRequest,error) {
  if json.Unmarshal(data,&r)!=nil {return r,fmt.Errorf("invalid call request JSON")}
  if r.Mode=="" {r.Mode="native"}
  owner:=getEnv("WHATSAPP_OWNER","LEO_WHATSAPP_OWNER")
- if r.Mode=="native" && (r.Target==owner || (r.Target=="639267200480" && owner=="61423947456") || (owner=="61423947456" && managedCallerAllowed(r.Target))) && r.Target!="" {return r,nil}
- if r.Mode=="availability_check" && r.Target==teamProbeTarget && r.ExpiresAt.After(now) && !r.ExpiresAt.After(now.Add(5*time.Minute)) {return r,nil}
+ if r.Mode=="native" && (r.Target==owner || managedCallerAllowed(r.Target)) && r.Target!="" {return r,nil}
+ probeTarget := getEnv("WHATSAPP_PROBE_TARGET", "LEO_WHATSAPP_PROBE_TARGET")
+ if r.Mode=="availability_check" && ((probeTarget!="" && r.Target==probeTarget) || managedCallerAllowed(r.Target)) && r.ExpiresAt.After(now) && !r.ExpiresAt.After(now.Add(5*time.Minute)) {return r,nil}
  return r,fmt.Errorf("call request is unauthorized or expired")
 }
 

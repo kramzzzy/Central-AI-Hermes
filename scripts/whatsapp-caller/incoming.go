@@ -39,13 +39,13 @@ func answerIncomingWithVoice(ctx context.Context,call incomingHandle,prepare fun
  call.OnEnd(func(reason string){
   stop();link.Lock();v:=voice;link.Unlock();if v!=nil{v.Close()}
   if reason==""{reason="remote_end"}
-  current.Lock();current.Call="ended";current.EndReason=reason;current.busy=false;current.Unlock()
+  current.Lock();current.Call="ended";current.EndReason=reason;current.busy=false;current.activeHangup=nil;current.Unlock()
   log.Print("incoming owner call ended")
  })
  if err:=call.Answer();err!=nil {
-  call.Hangup();stop();current.Lock();current.Call="answer_failed";current.EndReason="incoming_handshake_failed";current.busy=false;current.Unlock();log.Print("incoming answer failed");return
+  call.Hangup();stop();current.Lock();current.Call="answer_failed";current.EndReason="incoming_handshake_failed";current.busy=false;current.activeHangup=nil;current.Unlock();log.Print("incoming answer failed");return
  }
- current.Lock();if current.Call=="answering"{current.Call="connecting"};current.Unlock()
+ current.Lock();if current.Call=="answering"{current.Call="connecting"};current.activeHangup=call.Hangup;current.Unlock()
  log.Print("incoming owner answer requested before voice preparation")
  go func(){
   v,err:=prepare(callCtx)

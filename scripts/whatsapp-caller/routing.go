@@ -39,12 +39,12 @@ func managedPhoneRouting() (*phoneRouting, bool) {
 					if c.Number == "" && c.PhoneNumber != "" {
 						c.Number = c.PhoneNumber
 					}
-					if c.AllowInbound || c.Inbound {
+					if c.AllowInbound || c.Inbound || c.AllowOutbound || c.Outbound || c.Calls {
 						c.Calls = true
 					}
 					if regexp.MustCompile(`^[1-9][0-9]{7,14}$`).MatchString(c.Number) {
 						if c.Route == "" {
-							if c.Role == "owner" { c.Route = "michael" } else if c.Role == "business" { c.Route = "mark" } else { c.Route = "contact-" + c.Number }
+							if c.Role == "owner" { c.Route = "owner" } else if c.Role == "business" { c.Route = "business" } else { c.Route = "contact-" + c.Number }
 						}
 						valid = append(valid, c)
 					}
@@ -62,18 +62,25 @@ func managedPhoneRouting() (*phoneRouting, bool) {
 	value := &phoneRouting{}
 	if err != nil || json.Unmarshal(data, value) != nil { return &phoneRouting{}, true }
 	for _, c := range value.Contacts {
-		if !regexp.MustCompile(`^[1-9][0-9]{7,14}$`).MatchString(c.Number) || !regexp.MustCompile(`^(mark|michael|contact-[0-9]+)$`).MatchString(c.Route) { return &phoneRouting{}, true }
+		num := cleanDigits(c.Number)
+		if num == "" { num = cleanDigits(c.PhoneNumber) }
+		if !regexp.MustCompile(`^[1-9][0-9]{7,14}$`).MatchString(num) || !regexp.MustCompile(`^(mark|michael|owner|business|contact-[0-9]+)$`).MatchString(c.Route) { return &phoneRouting{}, true }
 	}
 	return value, true
 }
 
 func configuredTextRoute(number string) string {
+	cleanNum := cleanDigits(number)
+	if cleanNum == "" { return "" }
 	if cfg, managed := managedPhoneRouting(); managed {
-		for _, c := range cfg.Contacts { if c.Number == number { return c.Route } }
+		for _, c := range cfg.Contacts {
+			num := cleanDigits(c.Number)
+			if num == "" { num = cleanDigits(c.PhoneNumber) }
+			if num == cleanNum { return c.Route }
+		}
 		return ""
 	}
-	switch number { case "639267200480": return "mark"; case "61423947456": return "michael" }
-	return ""
+	return "contact-" + cleanNum
 }
 
 func configuredRouteAllowed(route string) bool {
@@ -82,17 +89,34 @@ func configuredRouteAllowed(route string) bool {
 		for _, c := range cfg.Contacts { if c.Route == route { return true } }
 		return false
 	}
-	return route == "mark" || route == "michael"
+	return route != ""
+}
+
+func cleanDigits(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			b = append(b, s[i])
+		}
+	}
+	return string(b)
 }
 
 func managedCallerAllowed(number string) bool {
+	cleanNum := cleanDigits(number)
+	if len(cleanNum) < 7 { return false }
+	allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
+	if allowAll == "" || allowAll == "true" || allowAll == "1" {
+		return true
+	}
 	if cfg, managed := managedPhoneRouting(); managed {
 		for _, c := range cfg.Contacts {
-			num := c.Number
-			if num == "" { num = c.PhoneNumber }
-			if num == number && (c.Calls || c.Inbound || c.AllowInbound || c.Outbound || c.AllowOutbound) { return true }
+			num := cleanDigits(c.Number)
+			if num == "" { num = cleanDigits(c.PhoneNumber) }
+			if num == cleanNum && (c.Calls || c.Inbound || c.AllowInbound || c.Outbound || c.AllowOutbound) { return true }
 		}
 		return false
 	}
-	return number == "639267200480" || number == "61423947456" || number == "639606637666"
+	return true
 }
+

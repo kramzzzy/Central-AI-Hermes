@@ -2,28 +2,32 @@
 package main
 
 import (
- "context"
- "encoding/json"
- "io"
- "log"
- "net/http"
- "os"
- "os/signal"
- "strings"
- "sync"
- "syscall"
- "time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
 
- meow "github.com/purpshell/meowcaller"
- wa "github.com/polymorfa/hypermeow"
- "github.com/polymorfa/hypermeow/store"
- "github.com/polymorfa/hypermeow/store/sqlstore"
- "github.com/polymorfa/hypermeow/types"
- "github.com/polymorfa/hypermeow/types/events"
- walog "github.com/polymorfa/hypermeow/util/log"
- "github.com/rs/zerolog"
- qr "github.com/skip2/go-qrcode"
- _ "modernc.org/sqlite"
+	meow "github.com/purpshell/meowcaller"
+	wa "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/store"
+	"github.com/polymorfa/hypermeow/store/sqlstore"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
+	walog "github.com/polymorfa/hypermeow/util/log"
+	"github.com/rs/zerolog"
+	qr "github.com/skip2/go-qrcode"
+	"google.golang.org/protobuf/proto"
+	_ "modernc.org/sqlite"
 )
 
 type status struct {
@@ -54,43 +58,65 @@ type status struct {
  Kind string `json:"kind,omitempty"`
  Answered bool `json:"answered"`
  AnsweredAt string `json:"answered_at,omitempty"`
+ LinkedNumber string `json:"linked_number,omitempty"`
+ PushName string `json:"push_name,omitempty"`
  code string
  expires time.Time
  busy bool
+ activeHangup func() error
 }
 var current = status{State:"starting", Call:"idle"}
 func allowedPeer(peer, resolved string) bool {
-	owner:=getEnv("WHATSAPP_OWNER","LEO_WHATSAPP_OWNER")
-	if owner=="" || !managedCallerAllowed(owner) {return false}
-	return peer==owner || resolved==owner || (owner=="61423947456" && (peer=="279374905495566" || resolved=="279374905495566")) || (owner=="639267200480" && (peer=="131568421073069" || resolved=="131568421073069"))
-}
-func admittedCaller(peer,resolved string) string {
-
-	owner:=getEnv("WHATSAPP_OWNER","LEO_WHATSAPP_OWNER")
-	if owner!="" && managedCallerAllowed(owner) {
-		if peer==owner || resolved==owner || (owner=="61423947456" && (peer=="279374905495566" || resolved=="279374905495566")) || (owner=="639267200480" && (peer=="131568421073069" || resolved=="131568421073069")) {return owner}
+	peerClean := cleanDigits(peer)
+	resolvedClean := cleanDigits(resolved)
+	allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
+	if allowAll == "" || allowAll == "true" || allowAll == "1" {
+		return len(peerClean) >= 7 || len(resolvedClean) >= 7
 	}
-	business:=getEnv("WHATSAPP_BUSINESS_CONTACT","LEO_WHATSAPP_BUSINESS_CONTACT")
-	if business!="" && managedCallerAllowed(business) {
-		if peer==business || resolved==business || (business=="639267200480" && (peer=="131568421073069" || resolved=="131568421073069")) || (business=="61423947456" && (peer=="279374905495566" || resolved=="279374905495566")) {return business}
+	owner := cleanDigits(getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"))
+	if owner != "" && (peerClean == owner || resolvedClean == owner) { return true }
+	return managedCallerAllowed(peerClean) || managedCallerAllowed(resolvedClean)
+}
+
+func admittedCaller(peer, resolved string) string {
+	peerClean := cleanDigits(peer)
+	resolvedClean := cleanDigits(resolved)
+
+	allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
+	if allowAll == "" || allowAll == "true" || allowAll == "1" {
+		if len(resolvedClean) >= 7 { return resolvedClean }
+		if len(peerClean) >= 7 { return peerClean }
+	}
+
+	owner := cleanDigits(getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"))
+	if owner != "" && (peerClean == owner || resolvedClean == owner) {
+		return owner
+	}
+	business := cleanDigits(getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT"))
+	if business != "" && (peerClean == business || resolvedClean == business) {
+		return business
 	}
 	if cfg, managed := managedPhoneRouting(); managed {
 		for _, c := range cfg.Contacts {
-			if c.Inbound || c.Calls {
-				if peer == c.Number || resolved == c.Number {
-					return c.Number
+			if c.Inbound || c.Calls || c.AllowInbound {
+				cNum := cleanDigits(c.Number)
+				if cNum == "" { cNum = cleanDigits(c.PhoneNumber) }
+				if cNum != "" && (peerClean == cNum || resolvedClean == cNum) {
+					return cNum
 				}
 			}
 		}
 	}
+
 	return ""
 }
 func wireAudio(ctx context.Context, call *meow.Call, voice *voiceAudio) error {
  callCtx,stop:=context.WithCancel(ctx)
+ current.Lock();current.activeHangup=call.Hangup;current.Unlock()
  call.Receive(meow.SinkFunc(voice.Receive))
  call.Play(voice)
  call.OnReady(func(){voice.markReady();current.Lock();current.Call="audio_ready";current.Unlock();log.Print("owner call media ready")})
- call.OnEnd(func(reason string){stop();voice.Close();current.Lock();current.Call="ended";current.EndReason=reason;current.busy=false;current.Unlock();log.Print("owner call ended")})
+ call.OnEnd(func(reason string){stop();voice.Close();current.Lock();current.Call="ended";current.EndReason=reason;current.busy=false;current.activeHangup=nil;current.Unlock();log.Print("owner call ended")})
  go func(){select{case <-time.After(30*time.Minute):call.Hangup();case <-voice.ctx.Done():call.Hangup();case <-callCtx.Done():}}()
  return nil
 }
@@ -115,10 +141,15 @@ func main() {
   w.Header().Set("Content-Type","text/html; charset=utf-8")
   io.WriteString(w,page)
  })
+ var socket *wa.Client
  http.HandleFunc("/status",func(w http.ResponseWriter,r *http.Request){
   stage:=receiveStage()
   current.Lock();defer current.Unlock();w.Header().Set("Content-Type","application/json")
   current.ReceiveStage=stage
+  if socket!=nil && socket.Store!=nil && socket.Store.ID!=nil {
+   current.LinkedNumber = socket.Store.ID.User
+   if socket.Store.PushName!="" { current.PushName = socket.Store.PushName }
+  }
   w.Header().Set("Cache-Control","no-store");json.NewEncoder(w).Encode(&current)
  })
  http.HandleFunc("/qr.png",func(w http.ResponseWriter,r *http.Request){
@@ -133,8 +164,14 @@ func main() {
  db,err:=sqlstore.New(ctx,"sqlite","file:/data/calls.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)",walog.Zerolog(logger));if err!=nil {log.Fatal(err)}
  defer db.Close()
  device,err:=db.GetFirstDevice(ctx);if err!=nil {log.Fatal(err)}
+ if device!=nil && device.ID!=nil {
+  current.Lock()
+  current.LinkedNumber = device.ID.User
+  if device.PushName!="" { current.PushName = device.PushName }
+  current.Unlock()
+ }
  store.DeviceProps.Os=ptr(getEnvDefault("Central AI Assistant","WHATSAPP_DEVICE_NAME","LEO_WHATSAPP_DEVICE_NAME"))
- socket:=wa.NewClient(device,walog.Zerolog(logger))
+ socket = wa.NewClient(device,walog.Zerolog(logger))
  http.HandleFunc("/setup/groups",groupsHandler(socket))
  http.HandleFunc("/pairing/disconnect",disconnectHandler("/run/secrets/whatsapp_setup_key",func()error{
   current.Lock();current.State="logged_out";current.code="";current.Unlock()
@@ -164,72 +201,209 @@ func main() {
    http.Error(w, "Invalid target", http.StatusBadRequest)
    return
   }
-  current.Lock()
-  if current.State != "connected" || current.busy {
-   current.Unlock()
-   w.Header().Set("Content-Type", "application/json")
-   w.WriteHeader(http.StatusConflict)
-   json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "caller is busy or disconnected"})
-   return
-  }
-  current.busy = true
-  current.Call = "preparing"
-  current.Target = req.Target
-  current.Kind = req.Mode
-  if current.Kind == "" { current.Kind = "native" }
-  current.Unlock()
+		owner := getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER")
+		business := getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT")
+		cleanTarget := cleanDigits(req.Target)
+		if len(cleanTarget) < 7 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Invalid target phone number: at least 7 digits required."})
+			return
+		}
+		if socket != nil && socket.Store != nil && socket.Store.ID != nil && cleanTarget == cleanDigits(socket.Store.ID.User) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":    false,
+				"error": fmt.Sprintf("Target %s is the phone number of the linked WhatsApp account itself (%s). WhatsApp does not permit an account to place a call to its own number.", req.Target, socket.Store.ID.User),
+			})
+			return
+		}
+		allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
+		if allowAll != "" && allowAll != "true" && allowAll != "1" {
+			owner := cleanDigits(getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"))
+			business := cleanDigits(getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT"))
+			if cleanTarget != owner && cleanTarget != business && !managedCallerAllowed(cleanTarget) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": fmt.Sprintf("Target %s is not authorized for calls.", req.Target)})
+				return
+			}
+		}
+		current.Lock()
+		if current.State != "connected" || current.busy {
+			current.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "caller is busy or disconnected"})
+			return
+		}
+		current.busy = true
+		current.Call = "preparing"
+		current.Target = cleanTarget
+		current.Kind = req.Mode
+		if current.Kind == "" { current.Kind = "native" }
+		current.Unlock()
 
-  go func(target, mode string) {
-   voice, err := prepareVoiceFor(ctx, target)
-   if err != nil {
-    current.Lock(); current.busy = false; current.Call = "dial_failed"; current.EndReason = err.Error(); current.Unlock()
-    log.Printf("outbound voice preparation failed for %s: %v", target, err)
-    return
-   }
-   current.Lock(); current.Call = "dialing"; current.Unlock()
-   call, err := caller.Call(ctx, target)
-   if err != nil {
-    voice.Close()
-    current.Lock(); current.busy = false; current.Call = "dial_failed"; current.EndReason = err.Error(); current.Unlock()
-    log.Printf("outbound call to %s failed: %v", target, err)
-    return
-   }
-   call.OnPeerAccept(func() {
-    current.Lock()
-    current.Answered = true
-    current.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
-    current.Unlock()
-    log.Printf("outbound call to %s accepted by peer", target)
-   })
-   if err := wireAudio(ctx, call, voice); err != nil {
-    call.Hangup()
-    voice.Close()
-    current.Lock(); current.busy = false; current.Call = "dial_failed"; current.EndReason = err.Error(); current.Unlock()
-   }
-  }(req.Target, req.Mode)
+		voice, err := prepareVoiceOutbound(ctx, cleanTarget)
+		if err != nil {
+			current.Lock(); current.busy = false; current.Call = "dial_failed"; current.EndReason = err.Error(); current.Unlock()
+			log.Printf("outbound voice preparation failed for %s: %v", cleanTarget, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": fmt.Sprintf("Voice initialization failed: %v", err)})
+			return
+		}
+		current.Lock(); current.Call = "dialing"; current.Unlock()
+		call, err := caller.Call(ctx, cleanTarget)
+		if err != nil {
+			voice.Close()
+			current.Lock(); current.busy = false; current.Call = "dial_failed"; current.EndReason = err.Error(); current.Unlock()
+			log.Printf("outbound call to %s failed: %v", req.Target, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": fmt.Sprintf("Failed to place WhatsApp call to %s: %v", req.Target, err)})
+			return
+		}
+		current.Lock()
+		current.activeHangup = call.Hangup
+		current.Unlock()
+		call.OnPeerAccept(func() {
+			current.Lock()
+			current.Answered = true
+			current.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
+			current.Unlock()
+			log.Printf("outbound call to %s accepted by peer", req.Target)
+		})
+		call.OnEnd(func(reason string) {
+			voice.Close()
+			current.Lock()
+			current.Call = "ended"
+			current.EndReason = reason
+			current.busy = false
+			current.activeHangup = nil
+			current.Unlock()
+			log.Printf("outbound call to %s ended: %s", req.Target, reason)
+		})
+		go func() {
+			if err := wireAudio(ctx, call, voice); err != nil {
+				call.Hangup()
+				voice.Close()
+				current.Lock(); current.busy = false; current.Call = "dial_failed"; current.EndReason = err.Error(); current.activeHangup = nil; current.Unlock()
+			}
+		}()
 
-  w.Header().Set("Content-Type", "application/json")
-  json.NewEncoder(w).Encode(map[string]any{"ok": true, "status": "dialing", "target": req.Target})
- })
- socket.AddEventHandler(func(event any){
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "status": "dialing", "target": req.Target})
+	})
+	http.HandleFunc("/contacts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Bad request", http.StatusBadRequest)
+			return
+		}
+		for _, p := range []string{"/data/contacts.json", ".runtime/contacts.json"} {
+			os.MkdirAll(filepath.Dir(p), 0755)
+			os.WriteFile(p, data, 0666)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+	http.HandleFunc("/call/drop", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		current.Lock()
+		hangup := current.activeHangup
+		target := current.Target
+		wasBusy := current.busy
+		current.busy = false
+		current.Call = "ended"
+		current.EndReason = "dropped_by_user"
+		current.activeHangup = nil
+		current.Unlock()
+
+		if hangup != nil {
+			go hangup()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"dropped": wasBusy,
+			"target":  target,
+			"message": "Call terminated successfully.",
+		})
+	})
+	http.HandleFunc("/send", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Target  string `json:"target"`
+			Message string `json:"message"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Target == "" || req.Message == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Target and message are required."})
+			return
+		}
+		cleanTarget := cleanDigits(req.Target)
+		if len(cleanTarget) < 7 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Valid phone number with at least 7 digits is required."})
+			return
+		}
+		targetJID := types.NewJID(cleanTarget, types.DefaultUserServer)
+		msg := &waE2E.Message{Conversation: proto.String(req.Message)}
+		sendCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		resp, err := socket.SendMessage(sendCtx, targetJID, msg)
+		if err != nil {
+			log.Printf("outbound whatsapp message to %s failed: %v", cleanTarget, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": fmt.Sprintf("Failed to send WhatsApp message: %v", err)})
+			return
+		}
+		log.Printf("outbound whatsapp message to %s sent successfully (id=%s)", cleanTarget, resp.ID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "message_id": string(resp.ID), "target": cleanTarget})
+	})
+	socket.AddEventHandler(func(event any){
   current.Lock();defer current.Unlock()
-  switch event.(type) { case *events.Connected:current.State="connected";current.code=""
-   go func(){
-    defaultPush:=getEnvDefault("Central AI Assistant","WHATSAPP_DEVICE_NAME","LEO_WHATSAPP_DEVICE_NAME")
-    if socket.Store.PushName=="" || socket.Store.PushName=="Leo call test" || socket.Store.PushName=="Leo - youraiagent" {socket.Store.PushName=defaultPush}
-    if err:=socket.SendPresence(ctx,types.PresenceAvailable);err!=nil {log.Print("call presence announcement failed")}
-   }()
+  switch event.(type) {
+  case *events.Connected:
+    current.State="connected";current.code=""
+    if socket.Store!=nil && socket.Store.ID!=nil {
+      current.LinkedNumber = socket.Store.ID.User
+      if socket.Store.PushName!="" { current.PushName = socket.Store.PushName }
+    }
+    go func(){
+     defaultPush:=getEnvDefault("Central AI Assistant","WHATSAPP_DEVICE_NAME","LEO_WHATSAPP_DEVICE_NAME")
+     if socket.Store.PushName=="" || socket.Store.PushName=="Leo call test" || socket.Store.PushName=="Leo - youraiagent" {socket.Store.PushName=defaultPush}
+     if err:=socket.SendPresence(ctx,types.PresenceAvailable);err!=nil {log.Print("call presence announcement failed")}
+    }()
   case *events.Disconnected:current.State="reconnecting"
   case *events.LoggedOut:
-   current.State="logged_out";current.code=""
-   go func(){
-    if socket.Store!=nil {
-     _=socket.Store.Delete(ctx)
-     socket.Store.ID=nil
-    }
-    socket.Disconnect()
-    go connectPairedDevice(ctx,socket)
-   }()
+    current.State="logged_out";current.code=""
+    current.LinkedNumber=""
+    current.PushName=""
+    go func(){
+     if socket.Store!=nil {
+      _=socket.Store.Delete(ctx)
+      socket.Store.ID=nil
+     }
+     socket.Disconnect()
+     go connectPairedDevice(ctx,socket)
+    }()
   }
  })
  caller.OnIncomingCall(func(call *meow.Call){
@@ -259,7 +433,7 @@ func main() {
  go func(){
   ticker:=time.NewTicker(5*time.Second);defer ticker.Stop()
   for {select{case <-ctx.Done():return;case <-ticker.C:}
-   if os.Getenv("WHATSAPP_CONVERSATION_MODE")!="fish" || (!callbackTargetAllowed("639267200480") && !callbackTargetAllowed("61423947456")) {continue}
+   if os.Getenv("WHATSAPP_CONVERSATION_MODE") != fish {continue}
    current.Lock()
    if current.State!="connected" || current.busy {current.Unlock();continue}
    current.Unlock()
@@ -292,7 +466,7 @@ func main() {
    var probe []byte
    if err==nil {
     current.Lock();current.Target=request.Target;current.Kind=request.Mode;current.Unlock()
-    if request.Mode=="availability_check" {probe,err=readProbeGreeting("/data/team-call-probe.pcm")} else {voice,err=prepareVoiceFor(ctx,request.Target)}
+    if request.Mode=="availability_check" {probe,err=readProbeGreeting("/data/team-call-probe.pcm")} else {voice,err=prepareVoiceOutbound(ctx,request.Target)}
    }
    var call *meow.Call
    if err==nil {
@@ -315,4 +489,4 @@ func main() {
  <-ctx.Done();socket.Disconnect();shutdown,done:=context.WithTimeout(context.Background(),3*time.Second);defer done();server.Shutdown(shutdown)
 }
 func ptr(s string)*string{return &s}
-const page=`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Leo WhatsApp Voice</title><style>body{font:18px system-ui;background:#f6f7f9;color:#16202b;max-width:760px;margin:40px auto;padding:20px}img{width:min(100%,520px);display:block;background:white}pre{white-space:pre-wrap;background:white;padding:18px;border-radius:12px}</style><h1>Leo WhatsApp Voice</h1><p>On the phone for Leo's WhatsApp number (+63 968 749 3955), open <b>Settings → Linked devices → Link a device</b> and scan this QR code.</p><img id="qr" hidden><p id="state">Starting…</p><p>Once connected, <b>Mark Tech (+63 926 720 0480)</b> and <b>Michael (+61 423 947 456)</b> can call Leo. Leo uses the Jarvis voice with Australian English guidance and also accepts general English. Speak naturally and pause briefly for an answer. You can interrupt Leo while he speaks. Leo will ask you to repeat unclear speech. Calls have a thirty-minute limit. Mark Tech and Michael can each request a callback to their own number by saying: Call me when that is finished. Leo calls once after the task has a result and the current call ends.</p><details><summary>Connection diagnostics</summary><pre id="details"></pre></details><script>async function poll(){try{let s=await(await fetch('/status',{cache:'no-store'})).json();document.getElementById('state').textContent='Connection: '+s.state;let q=document.getElementById('qr');q.hidden=s.state!=='pairing';if(!q.hidden)q.src='/qr.png?t='+Date.now();document.getElementById('details').textContent=JSON.stringify(s,null,2)}catch(e){document.getElementById('state').textContent='Waiting for Leo…'}}poll();setInterval(poll,2500)</script>`
+const page=`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Central AI WhatsApp Line</title><style>body{font:18px system-ui;background:#f6f7f9;color:#16202b;max-width:760px;margin:40px auto;padding:20px}img{width:min(100%,520px);display:block;background:white}pre{white-space:pre-wrap;background:white;padding:18px;border-radius:12px}.banner{background:#edf2f7;border-left:4px solid #3182ce;padding:12px;border-radius:6px;margin:16px 0}</style><h1>Central AI WhatsApp Connector</h1><p>On your mobile WhatsApp, open <b>Settings → Linked devices → Link a device</b> and scan this QR code.</p><img id="qr" hidden><p id="state">Starting…</p><div id="linked-box" class="banner" hidden><div id="linked-text" style="font-weight:bold;color:#2b6cb0;"></div></div><details><summary>Connection diagnostics</summary><pre id="details"></pre></details><script>async function poll(){try{let s=await(await fetch('/status',{cache:'no-store'})).json();document.getElementById('state').textContent='Connection: '+s.state;let box=document.getElementById('linked-box');let txt=document.getElementById('linked-text');if(s.linked_number){box.hidden=false;txt.textContent='Connected Line: +'+s.linked_number+(s.push_name?' ('+s.push_name+')':'');}else{box.hidden=true;}let q=document.getElementById('qr');q.hidden=s.state!=='pairing';if(!q.hidden)q.src='/qr.png?t='+Date.now();document.getElementById('details').textContent=JSON.stringify(s,null,2)}catch(e){document.getElementById('state').textContent='Waiting for connector…'}}poll();setInterval(poll,2500)</script>`

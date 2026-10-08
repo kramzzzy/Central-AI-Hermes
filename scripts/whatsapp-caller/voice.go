@@ -82,11 +82,28 @@ func prepareVoiceFor(ctx context.Context, callerNumber string) (*voiceAudio, err
     return prepareVoiceWithCallback(ctx, callerNumber, "")
 }
 
+func prepareVoiceOutbound(ctx context.Context, target string) (*voiceAudio, error) {
+    return prepareVoiceInternal(ctx, target, "", true)
+}
+
 func prepareVoiceWithCallback(ctx context.Context, callerNumber, callbackID string) (*voiceAudio, error) {
-	owner := getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER")
-	business := getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT")
-	if callerNumber != owner && callerNumber != business && callerNumber != "639267200480" && callerNumber != "61423947456" && !managedCallerAllowed(callerNumber) || callerNumber == "" {
-		return nil, fmt.Errorf("caller is not admitted")
+    return prepareVoiceInternal(ctx, callerNumber, callbackID, callbackID != "")
+}
+
+func prepareVoiceInternal(ctx context.Context, callerNumber, callbackID string, isOutbound bool) (*voiceAudio, error) {
+	cleanCaller := cleanDigits(callerNumber)
+	if cleanCaller == "" {
+		return nil, fmt.Errorf("valid phone number required")
+	}
+	if !isOutbound {
+		allowAll := getEnv("WHATSAPP_ALLOW_ALL_INBOUND", "ALLOW_ALL_INBOUND")
+		if allowAll != "" && allowAll != "true" && allowAll != "1" {
+			owner := cleanDigits(getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER"))
+			business := cleanDigits(getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT"))
+			if cleanCaller != owner && cleanCaller != business && !managedCallerAllowed(cleanCaller) {
+				return nil, fmt.Errorf("caller is not admitted")
+			}
+		}
 	}
 	key, err := os.ReadFile("/data/voice-key")
 	if err != nil {
@@ -170,6 +187,12 @@ func (v *voiceAudio) enqueueFor(ctx context.Context, generation uint64, data []b
 			frame[i] = float32(int16(binary.LittleEndian.Uint16(data[offset+i*2:]))) / 32768
 		}
 		if v.playback != nil {
+			v.mu.Lock()
+			currentGen := v.generation
+			v.mu.Unlock()
+			if generation != currentGen {
+				return
+			}
 			select {
 			case v.playback <- speechFrame{generation, frame}:
 			case <-ctx.Done():
@@ -302,9 +325,9 @@ func (v *voiceAudio) markReady() {
 func (v *voiceAudio) flushIfQuiet(now time.Time) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	wait := 650 * time.Millisecond
+	wait := 1100 * time.Millisecond
 	if v.extended {
-		wait = 1400 * time.Millisecond
+		wait = 2200 * time.Millisecond
 	}
 	if !v.busy && !v.interruptPending && len(v.samples) > 0 && !v.lastSpeech.IsZero() && now.Sub(v.lastSpeech) >= wait {
 		v.flushLocked()

@@ -35,3 +35,4 @@ func TestDisconnectNeedsBackendAuthentication(t *testing.T) {
  if call(http.MethodPost,"Bearer "+strings.Repeat("k",40))!=200 {t.Fatal("Authorized disconnect failed")}
  if !disconnected {t.Fatal("Authorized disconnect did not trigger callback")}
 }
+
