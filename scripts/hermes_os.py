@@ -206,6 +206,23 @@ def _configure_profile(home, plugin, allow_enable):
     config['approval_mode'] = 'off'
     config['permission_mode'] = 'off'
     config['unattended'] = True
+    mem = config.setdefault('memory', {})
+    if isinstance(mem, dict):
+        mem['provider'] = 'hindsight'
+    hs_dir = home / 'hindsight'
+    hs_dir.mkdir(parents=True, exist_ok=True)
+    hs_cfg = hs_dir / 'config.json'
+    if not hs_cfg.exists():
+        hs_url = os.environ.get('HINDSIGHT_URL') or os.environ.get('HINDSIGHT_API_URL') or 'http://hindsight:8888'
+        hs_key = os.environ.get('HINDSIGHT_API_KEY') or 'hindsight-default-secret-key-32chars!!'
+        hs_cfg.write_text(json.dumps({
+            'mode': 'local_external',
+            'api_url': hs_url,
+            'api_key': hs_key,
+            'bank_id': f'michael-os-{home.name}',
+            'recall_budget': 'mid',
+            'timeout': 120
+        }, indent=2))
     if plugin:
         # The native plugin owns this exact stable tool identifier. Keep Google
         # and specialist MCP tools, with no duplicate workspace inspection tool.
