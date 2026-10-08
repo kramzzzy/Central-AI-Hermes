@@ -18,6 +18,7 @@ for line in Path(os.environ.get('HERMES_BRIDGE_CONFIG', str(ROOT/'.env'))).read_
  if '=' in line and not line.startswith('#'):
   key,value=line.split('=',1);settings[key]=value
 settings.setdefault('HERMES_PYTHON', os.environ.get('HERMES_PYTHON', sys.executable))
+settings.setdefault('HERMES_VOICE_PROVIDER', os.environ.get('HERMES_VOICE_PROVIDER', settings.get('HERMES_CHAT_PROVIDER', 'openrouter')))
 KEY=settings['HERMES_API_KEY']
 if len(KEY)<32:raise RuntimeError('A generated bridge secret is required')
 from hermes_installation import restore_installation, Installation
@@ -122,6 +123,11 @@ class Handler(BaseHTTPRequestHandler):
    from hermes_laya import available
    with processes.lock:background_runs=len(processes.active)
    return self.reply(200,{'mode':'profile-aware','modes':['draft-only','tools'],'tools':[],'hermes':True,'cancellation':True,'runtime_profile':settings['HERMES_PROFILE'],'runtime_host':os.environ.get('HERMES_RUNTIME_HOST','native-windows'),'library_protocol':1,'settings_protocol':1,'google_protocol':1,'task_attachments':1,'laya':available(),'chat_connected':bool(chat.sid),'voice_call':bool(chat.voice_call),'background_runs':background_runs,'call_tasks_busy':os_calls.busy(),'conversation':voice.status()['conversation']})
+  if self.path == '/models' or self.path.startswith('/models?'):
+   from provider_models import get_catalog_models
+   force = 'refresh=1' in self.path or 'refresh=true' in self.path
+   catalog = get_catalog_models(settings, force_refresh=force)
+   return self.reply(200, catalog)
   if self.path=='/catalog':
    with catalog_lock:
     if time.monotonic()-catalog_cache['at']<30:return self.reply(200,catalog_cache['data'])
@@ -131,29 +137,37 @@ class Handler(BaseHTTPRequestHandler):
      if result.returncode:return self.reply(503,{'error':'Hermes inventory unavailable'})
      from hermes_artwork import available as artwork_available
      data=json.loads(result.stdout);data['image_generation']=artwork_available()
-     models=[]
-     try:
-      raw=chat.rpc('model.options',{'profile':settings['HERMES_PROFILE'],'include_unconfigured':False},timeout=5)
-      for row in raw.get('providers',[]):
-       if row.get('available') is not False and row.get('authenticated') is not False:
-        for m in row.get('models',[]):
-         val=str(m) if isinstance(m,str) else str(m.get('id',m.get('name','')))
-         if val and val not in models:models.append(val)
-     except Exception:pass
-     if not models:
-      models=[os.environ.get('HERMES_CHAT_MODEL','nousresearch/hermes-4-405b'),
-              os.environ.get('WHATSAPP_CHAT_MODEL','deepseek/deepseek-v4.1-flash'),
-              os.environ.get('HERMES_VOICE_MODEL','meta-llama/llama-3.3-70b-instruct'),
-              'anthropic/claude-3-5-sonnet',
-              'anthropic/claude-3-7-sonnet',
-              'openai/gpt-4o',
-              'openai/gpt-4o-mini',
-              'openai/o3-mini',
-              'deepseek/deepseek-chat-v3.1',
-              'meta-llama/llama-3.3-70b-instruct',
-              'google/gemini-2.5-pro',
-              'google/gemini-2.5-flash']
-     data['available_models']=list(dict.fromkeys(m for m in models if m))
+     from provider_models import get_catalog_models
+     live_catalog = get_catalog_models(settings)
+     live_models = live_catalog.get('models', [])
+     if live_models:
+      data['available_models'] = live_models
+      data['provider_models'] = live_catalog.get('model_details', [])
+      data['vendors'] = live_catalog.get('vendors', [])
+     else:
+      models=[]
+      try:
+       raw=chat.rpc('model.options',{'profile':settings['HERMES_PROFILE'],'include_unconfigured':False},timeout=5)
+       for row in raw.get('providers',[]):
+        if row.get('available') is not False and row.get('authenticated') is not False:
+         for m in row.get('models',[]):
+          val=str(m) if isinstance(m,str) else str(m.get('id',m.get('name','')))
+          if val and val not in models:models.append(val)
+      except Exception:pass
+      if not models:
+       models=[os.environ.get('HERMES_CHAT_MODEL','nousresearch/hermes-4-405b'),
+               os.environ.get('WHATSAPP_CHAT_MODEL','deepseek/deepseek-v4.1-flash'),
+               os.environ.get('HERMES_VOICE_MODEL','meta-llama/llama-3.3-70b-instruct'),
+               'anthropic/claude-3-5-sonnet',
+               'anthropic/claude-3-7-sonnet',
+               'openai/gpt-4o',
+               'openai/gpt-4o-mini',
+               'openai/o3-mini',
+               'deepseek/deepseek-chat-v3.1',
+               'meta-llama/llama-3.3-70b-instruct',
+               'google/gemini-2.5-pro',
+               'google/gemini-2.5-flash']
+      data['available_models']=list(dict.fromkeys(m for m in models if m))
      catalog_cache.update(at=time.monotonic(),data=data)
      return self.reply(200,data)
     except Exception:return self.reply(503,{'error':'Hermes inventory unavailable'})

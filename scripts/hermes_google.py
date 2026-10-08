@@ -180,18 +180,32 @@ class GoogleWorkspace:
         profile_root = os.environ.get('HERMES_PROFILE_ROOT')
         if profile_root and Path(profile_root).is_dir():
             base_root = Path(profile_root)
+        elif Path('/opt/data').is_dir():
+            base_root = Path('/opt/data')
         else:
             base_root = Path(root)
         self.root = base_root / 'google'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Migrate from legacy ephemeral path if needed
-        legacy_root = Path(root) / 'google'
-        if legacy_root != self.root and (legacy_root / 'connections.sqlite').is_file() and not (self.root / 'connections.sqlite').is_file():
+        candidate_legacy_paths = [
+            Path(root) / 'google',
+            Path(__file__).resolve().parent.parent / '.runtime' / 'google',
+            Path('/opt/hermes/.runtime/google'),
+            Path('/opt/data/.runtime/google'),
+            Path('/root/.runtime/google'),
+            Path.home() / '.runtime' / 'google',
+        ]
+        if not (self.root / 'connections.sqlite').is_file():
             import shutil
-            try:
-                shutil.copytree(legacy_root, self.root, dirs_exist_ok=True)
-            except Exception:
-                pass
+            for legacy_path in candidate_legacy_paths:
+                if legacy_path != self.root and (legacy_path / 'connections.sqlite').is_file():
+                    try:
+                        if (legacy_path / 'encryption.key').is_file() and not (self.root / 'encryption.key').is_file():
+                            shutil.copy2(legacy_path / 'encryption.key', self.root / 'encryption.key')
+                        shutil.copy2(legacy_path / 'connections.sqlite', self.root / 'connections.sqlite')
+                        break
+                    except Exception:
+                        pass
         self.transport, self.clock, self.lock = transport, clock, threading.RLock()
         from cryptography.fernet import Fernet
         keyfile = self.root/'encryption.key'
@@ -240,11 +254,15 @@ class GoogleWorkspace:
         client_id = os.environ.get('GOOGLE_CLIENT_ID', '').strip()
         client_secret = os.environ.get('GOOGLE_CLIENT_SECRET', '').strip()
         redirect_uri = os.environ.get('GOOGLE_REDIRECT_URI', '').strip() or os.environ.get('GOOGLE_CALLBACK_URL', '').strip()
+        if not redirect_uri:
+            app_url = os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL') or os.environ.get('APP_ORIGIN') or ''
+            if app_url:
+                redirect_uri = app_url.rstrip('/') + '/api/connections/google/callback'
         if client_id and re.fullmatch(r'[A-Za-z0-9_-]+\.apps\.googleusercontent\.com', client_id):
             env_config = {
                 'client_id': client_id,
                 'client_secret': client_secret,
-                'redirect_uri': redirect_uri or 'https://api.centralai.app/api/connections/google/callback'
+                'redirect_uri': redirect_uri or 'http://localhost:3000/api/connections/google/callback'
             }
             try:
                 with self.database() as db:
@@ -360,6 +378,72 @@ class GoogleWorkspace:
             self.save(org,user,value)
             return self.status(org,user)
 
+    def link_tokens(self, org, user, body):
+        access_token = string(body.get('access_token'), 'access token', 4096)
+        refresh_token = body.get('refresh_token')
+        if refresh_token:
+            refresh_token = string(refresh_token, 'refresh token', 4096)
+        expires_in = body.get('expires_in', 3600)
+        try:
+            expires_in = max(60, int(expires_in))
+        except (ValueError, TypeError):
+            expires_in = 3600
+
+        raw_scopes = body.get('scopes') or []
+        if isinstance(raw_scopes, str):
+            scopes = [s.strip() for s in re.split(r'[\s,]+', raw_scopes) if s.strip()]
+        elif isinstance(raw_scopes, list):
+            scopes = [str(s).strip() for s in raw_scopes if s]
+        else:
+            scopes = []
+
+        sub = body.get('sub')
+        email = body.get('email')
+
+        # Best-effort validation/enrichment from Google's userinfo endpoint
+        try:
+            info = self.transport('https://openidconnect.googleapis.com/v1/userinfo', token=access_token)
+            if isinstance(info, dict):
+                if info.get('sub'):
+                    sub = info['sub']
+                if info.get('email'):
+                    email = info['email']
+        except Exception:
+            pass
+
+        if not sub:
+            sub = user
+        if not email:
+            email = user
+
+        current = self.connection(org, user)
+        # Preserve existing refresh_token if new one was omitted
+        if not refresh_token and current and current.get('refresh_token'):
+            refresh_token = current.get('refresh_token')
+
+        # If scopes were omitted or empty, attempt tokeninfo query
+        if not scopes:
+            try:
+                tinfo = self.transport('https://oauth2.googleapis.com/tokeninfo?access_token=' + urllib.parse.quote(access_token))
+                if isinstance(tinfo, dict) and tinfo.get('scope'):
+                    scopes = [s.strip() for s in tinfo['scope'].split() if s.strip()]
+            except Exception:
+                pass
+
+        value = {
+            'sub': str(sub),
+            'email': str(email),
+            'access_token': access_token,
+            'refresh_token': refresh_token or '',
+            'expires': self.clock() + expires_in,
+            'scopes': sorted(list(set(scopes))),
+            'version': secrets.token_hex(16),
+            'checked_at': self.clock(),
+            'revoked': False
+        }
+        self.save(org, user, value)
+        return self.status(org, user)
+
     def disconnect(self, org, user):
         with self.lock:
             value = self.connection(org,user)
@@ -419,6 +503,7 @@ class GoogleWorkspace:
         if not isinstance(args,dict):
             raise GoogleError('Invalid tool arguments.')
         fields = {
+            'gmail_inbox':{'query','page_token','max_results'},
             'gmail_search':{'query','page_token'}, 'gmail_read':{'message_id'},
             'calendar_list':set(), 'calendar_events':{'calendar_id','start','end','page_token'},
             'drive_list':{'page_token'}, 'drive_read':{'file_id'},
@@ -430,6 +515,40 @@ class GoogleWorkspace:
         quote = lambda v: urllib.parse.quote(v,safe='')
         def page():
             return string(args.get('page_token',''),'page token',2000,True)
+        if operation=='gmail_inbox':
+            try:
+                max_results = min(int(args.get('max_results', 15)), 25)
+            except (ValueError, TypeError):
+                max_results = 15
+            q = string(args.get('query', 'in:inbox'), 'mail search', 500, True)
+            query = urllib.parse.urlencode({'q': q, 'maxResults': max_results, 'pageToken': page()})
+            list_res = self.request(org, user, 'gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages?' + query)
+            messages = []
+            for item in list_res.get('messages', []):
+                msg_id = item.get('id')
+                if not msg_id: continue
+                try:
+                    m_data = self.request(org, user, 'gmail', 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + quote(msg_id) + '?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date')
+                    headers = {h.get('name', '').lower(): h.get('value', '') for h in m_data.get('payload', {}).get('headers', [])}
+                    labels = m_data.get('labelIds', [])
+                    messages.append({
+                        'id': msg_id,
+                        'thread_id': m_data.get('threadId', ''),
+                        'snippet': m_data.get('snippet', ''),
+                        'from': headers.get('from', ''),
+                        'subject': headers.get('subject', '(No subject)'),
+                        'date': headers.get('date', ''),
+                        'internalDate': m_data.get('internalDate', ''),
+                        'unread': 'UNREAD' in labels,
+                        'labels': labels,
+                    })
+                except Exception:
+                    continue
+            return {
+                'messages': messages,
+                'next_page_token': list_res.get('nextPageToken'),
+                'result_size_estimate': list_res.get('resultSizeEstimate', len(messages))
+            }
         if operation=='gmail_search':
             query = urllib.parse.urlencode({'q':string(args.get('query',''),'mail search',500,True),'maxResults':20,'pageToken':page()})
             return self.request(org,user,'gmail','https://gmail.googleapis.com/gmail/v1/users/me/messages?'+query)
@@ -643,6 +762,7 @@ class GoogleWorkspace:
             if action=='configure':return self.configure(body)
             if action=='connect':return self.start(org,user,body)
             if action=='callback':return self.finish(org,user,body)
+            if action=='link_tokens':return self.link_tokens(org,user,body)
             if action=='disconnect':return self.disconnect(org,user)
             if action=='read':return self.read(org,user,body.get('operation'),body.get('args',{}))
             if action=='prepare':return self.prepare(org,user,body.get('operation'),body.get('args',{}))

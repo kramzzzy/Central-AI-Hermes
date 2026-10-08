@@ -126,10 +126,13 @@ class VoiceProvider:
         from native_call_speech import native_enabled, tts_config
         if native_enabled(c):
             try:
-                ready = Path(tts_config(c)['piper']['voice']).is_file()
+                voice_path = Path(tts_config(c)['piper']['voice'])
+                ready = voice_path.is_file()
+                local_name = 'Jarvis (offline)' if 'alan' in voice_path.name.lower() else 'Jarvis · local'
             except (OSError, KeyError, ValueError, RuntimeError):
                 ready = False
-            return {**setup, 'configured': ready, 'voice': 'Lessac · local',
+                local_name = 'Jarvis · local'
+            return {**setup, 'configured': ready, 'voice': local_name,
                     'transcription': 'local', 'realtime': ready and bool(c.get('OPENROUTER_API_KEY')),
                     'conversation': 'stream'}
         return {**setup, 'configured': bool(c.get('FISH_API_KEY') and c.get('FISH_VOICE_ID')),
@@ -225,9 +228,10 @@ class VoiceProvider:
                 # the authenticated user's display name, never a browser prompt.
                 greeting = call_greeting(body.pop('display_name', ''))
                 overrides = dict(body.get('overrides') or {})
-                if fast:
+                if self.config.get('FISH_VOICE_ID'):
                     overrides['voice_id'] = self.config['FISH_VOICE_ID']
-                    overrides['language'] = 'en'
+                    overrides['voice'] = {'voice_id': self.config['FISH_VOICE_ID'], 'speaking_language': 'en', 'expressive': False}
+                overrides['language'] = 'en'
                 overrides.pop('first_message_prompt', None)
                 if isinstance(overrides.get('system_prompt'), str):
                     overrides['system_prompt'] = central_ai_identity(overrides['system_prompt'])

@@ -375,8 +375,8 @@ def fixed_speech(text):
     # private replies or arbitrary text. Includes voice/model in cache identity.
     if text not in {GREETING, RECOVERY, TASK_ACK}:
         raise ValueError('Only fixed phone phrases can be cached')
-    stamp = hashlib.sha256((config.get('CENTRAL_AI_CALL_SPEECH', 'fish') + '\0' + config['FISH_VOICE_ID'] + '\0' +
-        (config.get('FISH_TTS_MODEL') or 's2.1-pro-free') + '\0' + text).encode()).hexdigest()
+    speech_mode = 'piper-alan' if native_enabled(config) else ('fish-' + (config.get('FISH_VOICE_ID') or 'jarvis'))
+    stamp = hashlib.sha256((speech_mode + '\0' + (config.get('FISH_TTS_MODEL') or 's2.1-pro-free') + '\0' + text).encode()).hexdigest()
     path = DATA / ('fixed-' + stamp + '.pcm')
     if path.exists():
         audio = path.read_bytes()
@@ -532,7 +532,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {})
         task_counts = fish_service.task_counts() if fish_service else {}
         return self.reply(200, {'ready': ready, 'text_ready': text_supervisor.ready() if text_supervisor else False,
-                              'voice': 'Lessac · local' if native_enabled(config) else (config.get('FISH_VOICE_NAME') or 'Jarvis'),
+                              'voice': 'Jarvis (offline)' if native_enabled(config) else (config.get('FISH_VOICE_NAME') or 'Jarvis'),
                               'conversation_mode': CONVERSATION_MODE,
                               'active_call': active is not None, 'native_task_active': chat.voice_turn is not None or
                                   bool(business_chat and business_chat.voice_turn is not None) or

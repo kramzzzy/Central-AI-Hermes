@@ -106,6 +106,9 @@ def get_standalone_config():
             'LAYA_URL': os.environ.get('LAYA_URL', 'http://laya:8000'),
             'CENTRAL_AI_CALL_SPEECH': call_speech,
             'HERMES_CALL_SPEECH': call_speech,
+            'GOOGLE_CLIENT_ID': os.environ.get('GOOGLE_CLIENT_ID', '').strip(),
+            'GOOGLE_CLIENT_SECRET': os.environ.get('GOOGLE_CLIENT_SECRET', '').strip(),
+            'GOOGLE_REDIRECT_URI': os.environ.get('GOOGLE_REDIRECT_URI', '').strip(),
         },
         'phone_profiles': ['leo', 'sarah'],
     }

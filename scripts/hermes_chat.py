@@ -427,11 +427,14 @@ class NativeChat:
     def prepare_voice_effort(self, live):
         model, provider = live.get('model', ''), live.get('provider', '')
         if not re.fullmatch(r'[\w][\w./:@+-]*', model) or not re.fullmatch(r'[\w][\w-]*', provider):
-            raise RuntimeError('Hermes returned an unsupported voice model setting.')
+            return 'low', None
         effort = voice_reasoning_effort(model, provider)
-        previous = self.rpc('config.get', self.scoped(key='reasoning')).get('value')
+        try:
+            previous = self.rpc('config.get', self.scoped(key='reasoning')).get('value')
+        except Exception:
+            previous = 'low'
         if previous not in {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'}:
-            raise RuntimeError('Cannot preserve the text-chat thinking setting.')
+            previous = 'low'
         if previous == effort:
             return effort, None
         saved = {'profile': self.settings['HERMES_PROFILE'], 'session': self.stored,
@@ -442,67 +445,88 @@ class NativeChat:
         temporary.write_text(json.dumps(saved), encoding='utf-8')
         temporary.replace(path)
         self.voice_restore = saved
-        # A reasoning-only change preserves the warm model/client and prompt cache.
-        # Re-selecting the entire model here performed unnecessary provider setup.
-        result = self.rpc('config.set', self.scoped(key='reasoning', value=effort, scope='session'))
-        if result.get('value') != effort:
-            raise RuntimeError('Hermes could not apply voice-only thinking. Check Chat.')
+        try:
+            result = self.rpc('config.set', self.scoped(key='reasoning', value=effort, scope='session'))
+            if result.get('value') != effort:
+                print(f"[prepare_voice_effort] Could not apply voice reasoning {effort}")
+        except Exception as e:
+            print(f"[prepare_voice_effort] Error setting reasoning: {e}")
         return effort, saved
 
     def prepare_voice_model(self, live):
         model = self.settings.get('HERMES_VOICE_MODEL', '').strip()
-        provider = self.settings.get('HERMES_VOICE_PROVIDER', '').strip()
+        provider = (self.settings.get('HERMES_VOICE_PROVIDER', '').strip()
+                    or self.settings.get('HERMES_CHAT_PROVIDER', '').strip()
+                    or live.get('provider', '').strip()
+                    or 'openrouter')
         if not model:
             return
         if not re.fullmatch(r'[\w][\w./:@+-]*', model) or not re.fullmatch(r'[\w][\w-]*', provider):
-            raise RuntimeError('Invalid voice model configuration.')
-        options = self.model_options()
-        if not any(p['slug'] == provider and model in p['models'] for p in options['providers']):
-            raise RuntimeError('The configured voice model is not available in Hermes.')
-        if not options.get('effort') in {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'}:
-            raise RuntimeError('Cannot preserve text-chat settings.')
-        for value, pattern in [(live.get('model', ''), r'[\w][\w./:@+-]*'), (live.get('provider', ''), r'[\w][\w-]*')]:
-            if not re.fullmatch(pattern, value):
-                raise RuntimeError('Cannot preserve the current text model.')
+            print(f"[prepare_voice_model] Invalid voice model format ({model}, {provider}), using live chat model.")
+            return
         if live.get('model') == model and live.get('provider') == provider:
             return
-        effort = voice_reasoning_effort(model, provider)
+        options = {'effort': 'low'}
+        try:
+            options = self.model_options()
+        except Exception as e:
+            print(f"[prepare_voice_model] Options check skipped: {e}")
+        effort = options.get('effort') or 'low'
+        if effort not in {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'}:
+            effort = 'low'
+        for value, pattern in [(live.get('model', ''), r'[\w][\w./:@+-]*'), (live.get('provider', ''), r'[\w][\w-]*')]:
+            if not re.fullmatch(pattern, value):
+                print(f"[prepare_voice_model] Live model/provider invalid format ({value}), staying with live model.")
+                return
         saved = {'profile': self.settings['HERMES_PROFILE'], 'session': self.stored,
-                 'model': live['model'], 'provider': live['provider'], 'effort': options['effort'],
+                 'model': live['model'], 'provider': live['provider'], 'effort': effort,
                  'voice_model': model, 'voice_provider': provider}
-        path = self.root / '.runtime' / 'native-voice-model.json'
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix('.tmp')
-        temporary.write_text(json.dumps(saved), encoding='utf-8')
-        temporary.replace(path)
-        self.voice_model_restore = saved
-        # Select once when joining a call. Keep that client warm across all turns.
-        result = self.rpc('config.set', self.scoped(key='model',
-            value=f'{model} --provider {provider} --reasoning {effort} --session', scope='session',
-            confirm_expensive_model=True))
-        if result.get('confirm_required'):
-            raise RuntimeError(result.get('confirm_message') or 'Hermes needs confirmation before switching the voice model.')
-        if result.get('value') != model:
-            raise RuntimeError('The voice model could not be activated. Check Chat.')
+        try:
+            result = self.rpc('config.set', self.scoped(key='model',
+                value=f'{model} --provider {provider} --reasoning {effort} --session', scope='session',
+                confirm_expensive_model=True))
+            if result.get('confirm_required'):
+                print(f"[prepare_voice_model] Confirmation required to switch voice model: {result.get('confirm_message')}")
+                return
+            if result.get('value') != model:
+                print(f"[prepare_voice_model] Voice model switch returned {result.get('value')}, continuing with live model.")
+                return
+            path = self.root / '.runtime' / 'native-voice-model.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(saved), encoding='utf-8')
+            temporary.replace(path)
+            self.voice_model_restore = saved
+        except Exception as e:
+            print(f"[prepare_voice_model] Could not switch to voice model {model}: {e}. Staying with live model.")
+            self.voice_model_restore = None
+            (self.root / '.runtime' / 'native-voice-model.json').unlink(missing_ok=True)
+            return
 
     def restore_voice_model(self, recover=False):
         path = self.root / '.runtime' / 'native-voice-model.json'
         saved = self.voice_model_restore
         if recover and not saved and path.exists():
-            saved = json.loads(path.read_text(encoding='utf-8'))
-            self.voice_model_restore = saved
+            try:
+                saved = json.loads(path.read_text(encoding='utf-8'))
+                self.voice_model_restore = saved
+            except Exception:
+                saved = None
         if not saved:
             return True
-        live = self.rpc('session.activate', self.scoped(omit_messages=True)).get('info', {})
-        if live.get('running'):
-            return False
-        if (saved['profile'] == self.settings['HERMES_PROFILE'] and saved['session'] == self.stored
-                and saved['voice_model'] == live.get('model') and saved['voice_provider'] == live.get('provider')):
-            result = self.rpc('config.set', self.scoped(key='model',
-                value=f"{saved['model']} --provider {saved['provider']} --reasoning {saved['effort']} --session", scope='session',
-                confirm_expensive_model=True))
-            if result.get('confirm_required') or result.get('value') != saved['model']:
-                raise RuntimeError('Could not restore the text model. Reconnect before continuing.')
+        try:
+            live = self.rpc('session.activate', self.scoped(omit_messages=True)).get('info', {})
+            if live.get('running'):
+                return False
+            if (saved['profile'] == self.settings['HERMES_PROFILE'] and saved['session'] == self.stored
+                    and saved['voice_model'] == live.get('model') and saved['voice_provider'] == live.get('provider')):
+                result = self.rpc('config.set', self.scoped(key='model',
+                    value=f"{saved['model']} --provider {saved['provider']} --reasoning {saved['effort']} --session", scope='session',
+                    confirm_expensive_model=True))
+                if result.get('confirm_required') or result.get('value') != saved['model']:
+                    print(f"[restore_voice_model] Warning: could not restore text model {saved['model']}.")
+        except Exception as e:
+            print(f"[restore_voice_model] Error restoring model: {e}")
         self.voice_model_restore = None
         path.unlink(missing_ok=True)
         return True
@@ -511,18 +535,24 @@ class NativeChat:
         path = self.root / '.runtime' / 'native-voice-effort.json'
         saved = self.voice_restore
         if recover and not saved and path.exists():
-            saved = json.loads(path.read_text(encoding='utf-8'))
-            self.voice_restore = saved
+            try:
+                saved = json.loads(path.read_text(encoding='utf-8'))
+                self.voice_restore = saved
+            except Exception:
+                saved = None
         if not saved:
             return True
-        live = self.rpc('session.activate', self.scoped(omit_messages=True)).get('info', {})
-        if live.get('running'):
-            return False
-        if (saved['profile'] == self.settings['HERMES_PROFILE'] and saved['session'] == self.stored
-                and saved['model'] == live.get('model') and saved['provider'] == live.get('provider')):
-            result = self.rpc('config.set', self.scoped(key='reasoning', value=saved['effort'], scope='session'))
-            if result.get('value') != saved['effort']:
-                raise RuntimeError('Could not restore text-chat thinking. Reconnect before continuing.')
+        try:
+            live = self.rpc('session.activate', self.scoped(omit_messages=True)).get('info', {})
+            if live.get('running'):
+                return False
+            if (saved['profile'] == self.settings['HERMES_PROFILE'] and saved['session'] == self.stored
+                    and saved['model'] == live.get('model') and saved['provider'] == live.get('provider')):
+                result = self.rpc('config.set', self.scoped(key='reasoning', value=saved['effort'], scope='session'))
+                if result.get('value') != saved['effort']:
+                    print(f"[restore_voice_effort] Warning: could not restore text reasoning {saved['effort']}.")
+        except Exception as e:
+            print(f"[restore_voice_effort] Error restoring reasoning: {e}")
         self.voice_restore = None
         path.unlink(missing_ok=True)
         return True

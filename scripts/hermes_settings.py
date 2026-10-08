@@ -126,18 +126,37 @@ def runtime_settings(chat, body):
     params = {'profile': chat.settings['HERMES_PROFILE']}
     action = body.get('action')
     if action == 'models':
+        live_models = []
+        model_details = []
+        vendors = []
+        try:
+            from provider_models import get_catalog_models
+            live_catalog = get_catalog_models(chat.settings, force_refresh=body.get('refresh') is True)
+            live_models = live_catalog.get('models', [])
+            model_details = live_catalog.get('model_details', [])
+            vendors = live_catalog.get('vendors', [])
+        except Exception as e:
+            print(f"[hermes_settings] Live catalog fetch failed: {e}")
+
         raw = chat.rpc('model.options', {**params, 'include_unconfigured': False}, timeout=60)
         providers = []
         for row in raw.get('providers', []):
             if row.get('authenticated') is False or row.get('picker_hints', {}).get('authenticated') is False or row.get('available') is False:
                 continue
-            providers.append({'slug': row.get('slug'), 'name': row.get('name'),
-                              'models': [m for m in row.get('models', []) if m not in row.get('unavailable_models', [])]})
+            slug = row.get('slug')
+            models = [m for m in row.get('models', []) if m not in row.get('unavailable_models', [])]
+            if slug == 'openrouter' and live_models:
+                models = live_models
+            providers.append({'slug': slug, 'name': row.get('name'), 'models': models})
+
+        if not any(p['slug'] == 'openrouter' for p in providers) and live_models:
+            providers.insert(0, {'slug': 'openrouter', 'name': 'OpenRouter (Live Catalog)', 'models': live_models})
+
         # Models are identifiers/catalog labels only; never return endpoint or credential metadata.
         for row in providers:
             row['models'] = [str(v) if isinstance(v, str) else str(v.get('id', v.get('name', '')))
                              for v in row.get('models') or []]
-        return {'providers': providers}
+        return {'providers': providers, 'model_details': model_details, 'vendors': vendors}
     if action == 'integrations':
         status = chat.rpc('mcp.servers.status', params, timeout=30)
         return {'servers': [{k: row.get(k) for k in ('name', 'transport', 'connected', 'disabled', 'status', 'tools')}

@@ -165,6 +165,19 @@ export function loadRuntimeEnvironment(
       ? ["SUPABASE_SERVICE_ROLE_KEY", "PREMADE_AGENT_MANIFEST_FILE"]
       : []),
   ]) {
+    if (key === "HERMES_BASE_URL" && source[key]) {
+      source[key] = source[key].trim().replace(/\/$/, "").replace(/:8643$/, ":8642");
+      if (
+        process.env.DOCKER_CONTAINER === "1" ||
+        process.env.NODE_ENV === "production" ||
+        process.env.COOLIFY_CONTAINER_NAME ||
+        process.env.COOLIFY_URL
+      ) {
+        if (source[key].includes("localhost") || source[key].includes("127.0.0.1")) {
+          source[key] = source[key].replace(/localhost|127\.0\.0\.1/, "hermes");
+        }
+      }
+    }
     if (typeof source[key] !== "string" || !source[key])
       throw new Error("Missing private App API field: " + key);
   }

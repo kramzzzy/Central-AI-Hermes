@@ -355,7 +355,7 @@ function nativeProfile(agent, model, provider = 'openrouter') {
     tts: {
       provider: "piper",
       piper: {
-        voice: "/opt/voice-models/en_US-lessac-medium.onnx",
+        voice: "/opt/voice-models/en_GB-alan-medium.onnx",
         use_cuda: false,
       },
     },
