@@ -36,6 +36,9 @@ services:
       SCRAPLING_URL: http://scrapling:8008
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
+      FISH_VOICE_NAME: ${FISH_VOICE_NAME:-Jarvis}
+      CENTRAL_AI_CALL_SPEECH: ${CENTRAL_AI_CALL_SPEECH:-fish}
+      HERMES_CALL_SPEECH: ${HERMES_CALL_SPEECH:-fish}
       APP_OS_URL: ${APP_OS_URL:-http://web:3000}
       MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
       HOME: /opt/data
@@ -196,6 +199,9 @@ services:
       WHATSAPP_CONVERSATION_MODE: "fish"
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
+      FISH_VOICE_NAME: ${FISH_VOICE_NAME:-Jarvis}
+      CENTRAL_AI_CALL_SPEECH: ${CENTRAL_AI_CALL_SPEECH:-fish}
+      HERMES_CALL_SPEECH: ${HERMES_CALL_SPEECH:-fish}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       - hermes-profiles:/opt/data

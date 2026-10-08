@@ -99,6 +99,18 @@ class VoiceProvider:
         # The deployment credential overrides copied profile credentials.
         if os.environ.get('FISH_API_KEY'):
             self.config['FISH_API_KEY'] = os.environ['FISH_API_KEY'].strip()
+        if os.environ.get('FISH_VOICE_ID'):
+            self.config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
+        else:
+            self.config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
+        if os.environ.get('FISH_VOICE_NAME'):
+            self.config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
+        else:
+            self.config.setdefault('FISH_VOICE_NAME', 'Jarvis')
+        if os.environ.get('CENTRAL_AI_CALL_SPEECH'):
+            self.config['CENTRAL_AI_CALL_SPEECH'] = os.environ['CENTRAL_AI_CALL_SPEECH'].strip()
+        elif self.config.get('FISH_API_KEY'):
+            self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
         from central_ai_integrations import integration_config
         self.config = integration_config(self.config)
         from voice_setup import load_settings
@@ -121,7 +133,7 @@ class VoiceProvider:
                     'transcription': 'local', 'realtime': ready and bool(c.get('OPENROUTER_API_KEY')),
                     'conversation': 'stream'}
         return {**setup, 'configured': bool(c.get('FISH_API_KEY') and c.get('FISH_VOICE_ID')),
-                'voice': c.get('FISH_VOICE_NAME') or 'Voice',
+                'voice': c.get('FISH_VOICE_NAME') or 'Jarvis',
                 'transcription': 'fish' if c.get('FISH_ASR_ENABLED') == 'true' else 'browser',
                 'realtime': bool(c.get('FISH_API_KEY') and (
                     c.get('FISH_OS_CALL_ENGINE') == 'stream' and c.get('FISH_VOICE_ID') and c.get('OPENROUTER_API_KEY') or

@@ -83,6 +83,10 @@ def install_memory(home):
 def get_standalone_config():
     openrouter_key = os.environ.get('OPENROUTER_API_KEY', '') or 'sk-or-v1-standalone-default-key-32chars'
     hermes_key = os.environ.get('HERMES_API_KEY', 'hermes_standalone_secret_token_32chars')
+    fish_key = os.environ.get('FISH_API_KEY', '').strip()
+    call_speech = os.environ.get('CENTRAL_AI_CALL_SPEECH') or os.environ.get('HERMES_CALL_SPEECH') or ('fish' if fish_key else 'piper')
+    voice_name = os.environ.get('FISH_VOICE_NAME', 'Jarvis')
+    voice_id = os.environ.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
     return {
         'version': 1,
         'integrations': {
@@ -90,8 +94,9 @@ def get_standalone_config():
             'OPENAI_API_KEY': os.environ.get('OPENAI_API_KEY', ''),
             'ANTHROPIC_API_KEY': os.environ.get('ANTHROPIC_API_KEY', ''),
             'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY', ''),
-            'FISH_API_KEY': os.environ.get('FISH_API_KEY', ''),
-            'FISH_VOICE_ID': os.environ.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe'),
+            'FISH_API_KEY': fish_key,
+            'FISH_VOICE_ID': voice_id,
+            'FISH_VOICE_NAME': voice_name,
             'HERMES_API_KEY': hermes_key,
             'HERMES_MEMORY_TOKEN': openrouter_key or 'hindsight-default-secret-key-32chars!!',
             'HINDSIGHT_API_KEY': os.environ.get('HINDSIGHT_API_KEY', 'hindsight-default-secret-key-32chars!!'),
@@ -99,7 +104,8 @@ def get_standalone_config():
             'HINDSIGHT_API_URL': os.environ.get('HINDSIGHT_API_URL', 'http://hindsight:8888'),
             'LAYA_API_KEY': os.environ.get('LAYA_API_KEY', 'laya-local-key'),
             'LAYA_URL': os.environ.get('LAYA_URL', 'http://laya:8000'),
-            'CENTRAL_AI_CALL_SPEECH': os.environ.get('CENTRAL_AI_CALL_SPEECH', 'piper'),
+            'CENTRAL_AI_CALL_SPEECH': call_speech,
+            'HERMES_CALL_SPEECH': call_speech,
         },
         'phone_profiles': ['leo', 'sarah'],
     }

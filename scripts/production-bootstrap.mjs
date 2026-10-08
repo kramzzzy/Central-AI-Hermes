@@ -104,7 +104,8 @@ export function installationSettings(env) {
   const selectedKey = providerKeys[settings.chatProvider];
   if (selectedKey && !settings[selectedKey]?.trim()) throw new Error('Set '+selectedKey+' for the selected assistant provider.');
   settings.voiceModel = env.HERMES_VOICE_MODEL || "openai/gpt-4.1-mini";
-  settings.speechProvider = env.HERMES_CALL_SPEECH || "piper";
+  const speechDefault = env.FISH_API_KEY?.trim() ? "fish" : "piper";
+  settings.speechProvider = env.HERMES_CALL_SPEECH || env.CENTRAL_AI_CALL_SPEECH || speechDefault;
   if (!["piper", "fish"].includes(settings.speechProvider))
     throw new Error("HERMES_CALL_SPEECH must be piper or fish.");
   settings.FISH_API_KEY = env.FISH_API_KEY || "";
@@ -400,7 +401,7 @@ export async function provisionFiles(root, settings, state) {
     SUPABASE_SERVICE_ROLE_KEY: settings.SUPABASE_SERVICE_ROLE_KEY,
     DATABASE_URL: database.href,
     DATABASE_SCHEMA: "app_os",
-    HERMES_BASE_URL: "http://hermes:8643",
+    HERMES_BASE_URL: "http://hermes:8642",
     HERMES_API_KEY: state.keys.hermes,
     PREMADE_AGENT_MANIFEST_FILE: "/run/secrets/premade_agents",
   };

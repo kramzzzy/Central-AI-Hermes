@@ -68,6 +68,14 @@ if os.environ.get('FISH_VOICE_ID'):
     config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
 else:
     config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
+if os.environ.get('FISH_VOICE_NAME'):
+    config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
+else:
+    config.setdefault('FISH_VOICE_NAME', 'Jarvis')
+if os.environ.get('CENTRAL_AI_CALL_SPEECH'):
+    config['CENTRAL_AI_CALL_SPEECH'] = os.environ['CENTRAL_AI_CALL_SPEECH'].strip()
+elif config.get('FISH_API_KEY'):
+    config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
 from native_call_speech import native_enabled
 if not native_enabled(config) and (not config.get('FISH_API_KEY') or not config.get('FISH_VOICE_ID')):
     raise RuntimeError('Native voice configuration required')
@@ -524,7 +532,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {})
         task_counts = fish_service.task_counts() if fish_service else {}
         return self.reply(200, {'ready': ready, 'text_ready': text_supervisor.ready() if text_supervisor else False,
-                              'voice': 'Lessac · local' if native_enabled(config) else config.get('FISH_VOICE_NAME'),
+                              'voice': 'Lessac · local' if native_enabled(config) else (config.get('FISH_VOICE_NAME') or 'Jarvis'),
                               'conversation_mode': CONVERSATION_MODE,
                               'active_call': active is not None, 'native_task_active': chat.voice_turn is not None or
                                   bool(business_chat and business_chat.voice_turn is not None) or

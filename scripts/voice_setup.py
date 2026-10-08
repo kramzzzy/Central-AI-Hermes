@@ -56,7 +56,7 @@ def configure(settings, value):
         if not voice_id:
             raise ValueError('Fish Voice ID is not configured in backend')
         changes.update(FISH_API_KEY=key, FISH_VOICE_ID=voice_id,
-                       FISH_VOICE_NAME='Fish Audio', FISH_OS_CALL_ENGINE='stream', FISH_ASR_ENABLED='true')
+                       FISH_VOICE_NAME='Jarvis', FISH_OS_CALL_ENGINE='stream', FISH_ASR_ENABLED='true')
     provider.config.update(changes)
     if not provider.status().get('realtime'):
         raise ValueError('This voice provider is not ready. Check its settings or choose Set up later.')

@@ -13,7 +13,14 @@ _synthesis = threading.BoundedSemaphore(1)
 
 
 def native_enabled(config):
-    return (config or {}).get('CENTRAL_AI_CALL_SPEECH') == 'piper' or os.environ.get('CENTRAL_AI_CALL_SPEECH') == 'piper'
+    cfg = config or {}
+    speech = cfg.get('CENTRAL_AI_CALL_SPEECH') or os.environ.get('CENTRAL_AI_CALL_SPEECH') or os.environ.get('HERMES_CALL_SPEECH')
+    fish_key = (cfg.get('FISH_API_KEY') or os.environ.get('FISH_API_KEY') or '').strip()
+    if speech == 'fish':
+        return False
+    if fish_key and speech != 'piper':
+        return False
+    return speech == 'piper' or not fish_key
 
 
 def tts_config(config=None):
