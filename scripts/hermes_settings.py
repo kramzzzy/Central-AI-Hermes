@@ -86,8 +86,9 @@ def run_settings(settings, root, body):
     try:
         env = profile_environment(settings)
         env['HERMES_DISABLE_LAZY_INSTALLS'] = '1'
+        python_bin = settings.get('HERMES_PYTHON') or __import__('os').environ.get('HERMES_PYTHON') or __import__('sys').executable
         process = subprocess.Popen(
-            [settings['HERMES_PYTHON'], str(root / 'scripts/hermes-settings-entry.py')],
+            [python_bin, str(root / 'scripts/hermes-settings-entry.py')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8',
             env=env, cwd=root, **({'creationflags': subprocess.CREATE_NO_WINDOW} if __import__('os').name == 'nt' else {'start_new_session': True}))
         try:

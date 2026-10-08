@@ -79,8 +79,9 @@ class NativeChat:
             env.pop('MICHAEL_RESTRICT_TEAM_TOOLS',None)
             if self.settings.get('HERMES_RESTRICT_TEAM_TOOLS')=='true':env['MICHAEL_RESTRICT_TEAM_TOOLS']='true'
             env['MICHAEL_OS_TOOL_TOKEN_FILE'] = str(self.os_tool_file)
+            python_bin = self.settings.get('HERMES_PYTHON') or os.environ.get('HERMES_PYTHON') or sys.executable
             self.process = subprocess.Popen(
-                [self.settings['HERMES_PYTHON'], '-u', str(self.root / 'scripts/hermes-chat-entry.py')],
+                [python_bin, '-u', str(self.root / 'scripts/hermes-chat-entry.py')],
                 env=env, cwd=self.root,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                 encoding='utf-8', text=True,

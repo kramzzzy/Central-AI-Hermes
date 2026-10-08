@@ -22,6 +22,7 @@ services:
       HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
       HERMES_BRIDGE_BIND: "0.0.0.0"
       HERMES_PORT: "8642"
+      HERMES_PYTHON: "/opt/hermes/.venv/bin/python"
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

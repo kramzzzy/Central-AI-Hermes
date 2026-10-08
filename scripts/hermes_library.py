@@ -1,6 +1,8 @@
 """Profile-bound read adapter, reusable by the planned OS plugin transport."""
 import json
+import os
 import subprocess
+import sys
 from hermes_profile import profile_environment
 
 
@@ -8,8 +10,9 @@ def read_library(settings, root, body):
     if body.get('action') not in {'skills', 'skill', 'memory', 'skill_create', 'skill_edit', 'skill_delete'}:
         raise RuntimeError('Unsupported library operation')
     try:
+        python_bin = settings.get('HERMES_PYTHON') or os.environ.get('HERMES_PYTHON') or sys.executable
         result = subprocess.run(
-            [settings['HERMES_PYTHON'], str(root / 'scripts/hermes-library-entry.py')],
+            [python_bin, str(root / 'scripts/hermes-library-entry.py')],
             input=json.dumps(body),
             capture_output=True, text=True, encoding='utf-8', timeout=45,
             env=profile_environment(settings), cwd=root)

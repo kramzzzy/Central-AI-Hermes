@@ -47,7 +47,8 @@ def complete(settings, root, body):
     if not _slots.acquire(timeout=5):
         return 429, {'error': {'message': 'Memory processor busy', 'type': 'rate_limit_error'}}
     try:
-        result = subprocess.run([settings['HERMES_PYTHON'], str(root / 'scripts' / 'hermes-memory-entry.py')],
+        python_bin = settings.get('HERMES_PYTHON') or __import__('os').environ.get('HERMES_PYTHON') or __import__('sys').executable
+        result = subprocess.run([python_bin, str(root / 'scripts' / 'hermes-memory-entry.py')],
             input=json.dumps(prepared), capture_output=True, text=True, encoding='utf-8',
             timeout=85, env=profile_environment(settings), cwd=root)
         data = json.loads(result.stdout)

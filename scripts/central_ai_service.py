@@ -115,6 +115,7 @@ def bootstrap(mode, config):
         os.environ.setdefault('HERMES_PROFILE', 'leo')
         os.environ.setdefault('HERMES_PROFILE_ROOT', '/opt/data')
         os.environ.setdefault('HERMES_REPO', '/opt/hermes')
+        os.environ.setdefault('HERMES_PYTHON', sys.executable)
         if 'HERMES_API_KEY' not in os.environ or len(os.environ['HERMES_API_KEY']) < 32:
             os.environ['HERMES_API_KEY'] = 'hermes_standalone_secret_token_32chars'
         runtime_env = Path('/opt/os-adapter/.runtime/hermes.env')

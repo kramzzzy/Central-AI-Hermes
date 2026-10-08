@@ -17,6 +17,7 @@ settings={}
 for line in Path(os.environ.get('HERMES_BRIDGE_CONFIG', str(ROOT/'.env'))).read_text().splitlines():
  if '=' in line and not line.startswith('#'):
   key,value=line.split('=',1);settings[key]=value
+settings.setdefault('HERMES_PYTHON', os.environ.get('HERMES_PYTHON', sys.executable))
 KEY=settings['HERMES_API_KEY']
 if len(KEY)<32:raise RuntimeError('A generated bridge secret is required')
 from hermes_installation import restore_installation, Installation
@@ -125,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
     if time.monotonic()-catalog_cache['at']<30:return self.reply(200,catalog_cache['data'])
     try:
      env=profile_environment(settings)
-     result=subprocess.run([settings['HERMES_PYTHON'],str(ROOT/'scripts'/'hermes-catalog.py')],capture_output=True,text=True,encoding='utf-8',timeout=22,env=env,cwd=ROOT)
+     result=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-catalog.py')],capture_output=True,text=True,encoding='utf-8',timeout=22,env=env,cwd=ROOT)
      if result.returncode:return self.reply(503,{'error':'Hermes inventory unavailable'})
      from hermes_artwork import available as artwork_available
      data=json.loads(result.stdout);data['image_generation']=artwork_available()
@@ -518,7 +519,7 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(409,{'error':'Hermes profile changed; start a new interaction'})
    run_id=str(UUID(body.get('session_id','')))
    with task_file_context(body, ROOT/'.runtime') as prepared:
-    process=processes.run(run_id,[settings['HERMES_PYTHON'],str(ROOT/'scripts'/'hermes-job.py')],json.dumps(prepared),env=env,cwd=ROOT)
+    process=processes.run(run_id,[settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],json.dumps(prepared),env=env,cwd=ROOT)
    if process.returncode:
     # Local diagnostics only; never return provider internals or credentials to clients.
     (ROOT/'.runtime'/'hermes-last-error.log').write_text(process.stderr,encoding='utf-8')
