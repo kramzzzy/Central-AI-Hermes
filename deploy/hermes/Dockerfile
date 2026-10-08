@@ -15,10 +15,12 @@ RUN env npm_config_cache=/tmp/.npm PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwri
     && ln -sf /opt/hermes/.playwright/chromium-*/chrome-linux/chrome /usr/local/bin/chrome
 
 # Immutable CPU models are shared by native Hermes and both call surfaces.
-ADD --checksum=sha256:5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_US/lessac/medium/en_US-lessac-medium.onnx /opt/voice-models/en_US-lessac-medium.onnx
-ADD https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json /opt/voice-models/en_US-lessac-medium.onnx.json
-ADD https://huggingface.co/rhasspy/piper-voices/raw/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_US/lessac/medium/MODEL_CARD /opt/voice-models/PIPER_MODEL_CARD
-RUN /opt/hermes/.venv/bin/python -c "from faster_whisper.utils import download_model; download_model('base.en', revision='3d3d5dee26484f91867d81cb899cfcf72b96be6c', output_dir='/opt/voice-models/whisper-base.en')" \
+ADD --checksum=sha256:0a309668932205e762801f1efc2736cd4b0120329622adf62be09e56339d3330 https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_GB/alan/medium/en_GB-alan-medium.onnx /opt/voice-models/en_GB-alan-medium.onnx
+ADD https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json /opt/voice-models/en_GB-alan-medium.onnx.json
+ADD https://huggingface.co/rhasspy/piper-voices/raw/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_GB/alan/medium/MODEL_CARD /opt/voice-models/PIPER_MODEL_CARD
+RUN ln -sf /opt/voice-models/en_GB-alan-medium.onnx /opt/voice-models/en_US-lessac-medium.onnx \
+    && ln -sf /opt/voice-models/en_GB-alan-medium.onnx.json /opt/voice-models/en_US-lessac-medium.onnx.json \
+    && /opt/hermes/.venv/bin/python -c "from faster_whisper.utils import download_model; download_model('base.en', revision='3d3d5dee26484f91867d81cb899cfcf72b96be6c', output_dir='/opt/voice-models/whisper-base.en')" \
     && chmod -R a+rX /opt/voice-models
 # Only transport/integration code enters this layer. Profiles and credentials are volumes/secrets.
 COPY scripts/*.py ./scripts/

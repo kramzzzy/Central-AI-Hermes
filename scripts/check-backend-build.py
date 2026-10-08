@@ -62,7 +62,10 @@ def main():
     from stream_conversation import TurnControl, TurnCancelled
     with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {'HERMES_HOME': temporary}):
         path = Path(temporary) / 'config.yaml'
-        path.write_text('tts:\n  provider: piper\n  piper:\n    voice: /opt/voice-models/en_GB-alan-medium.onnx\n')
+        voice_model = '/opt/voice-models/en_GB-alan-medium.onnx'
+        if not Path(voice_model).exists() and Path('/opt/voice-models/en_US-lessac-medium.onnx').exists():
+            voice_model = '/opt/voice-models/en_US-lessac-medium.onnx'
+        path.write_text(f'tts:\n  provider: piper\n  piper:\n    voice: {voice_model}\n')
         config = {'CENTRAL_AI_CALL_SPEECH': 'piper', 'CENTRAL_AI_VOICE_CONFIG': str(path)}
         with patch('socket.socket.connect', side_effect=AssertionError('Baked speech must work offline')), \
              patch('tools.tts_tool_local._get_piper_voices_dir', side_effect=AssertionError('Speech cache must follow the selected profile')):

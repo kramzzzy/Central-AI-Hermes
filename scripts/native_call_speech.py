@@ -39,10 +39,10 @@ def tts_config(config=None):
     if not Path(default_voice).exists() and Path('/opt/voice-models/en_US-lessac-medium.onnx').exists():
         default_voice = '/opt/voice-models/en_US-lessac-medium.onnx'
     existing_voice = tts['piper'].get('voice')
-    if existing_voice and 'lessac' in str(existing_voice).lower() and Path('/opt/voice-models/en_GB-alan-medium.onnx').exists():
-        tts['piper']['voice'] = '/opt/voice-models/en_GB-alan-medium.onnx'
-    else:
-        tts['piper'].setdefault('voice', default_voice)
+    if existing_voice and not Path(existing_voice).exists():
+        tts['piper']['voice'] = default_voice
+    elif not existing_voice:
+        tts['piper']['voice'] = default_voice
     tts['piper'].setdefault('use_cuda', False)
     tts['piper'].setdefault('voices_dir', str(path.parent / 'cache' / 'piper-voices'))
     return tts
