@@ -6,9 +6,10 @@ import os
 from pathlib import Path
 import re
 import urllib.request
-from central_ai_identity import CENTRAL_AI_IDENTITY
+from central_ai_identity import CENTRAL_AI_IDENTITY, get_central_ai_identity
 
-REPLY_STYLE = """[WhatsApp reply style]
+def get_whatsapp_reply_style():
+    base = """[WhatsApp reply style]
 Provide only the direct, clean conversational response to the user's message.
 Never mention tools, tool names, tool execution, function calls, or internal processes.
 Never show tool execution status or say 'using tool'.
@@ -28,7 +29,10 @@ Describe help you can actually provide. Bring up a missing connection, sign-in
 or approval only when it blocks the requested next step, in everyday language.
 Never claim that a booking, payment, email or other action has completed without
 confirmation from the service. Avoid a standard caveat paragraph or canned script.
-[/WhatsApp reply style]""" + '\n' + CENTRAL_AI_IDENTITY
+[/WhatsApp reply style]"""
+    return base + '\n' + get_central_ai_identity()
+
+REPLY_STYLE = get_whatsapp_reply_style()
 
 BOOKING_SKILL = 'personal-assistant-booking'
 

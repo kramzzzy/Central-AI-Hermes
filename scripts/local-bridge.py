@@ -247,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(status,data)
    except ValueError:return self.reply(400,{'error':{'message':'Invalid memory request'}})
    except Exception:return self.reply(503,{'error':{'message':'Memory processor unavailable'}})
-  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/whatsapp/send','/os/message'}:
+  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/message'}:
    is_admin=self.authorized()
    inspection_chat=None
    if not is_admin:
@@ -256,11 +256,11 @@ class Handler(BaseHTTPRequestHandler):
     except PermissionError:return self.reply(403,{'error':'Conversation access changed.'})
    else:
     inspection_chat=chat
-   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/whatsapp/send','/os/message'}:
+   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/message'}:
     return self.reply(401,{'error':'Unauthorized'})
    try:
     length=int(self.headers.get('Content-Length','0'))
-    max_len=262144 if self.path=='/os/contacts' else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192)
+    max_len=262144 if self.path in {'/os/contacts','/os/company'} else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192)
     if not 0<length<=max_len:return self.reply(413,{'error':'Tool request too large'})
     body=json.loads(self.rfile.read(length))
     if self.path in {'/os/whatsapp/send','/os/message'}:
@@ -310,7 +310,22 @@ class Handler(BaseHTTPRequestHandler):
       except Exception as err:
        last_err=str(err)
      return self.reply(502,{'ok':False,'error':f'WhatsApp connector unavailable: {last_err}'})
-    if self.path=='/os/contacts':
+    if self.path in {'/os/contacts','/os/company'}:
+     c_name=body.get('company_name') or body.get('company')
+     if c_name:
+      c_payload=json.dumps({'company_name':str(c_name).strip()},indent=2)
+      for cf in ['/data/company.json',str(ROOT/'.runtime'/'company.json'),str(ROOT/'data'/'company.json')]:
+       try:
+        p=Path(cf);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(c_payload,encoding='utf-8')
+        os.chmod(cf,0o666)
+       except Exception:pass
+      try:
+       from central_ai_identity import configure_identity
+       target_home=chat.home if hasattr(chat,'home') else ROOT
+       configure_identity(target_home)
+      except Exception:pass
+     if self.path=='/os/company':
+      return self.reply(200,{'ok':True,'company_name':c_name})
      for cf in ['/data/contacts.json',str(ROOT/'.runtime'/'contacts.json'),str(ROOT/'data'/'contacts.json')]:
       try:
        p=Path(cf);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(body,indent=2),encoding='utf-8')

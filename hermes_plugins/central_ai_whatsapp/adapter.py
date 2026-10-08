@@ -46,7 +46,7 @@ def build_engine_adapter(route,member,home,group):
     import aiohttp
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     from gateway.platforms.base import SendResult,get_image_cache_dir,get_audio_cache_dir,get_document_cache_dir
-    from whatsapp_system_context import REPLY_STYLE,attach_assistant_skills,clean_reply_punctuation
+    from whatsapp_system_context import get_whatsapp_reply_style,attach_assistant_skills,clean_reply_punctuation
     owner=member.get('number','')
     class EngineAdapter(WhatsAppAdapter):
         def _bridge_url(self,path):return 'http://caller:8080/text/'+path
@@ -75,7 +75,7 @@ def build_engine_adapter(route,member,home,group):
             if not member.get('allow_all', True) and not member['group'] and owner and data.get('senderId')!=owner:return None
             event=await super()._build_message_event(data)
             if event is not None:
-                event.channel_prompt='\n\n'.join(filter(None,[event.channel_prompt,REPLY_STYLE,
+                event.channel_prompt='\n\n'.join(filter(None,[event.channel_prompt,get_whatsapp_reply_style(),
                     'Use this native profile’s configured memory tools for saved facts; do not invent memories. '
                     'When the user instructs characteristics, voice emotions, speaking tone, or personal preferences, immediately record and save them into memory so they persist across WhatsApp and App OS. '
                     'If an attachment is marked unavailable, ask for its contents or a smaller copy; never claim to have read it.']))
@@ -111,7 +111,8 @@ def build_engine_adapter(route,member,home,group):
                                 await self.handle_message(event)
                             else:await self._complete(data,'rejected')
                         finally:binding.reset(token)
-                except asyncio.CancelledError:break
+                except asyncio.CancelledError:
+                    break
                 except Exception:
                     logging.error('Leo text route %s temporarily unavailable',route)
                     await asyncio.sleep(3)
