@@ -284,9 +284,44 @@ class OSCalls:
             return {'active': True, 'working': any(x['status'] in ACTIVE for x in item['jobs'].snapshot(False))}
         if action == 'tool':
             event = body.get('event')
-            if not isinstance(event, dict) or event.get('toolName') not in {'native_leo', 'task_status', 'cancel_task'}:
+            tool_name = event.get('toolName') if isinstance(event, dict) else ''
+            if tool_name not in {'native_leo', 'task_status', 'cancel_task', 'send_whatsapp_message', 'call_whatsapp_contact'}:
                 raise ValueError('Unsupported voice tool')
             text = body.get('spoken_request', '')
+            if tool_name == 'send_whatsapp_message':
+                params = event.get('params') or {}
+                recipient = str(params.get('recipient') or '').strip()
+                msg = str(params.get('message') or '').strip()
+                port = os.environ.get('HERMES_PORT', '8642')
+                try:
+                    sreq = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/os/whatsapp/send",
+                        data=json.dumps({'target': recipient, 'message': msg}).encode('utf-8'),
+                        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + os.environ.get('HERMES_API_KEY', 'hermes_standalone_secret_token_32chars')}
+                    )
+                    with urllib.request.urlopen(sreq, timeout=15) as sresp:
+                        sdata = json.loads(sresp.read())
+                        res_msg = sdata.get('message') or f"WhatsApp message sent to {recipient}."
+                        return {'type': 'client_tool.result', 'callId': event.get('callId'), 'result': {'status': 'sent', 'recipient': recipient, 'message': res_msg}}
+                except Exception as exc:
+                    return {'type': 'client_tool.result', 'callId': event.get('callId'), 'isError': True, 'result': {'status': 'failed', 'error': f"Failed to send WhatsApp message: {str(exc)}"}}
+            if tool_name == 'call_whatsapp_contact':
+                params = event.get('params') or {}
+                recipient = str(params.get('recipient') or '').strip()
+                reason = str(params.get('reason') or '').strip()
+                port = os.environ.get('HERMES_PORT', '8642')
+                try:
+                    creq = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/os/call",
+                        data=json.dumps({'target': recipient, 'reason': reason}).encode('utf-8'),
+                        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + os.environ.get('HERMES_API_KEY', 'hermes_standalone_secret_token_32chars')}
+                    )
+                    with urllib.request.urlopen(creq, timeout=12) as cresp:
+                        cdata = json.loads(cresp.read())
+                        res_msg = cdata.get('message') or f"Dialing {recipient} on WhatsApp."
+                        return {'type': 'client_tool.result', 'callId': event.get('callId'), 'result': {'status': 'dialing', 'recipient': recipient, 'message': res_msg}}
+                except Exception as exc:
+                    return {'type': 'client_tool.result', 'callId': event.get('callId'), 'isError': True, 'result': {'status': 'failed', 'error': f"Failed to place call: {str(exc)}"}}
             if not isinstance(text, str) or not 0 < len(text.strip()) <= 12000:
                 raise PermissionError('A confirmed caller request is required')
             if event['toolName'] in {'native_leo', 'cancel_task'}:

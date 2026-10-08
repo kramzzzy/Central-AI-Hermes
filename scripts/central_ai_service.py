@@ -143,6 +143,11 @@ def bootstrap(mode, config):
         root_config = root_data / 'config.yaml'
         if not root_config.is_file():
             root_config.write_text('plugins:\n  enabled: []\n', encoding='utf-8')
+        os.environ.setdefault('HERMES_APPROVAL_MODE', 'off')
+        os.environ.setdefault('HERMES_PERMISSION_MODE', 'off')
+        os.environ.setdefault('HERMES_SESSION_PLATFORM', 'api_server')
+        os.environ.setdefault('CALLER_URL', 'http://caller:8080')
+        os.environ.setdefault('WHATSAPP_URL', 'http://caller:8080')
         all_homes = [Path('/opt/data/profiles') / item['native_profile'] for item in profiles]
         for home in all_homes:
             home.mkdir(parents=True, exist_ok=True)
@@ -154,6 +159,10 @@ def bootstrap(mode, config):
             with profile_lock(home):
                 original = path.read_text(encoding='utf-8')
                 native = yaml.safe_load(original) or {}
+                # Enforce bypass of approval prompts so agent tools execute immediately
+                native['approval_mode'] = 'off'
+                native['permission_mode'] = 'off'
+                native['unattended'] = True
                 install_files(home, native)
                 content = yaml.safe_dump(native, sort_keys=False, allow_unicode=True)
                 if content != original:
@@ -163,6 +172,11 @@ def bootstrap(mode, config):
                     atomic_write(backup / (uuid4().hex + '.yaml'), original)
                     atomic_write(path, content)
             sync_profile(home)
+            try:
+                from hermes_os import configure_profile
+                configure_profile(home)
+            except Exception as e:
+                print(f'Configure profile failed for {home.name}: {e}', file=sys.stderr)
             import subprocess
             if subprocess.run([sys.executable, '-c', 'from tools.skills_sync import sync_skills; sync_skills(quiet=True)'],
                               env=dict(os.environ, HERMES_HOME=str(home)), cwd='/opt/hermes').returncode:

@@ -5,10 +5,7 @@ import shutil
 from pathlib import Path
 from central_ai_identity import central_ai_identity
 
-CALLERS = {
-    '639267200480': {'number': '639267200480', 'name': 'Mark Tech', 'profile': 'leo'},
-    '61423947456': {'number': '61423947456', 'name': 'Michael Vazquez', 'profile': 'team-whatsapp-michael-business'},
-}
+CALLERS = {}
 
 
 def resolve_caller(number):
@@ -20,7 +17,9 @@ def provision_business_phone(root):
     import yaml
     root = Path(root)
     source = root / 'profiles' / 'leo'
-    member = CALLERS['61423947456']
+    from whatsapp_routing import routing
+    b_num = routing().get('business') or 'business'
+    member = {'number': b_num, 'name': 'Business', 'profile': 'team-whatsapp-business'}
     home = root / 'profiles' / member['profile']
     binding = {'number': member['number'], 'purpose': 'private-whatsapp-business'}
     if home.is_symlink():

@@ -111,10 +111,21 @@ class VoiceProvider:
             self.config['CENTRAL_AI_CALL_SPEECH'] = os.environ['CENTRAL_AI_CALL_SPEECH'].strip()
         elif self.config.get('FISH_API_KEY'):
             self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+        for env_key in ('OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
+                        'FISH_OS_CALL_ENGINE', 'FISH_ASR_ENABLED', 'FISH_TTS_MODEL', 'FISH_LLM_MODEL',
+                        'HERMES_VOICE_MODEL'):
+            if os.environ.get(env_key):
+                self.config[env_key] = os.environ[env_key].strip()
+        if self.config.get('FISH_API_KEY'):
+            self.config.setdefault('FISH_OS_CALL_ENGINE', 'stream')
+            self.config.setdefault('FISH_ASR_ENABLED', 'true')
         from central_ai_integrations import integration_config
         self.config = integration_config(self.config)
         from voice_setup import load_settings
         self.config.update(load_settings(settings))
+        if self.config.get('FISH_API_KEY'):
+            self.config.setdefault('FISH_OS_CALL_ENGINE', 'stream')
+            self.config.setdefault('FISH_ASR_ENABLED', 'true')
         self.bridge_key = settings['HERMES_API_KEY']
         self.slots = threading.BoundedSemaphore(4)
 
@@ -135,14 +146,16 @@ class VoiceProvider:
             return {**setup, 'configured': ready, 'voice': local_name,
                     'transcription': 'local', 'realtime': ready and bool(c.get('OPENROUTER_API_KEY')),
                     'conversation': 'stream'}
+        call_engine = c.get('FISH_OS_CALL_ENGINE') or os.environ.get('FISH_OS_CALL_ENGINE') or ('stream' if c.get('FISH_API_KEY') else '')
+        has_llm = bool(c.get('OPENROUTER_API_KEY') or c.get('OPENAI_API_KEY') or os.environ.get('OPENROUTER_API_KEY') or os.environ.get('OPENAI_API_KEY'))
         return {**setup, 'configured': bool(c.get('FISH_API_KEY') and c.get('FISH_VOICE_ID')),
                 'voice': c.get('FISH_VOICE_NAME') or 'Jarvis',
-                'transcription': 'fish' if c.get('FISH_ASR_ENABLED') == 'true' else 'browser',
+                'transcription': 'fish' if (c.get('FISH_ASR_ENABLED') == 'true' or os.environ.get('FISH_ASR_ENABLED') == 'true') else 'browser',
                 'realtime': bool(c.get('FISH_API_KEY') and (
-                    c.get('FISH_OS_CALL_ENGINE') == 'stream' and c.get('FISH_VOICE_ID') and c.get('OPENROUTER_API_KEY') or
+                    call_engine == 'stream' and c.get('FISH_VOICE_ID') and has_llm or
                     c.get('FISH_REALTIME_ENABLED') == 'true' and c.get('FISH_AGENT_ID') and c.get('FISH_AGENT_BRIDGE_SECRET'))),
-                'conversation': 'stream' if c.get('FISH_OS_CALL_ENGINE') == 'stream' else (
-                    'fish' if c.get('FISH_OS_CALL_ENGINE') == 'fish' and c.get('FISH_OS_LIVE_AGENT_ID') else 'hermes')}
+                'conversation': 'stream' if call_engine == 'stream' else (
+                    'fish' if call_engine == 'fish' and c.get('FISH_OS_LIVE_AGENT_ID') else 'hermes')}
 
     def callback_authorized(self, token):
         expected=self.config.get('FISH_AGENT_BRIDGE_SECRET')
@@ -269,7 +282,8 @@ class VoiceProvider:
         from websockets.sync.client import connect
 
         def authenticate(connection, request):
-            if request.path != '/voice/live' or request.headers.get('Origin') or not hmac.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + self.bridge_key):
+            auth = (request.headers.get('Authorization') or '').strip().strip('\'"')
+            if request.path != '/voice/live' or not hmac.compare_digest(auth, 'Bearer ' + self.bridge_key):
                 return connection.respond(401, 'Unauthorized')
 
         def relay(client):

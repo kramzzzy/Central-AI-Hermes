@@ -52,9 +52,14 @@ def text_routes():
     return routes
 
 def caller(number):
-    for c in routing()['contacts']:
-        clean = c.get('number') or c.get('phone_number')
-        if clean == number and (c.get('calls') or c.get('inbound') or c.get('allow_inbound') or c.get('outbound') or c.get('allow_outbound')):
+    import re, os
+    target_digits = re.sub(r'\D', '', str(number))
+    if not target_digits:
+        raise PermissionError('Invalid phone number')
+    for c in routing().get('contacts', []):
+        raw = c.get('number') or c.get('phone_number') or ''
+        clean = re.sub(r'\D', '', str(raw))
+        if clean == target_digits and (c.get('calls') or c.get('inbound') or c.get('allow_inbound') or c.get('outbound') or c.get('allow_outbound')):
             return {
                 **c,
                 'number': clean,
@@ -62,6 +67,45 @@ def caller(number):
                 'profile': c.get('profile') or 'leo',
                 'name': c.get('name') or clean
             }
+    owner_digits = re.sub(r'\D', '', str(routing().get('owner') or ''))
+    if owner_digits and target_digits == owner_digits:
+        return {
+            'number': target_digits,
+            'name': 'Owner',
+            'role': 'owner',
+            'route': 'owner',
+            'profile': 'leo',
+            'text_profile': 'leo-whatsapp-text',
+            'calls': True,
+            'inbound': True,
+            'outbound': True
+        }
+    business_digits = re.sub(r'\D', '', str(routing().get('business') or ''))
+    if business_digits and target_digits == business_digits:
+        return {
+            'number': target_digits,
+            'name': 'Business',
+            'role': 'business',
+            'route': 'business',
+            'profile': 'leo',
+            'text_profile': 'leo-whatsapp-text',
+            'calls': True,
+            'inbound': True,
+            'outbound': True
+        }
+    allow_all = os.environ.get('WHATSAPP_ALLOW_ALL_INBOUND', os.environ.get('ALLOW_ALL_INBOUND', 'true')).lower() in {'true', '1', 'yes'}
+    if allow_all:
+        return {
+            'number': target_digits,
+            'name': f'Caller +{target_digits}',
+            'role': 'contact',
+            'route': f'contact-{target_digits}',
+            'profile': 'leo',
+            'text_profile': 'leo-whatsapp-text',
+            'calls': True,
+            'inbound': True,
+            'outbound': True
+        }
     raise PermissionError('Caller is not admitted')
 
 def caller_data(base, number):

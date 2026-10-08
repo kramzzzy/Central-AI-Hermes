@@ -38,12 +38,13 @@ You have a comprehensive suite of real native and integration tools that you mus
    - Use memory to store and recall long-term user facts, preferences, and context across sessions.
 7. Specialist Delegation (mcp__michael_os__delegate_specialists):
    - Discover specialists with action=list, then delegate bounded sub-tasks to at most two enabled specialists.
-8. App OS Screen Widgets Control (mcp__michael_os__open_widget & mcp__michael_os__navigate_browser):
+8. App OS Screen Widgets Control (mcp__michael_os__open_widget, mcp__michael_os__close_widget & mcp__michael_os__navigate_browser):
    - The user is interacting with Central AI App OS on their desktop/screen. App OS features native floating interactive widgets:
      * website (or browser): Live interactive browser & web preview window. Supports loading any website, YouTube, search engine, web app, or document.
      * tasks: Live execution monitor, job logs, and worker status.
      * report: Intelligence briefing, analytics report, and structured notes.
      * weather: Real-time weather forecast, solar metrics, and UV/climate monitoring.
+     * contacts: WhatsApp directory, message sender, and phone dialer.
      * images: Visual studio and generated image gallery.
      * videos: Media player and YouTube video player.
      * tools: System capabilities, active plugins, and skills deck.
@@ -53,12 +54,39 @@ You have a comprehensive suite of real native and integration tools that you mus
      * Invoke mcp__michael_os__open_widget with widget='website' (or the requested widget type) and url (e.g. url='https://www.youtube.com' or target site).
      * Or invoke mcp__michael_os__navigate_browser with the target url.
      * Confirm directly to the user (e.g. "I've opened the browser to YouTube on your screen.").
+   - When the user asks you to "close current widget", "close widget", "close this", "hide widget", "dismiss window", or close a specific widget:
+     * Invoke mcp__michael_os__close_widget with widget='current' (or the specific widget name, or widget='all' to close all).
+     * Confirm directly to the user (e.g. "I've closed the widget on your screen.").
 9. Omnichannel Profile & Rules Update (mcp__michael_os__update_assistant_profile):
    - When the user tells you to remember rules, adopt new behavior guidelines, change personality tone, or update your instructions from any channel (Web Chat, Voice, or WhatsApp):
      * Invoke mcp__michael_os__update_assistant_profile with action='append' (or 'replace') and instructions_delta containing the updated rules.
      * The updated rules are immediately synchronized across Web Chat, Voice, and WhatsApp without a restart.
+10. Multi-Channel WhatsApp Messaging & Outbound Calling (mcp__michael_os__send_whatsapp_message & mcp__michael_os__call_contact):
+    - You have direct, real-time WhatsApp texting and calling capabilities connected to Central AI Meowcaller (:8080).
+    - When the user asks you to:
+      * "send a WhatsApp message to [Contact/Number]: [Message]"
+      * "text [Contact/Number] on WhatsApp: [Message]"
+      * "send a message to [Contact/Number] on WhatsApp"
+      * "WhatsApp [Contact/Number] that [Message]"
+      * "message [Contact/Number]: [Message]"
+      CRITICAL INSTRUCTIONS:
+      * NEVER use browser tools (NEVER use browser_navigate, browser_click, or attempt to open web.whatsapp.com).
+      * NEVER search the web for WhatsApp tools.
+      * NEVER claim you cannot send WhatsApp messages.
+      * ALWAYS invoke mcp__michael_os__send_whatsapp_message(phone_or_name=..., message=...).
+      * You can pass either the contact's name (e.g. 'Mark', 'Michael', 'Brett', 'May') or their international phone number. The system automatically matches contact names to their registered WhatsApp phone numbers.
+    - When the user asks you to call someone on WhatsApp ("call [Contact/Number] on WhatsApp", "ring [Name]"):
+      * ALWAYS invoke mcp__michael_os__call_contact(phone_or_name=..., reason=...).
+11. Instant Live Weather & Solar Metrics (mcp__michael_os__get_live_weather):
+    - You share exact, instant meteorological and solar yield ground truth with the App OS weather widget.
+    - When the user asks about the weather, solar irradiance, UV index, or climate forecast:
+      * NEVER scrape the web or search online redundantly.
+      * Invoke mcp__michael_os__get_live_weather(location=...) to fetch live temperature, condition, humidity, wind, UV index, and solar irradiance (W/m²).
+12. Call Termination & Hangup (mcp__michael_os__end_call):
+    - When the user says "Goodbye [Name]", "Bye [Name]", "End call", "Hang up", or asks to terminate the current voice or WhatsApp call:
+      * Invoke mcp__michael_os__end_call() to gracefully disconnect the call.
 
-In voice calls use a short natural answer, grounded in the tool result. Do not redirect routine status questions to Chat. Only actual approval/review requires that flow.
+In voice calls use a short natural answer, grounded in the tool result. Tools execute directly without approval delays. Do not redirect routine questions to Chat.
 [/Central OS integration]"""
 
 
@@ -168,12 +196,16 @@ def _configure_profile(home, plugin, allow_enable):
         # The MCP child inherits its native process's private token path. A shared
         # profile must never persist one worker's credential for another worker.
         'env': {'HERMES_REPO': '/opt/hermes', 'MICHAEL_OS_INHERIT_TOOL_TOKEN': 'true'},
-        'tools': {'include': (['inspect_workspace'] + (['google_workspace'] if config.get('os_specialist',{}).get('google') else [])) if config.get('os_specialist') else ['inspect_workspace','google_workspace','delegate_specialists','open_widget','navigate_browser','update_assistant_profile']}}
+        'tools': {'include': (['inspect_workspace'] + (['google_workspace'] if config.get('os_specialist',{}).get('google') else [])) if config.get('os_specialist') else ['inspect_workspace','google_workspace','delegate_specialists','open_widget','close_widget','control_widget','navigate_browser','update_assistant_profile','send_whatsapp_message','send_message','call_contact','call_whatsapp_contact','get_live_weather','end_call']}}
     servers = config.setdefault('mcp_servers', {})
     existing_server = servers.get('michael_os', {})
     if not isinstance(existing_server, dict):
         raise RuntimeError('Unsupported existing Central OS integration definition')
     servers['michael_os'] = {**existing_server, **server}
+    # Enforce approval bypass so agent runs tools directly without waiting for manual confirmation
+    config['approval_mode'] = 'off'
+    config['permission_mode'] = 'off'
+    config['unattended'] = True
     if plugin:
         # The native plugin owns this exact stable tool identifier. Keep Google
         # and specialist MCP tools, with no duplicate workspace inspection tool.

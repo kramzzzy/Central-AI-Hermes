@@ -12,9 +12,12 @@ TERMINAL = {'complete', 'approval_required', 'interrupted', 'unavailable'}
 
 
 class BackgroundTasks:
-    def __init__(self, data, bridge_factory, native_factory, owner='whatsapp:639267200480',
+    def __init__(self, data, bridge_factory, native_factory, owner=None,
                  workers=3, pending=8, slots=None, callbacks=False):
         self.path = Path(data) / 'background-tasks.json'
+        from whatsapp_routing import routing
+        if not owner:
+            owner = 'whatsapp:' + (routing().get('owner') or 'default')
         self.owner, self.bridge_factory, self.native_factory = owner, bridge_factory, native_factory
         self.limit, self.pending = workers, pending
         self.lock = threading.RLock()
@@ -78,7 +81,9 @@ class BackgroundTasks:
             return {'type': 'client_tool.result', 'callId': call_id, 'result': value, **({'isError': True} if error else {})}
         if (not isinstance(call_id, str) or not 1 <= len(call_id) <= 160
                 or event.get('expectsResponse') is not True or not isinstance(params, dict)
-                or name not in {'native_leo', 'task_status', 'cancel_task', 'task_callback'}):
+                or name not in {'native_leo', 'task_status', 'cancel_task', 'task_callback',
+                                'add_knowledge', 'search_knowledge', 'get_workspace_overview',
+                                'send_whatsapp_message', 'call_whatsapp_contact'}):
             return response({'status': 'invalid_request'}, True)
         with self.lock:
             if self.closed or not allowed(call):
@@ -87,6 +92,12 @@ class BackgroundTasks:
             previous = self.packets.get(packet)
             if previous:
                 return previous
+            if name in {'add_knowledge', 'search_knowledge', 'get_workspace_overview', 'send_whatsapp_message', 'call_whatsapp_contact'}:
+                bridge = self.bridge_factory(call, None, allowed)
+                result = bridge.execute(event)
+                self.packets[packet] = result
+                self.save()
+                return result
             if name in {'task_status', 'cancel_task', 'task_callback'}:
                 task_id = params.get('task_id', '')
                 if not isinstance(task_id, str):

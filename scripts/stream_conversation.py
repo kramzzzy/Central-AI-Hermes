@@ -82,6 +82,81 @@ class TurnControl:
             threading.Thread(target=close,daemon=True).start()
 
 
+def fish_rest_tts(text, config, rate=24000):
+    import urllib.request
+    key = (config.get('FISH_API_KEY') or '').strip()
+    voice_id = (config.get('FISH_VOICE_ID') or '').strip()
+    if not key or not voice_id or not text or not text.strip():
+        return b''
+    payload = json.dumps({
+        'text': text.strip(),
+        'reference_id': voice_id,
+        'format': 'pcm',
+        'sample_rate': rate,
+        'latency': 'balanced'
+    }).encode('utf-8')
+    model = config.get('FISH_TTS_MODEL') or 's2.1-pro-free'
+    req = urllib.request.Request(
+        'https://api.fish.audio/v1/tts',
+        data=payload,
+        headers={
+            'Authorization': 'Bearer ' + key,
+            'Content-Type': 'application/json',
+            'model': model
+        },
+        method='POST'
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read()
+
+
+class FishRestSpeech:
+    """Zero-setup HTTP fallback when live websocket is unreachable or blocked."""
+    def __init__(self, config, audio, control, rate=24000):
+        self.config, self.audio, self.control, self.rate = config, audio, control, rate
+        self.pending = ''
+        self.first_audio = None
+        self.first_flush = None
+        self.complete = False
+        self.bytes = 0
+
+    def text(self, value):
+        self.pending += value
+
+    def sentence(self, text):
+        self.pending += ' ' + text
+
+    def finish(self):
+        text = self.pending.strip()
+        self.pending = ''
+        if not text:
+            self.complete = True
+            return
+        self.control.check()
+        try:
+            pcm = fish_rest_tts(text, self.config, self.rate)
+            if pcm:
+                self.control.check()
+                self.first_audio = time.monotonic()
+                self.bytes += len(pcm)
+                self.audio(pcm)
+                self.complete = True
+                return
+        except Exception as exc:
+            import sys
+            print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc}), falling back to NativeSpeech", file=sys.stderr)
+        try:
+            from native_call_speech import NativeSpeech
+            fallback = NativeSpeech(self.config, self.audio, self.control, self.rate)
+            fallback.text(text)
+            fallback.finish()
+            self.first_audio = fallback.first_audio
+            self.bytes = fallback.bytes
+            self.complete = fallback.complete
+        except Exception:
+            pass
+
+
 class FreeSpeech:
     """One free synthesis socket per reply; start it while the model is thinking."""
     def __new__(cls, config=None, audio=None, control=None, rate=16000):
@@ -106,16 +181,17 @@ class FreeSpeech:
     def receive(self):
         import msgpack
         from websockets.sync.client import connect
+        model = self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'
         try:
             with connect('wss://api.fish.audio/v1/tts/live', additional_headers={
                     'Authorization': 'Bearer ' + (self.config.get('FISH_API_KEY') or ''),
-                    'model': 's2.1-pro-free'}, open_timeout=8, close_timeout=1,
+                    'model': model}, open_timeout=8, close_timeout=1,
                     max_size=4*1024*1024, max_queue=8) as socket:
                 self.socket = self.control.track(socket)
                 socket.send(msgpack.packb({'event': 'start', 'request': {'text': '',
                     'reference_id': self.config.get('FISH_VOICE_ID') or '', 'format': 'pcm',
-                    'sample_rate': self.rate, 'latency': 'low', 'chunk_length': 100,
-                    'condition_on_previous_chunks': True, 'features':['quality-guard']}}, use_bin_type=True))
+                    'sample_rate': self.rate, 'latency': 'balanced', 'chunk_length': 150,
+                    'condition_on_previous_chunks': True}}, use_bin_type=True))
                 self.ready.set()
                 opened = time.monotonic()
                 while time.monotonic() < (self.started+45 if self.started else opened+35):
@@ -133,21 +209,16 @@ class FreeSpeech:
                         self.first_audio = self.first_audio or time.monotonic()
                         self.audio(data)
                     elif event.get('event') == 'finish':
-                        self.complete = event.get('reason') == 'stop'
+                        self.complete = event.get('reason') in {'stop', 'ended', 'normal'}
                         if not self.complete: raise RuntimeError('Speech rejected')
                         return
                 raise RuntimeError('Speech deadline exceeded')
         except Exception as exc:
             if not self.control.cancelled.is_set():
                 import sys
-                print(f"[FreeSpeech] Cloud TTS unavailable ({type(exc).__name__}: {exc}), engaging local fallback...", file=sys.stderr)
-                try:
-                    from native_call_speech import NativeSpeech, tts_config
-                    tts_config(self.config)
-                    self.fallback = NativeSpeech(self.config, self.audio, self.control, self.rate)
-                    self.error = None
-                except Exception as fb_exc:
-                    self.error = type(exc).__name__
+                print(f"[FreeSpeech] Cloud WS TTS unavailable ({type(exc).__name__}: {exc}), engaging FishRestSpeech fallback...", file=sys.stderr)
+                self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
+                self.error = None
         finally:
             self.ready.set()
             self.done.set()
@@ -159,16 +230,14 @@ class FreeSpeech:
             return
         if not self.ready.wait(6):
             if not self.fallback and not self.control.cancelled.is_set():
-                try:
-                    from native_call_speech import NativeSpeech
-                    self.fallback = NativeSpeech(self.config, self.audio, self.control, self.rate)
-                except Exception:
-                    pass
+                self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
             if self.fallback:
                 return
             raise RuntimeError('Jarvis speech is temporarily unavailable')
         if not self.socket or self.error:
             self.control.check()
+            if not self.fallback and not self.control.cancelled.is_set():
+                self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
             if self.fallback:
                 return
             raise RuntimeError('Jarvis speech is temporarily unavailable')
@@ -212,9 +281,8 @@ class FreeSpeech:
         except Exception:
             if not self.control.cancelled.is_set():
                 try:
-                    from native_call_speech import NativeSpeech
                     if not self.fallback:
-                        self.fallback = NativeSpeech(self.config, self.audio, self.control, self.rate)
+                        self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
                     return self.fallback.sentence(text)
                 except Exception:
                     pass
@@ -239,9 +307,11 @@ class FreeSpeech:
         except Exception:
             if not self.fallback and not self.control.cancelled.is_set():
                 try:
-                    from native_call_speech import NativeSpeech
-                    self.fallback = NativeSpeech(self.config, self.audio, self.control, self.rate)
+                    self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
                     self.fallback.finish()
+                    self.first_audio = self.fallback.first_audio
+                    self.complete = self.fallback.complete
+                    self.bytes = self.fallback.bytes
                     return
                 except Exception:
                     pass
@@ -252,6 +322,17 @@ class FreeSpeech:
             if time.monotonic() > deadline: raise RuntimeError('Speech did not finish')
         self.control.check()
         if self.error or not self.complete or not self.bytes:
+            if not self.bytes and not self.fallback and not self.control.cancelled.is_set():
+                try:
+                    self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
+                    self.fallback.finish()
+                    self.first_audio = self.fallback.first_audio
+                    self.complete = self.fallback.complete
+                    self.bytes = self.fallback.bytes
+                    if self.bytes:
+                        return
+                except Exception:
+                    pass
             raise RuntimeError('Speech did not finish')
 
 
@@ -299,7 +380,7 @@ class Conversation:
         self.config, self.prompt, self.tool = config, prompt, tool
         # Reuse the owned preset with its existing cheap model/fallback policy.
         conversation_llm(config)
-        self.names = names or {'native_leo', 'task_status', 'cancel_task'}
+        self.names = names or {'native_leo', 'task_status', 'cancel_task', 'send_whatsapp_message', 'call_whatsapp_contact'}
         self.stream = stream or openrouter_stream
         self.history = []
         self.last_timing = {}

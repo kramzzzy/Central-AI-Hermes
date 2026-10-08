@@ -1,12 +1,13 @@
 """Private OS call transport bound to the existing authenticated task context."""
 import base64
 import json
+import os
 import threading
 import time
 from uuid import UUID
 
 from hermes_voice import call_greeting
-from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled
+from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, fish_rest_tts
 
 
 class OSStreamVoice:
@@ -44,8 +45,9 @@ class OSStreamVoice:
                 if len(self.contexts) >= 4: raise RuntimeError('Voice calls are busy')
                 config = dict((self.team_voice if scope.get('assistant') else self.voice).config)
                 # Team voice providers share model authentication, not memory.
-                config['OPENROUTER_API_KEY'] = config.get('OPENROUTER_API_KEY') or self.voice.config.get('OPENROUTER_API_KEY')
-                config['FISH_LLM_MODEL'] = config.get('FISH_LLM_MODEL') or self.voice.config.get('FISH_LLM_MODEL') or 'openai/gpt-4.1-mini'
+                config['OPENROUTER_API_KEY'] = config.get('OPENROUTER_API_KEY') or self.voice.config.get('OPENROUTER_API_KEY') or os.environ.get('OPENROUTER_API_KEY', '')
+                config['OPENAI_API_KEY'] = config.get('OPENAI_API_KEY') or self.voice.config.get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY', '')
+                config['FISH_LLM_MODEL'] = config.get('FISH_LLM_MODEL') or self.voice.config.get('FISH_LLM_MODEL') or os.environ.get('HERMES_VOICE_MODEL') or 'openai/gpt-4.1-mini'
                 def tool(event, text):
                     with self.guard:
                         context = self.contexts.get(call)
@@ -120,8 +122,15 @@ class OSStreamVoice:
                 if action != 'greeting':
                     raise
                 import traceback; traceback.print_exc()
+            if action == 'greeting' and (not speech or not getattr(speech, 'bytes', 0)):
+                try:
+                    greeting_pcm = fish_rest_tts(item['greeting'], item['config'], rate=24000)
+                    if greeting_pcm:
+                        emit({'type': 'audio', 'audio': base64.b64encode(greeting_pcm).decode()})
+                except Exception:
+                    import traceback; traceback.print_exc()
             emit({'type':'done','timings':{'first_text_ms':round(((first or began)-began)*1000),
-                'first_audio_ms':round(((speech.first_audio or began)-began)*1000)}})
+                'first_audio_ms':round(((getattr(speech, 'first_audio', None) or began)-began)*1000)}})
         except TurnCancelled:
             pass
         except (BrokenPipeError,ConnectionResetError):

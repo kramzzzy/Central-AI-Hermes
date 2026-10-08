@@ -245,7 +245,11 @@ if CONVERSATION_MODE in {'fish', 'stream'} and BUSINESS:
 
 
 def current_phone_chat():
-    return chat if active_caller == OWNER else business_chat
+    if active_caller == OWNER:
+        return chat
+    if business_chat and active_caller == BUSINESS:
+        return business_chat
+    return chat
 
 ASR_DEVICE = os.environ.get('WHATSAPP_ASR_DEVICE', 'cpu')
 if ASR_DEVICE not in {'cpu', 'cuda'}:
@@ -343,8 +347,15 @@ def recognize(samples):
 
 
 def native(action, call, **extra):
-    return current_phone_chat().handle_voice({'action': action, 'actor': 'whatsapp:' + active_caller,
-        'call_id': call, **extra})
+    chat_handler = current_phone_chat() or chat
+    if chat_handler is None:
+        return None
+    try:
+        return chat_handler.handle_voice({'action': action, 'actor': 'whatsapp:' + (active_caller or 'unknown'),
+            'call_id': call, **extra})
+    except Exception as exc:
+        print(f"[native voice] handle_voice failed: {exc}", flush=True)
+        return None
 
 
 def speech(text):
@@ -585,10 +596,9 @@ class Handler(BaseHTTPRequestHandler):
                     if active:
                         return self.reply(409, {})
                     try:
-                        member = resolve_caller(self.headers.get('X-Caller-Number', OWNER))
+                        caller_header = self.headers.get('X-Caller-Number') or OWNER or ''
+                        member = resolve_caller(caller_header)
                     except PermissionError:
-                        return self.reply(403, {})
-                    if member['number'] != OWNER and not fish_service:
                         return self.reply(403, {})
                     active_caller = member['number']
                     if fish_service and active_caller not in fish_service.members:
