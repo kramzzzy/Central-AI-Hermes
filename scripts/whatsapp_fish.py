@@ -203,19 +203,44 @@ class FishCall:
         self.callback_notice = callback_notice
         self.callback_new_tasks_since = time.time() if callback_notice else None
         self.first_spoken = False
+        company = ""
+        try:
+            from central_ai_identity import get_company_name
+            company = get_company_name()
+        except Exception:
+            pass
+        company_str = f" representing {company}" if company else ""
+
+        caller_name = self.member.get('name', '')
+        caller_digits = self.member.get('number', '')
+        is_unknown = (
+            not caller_name
+            or caller_name.startswith('+')
+            or 'Caller' in caller_name
+            or (self.member.get('role') == 'contact' and caller_name.replace('+', '').isdigit())
+        )
+
         if self.member['number'] == '639606637666':
-            self.prompt = central_ai_identity("""You are Leo, the Personal Assistant to Michael Vazquez, speaking privately with May Sambitan on WhatsApp.
+            self.prompt = central_ai_identity(f"""You are Leo, the Personal Assistant{company_str}, speaking privately with May Sambitan on WhatsApp.
 May Sambitan is in the Accounts Department.
 Greet May warmly, politely, and respectfully.
-Introduce yourself clearly as Leo, Michael Vazquez's Personal Assistant.
-Explain that you are calling to introduce yourself on behalf of Michael Vazquez and connect with the accounts department.
+Introduce yourself clearly as Leo, the Personal Assistant{company_str}.
+Explain that you are calling to introduce yourself and connect with the accounts department.
 Speak in a polite, friendly, and professional manner in clear English (or natural Filipino English / Taglish if May prefers).
-Answer any questions she has, take note of any messages or updates for Michael Vazquez, and offer assistance as Michael's personal assistant.
+Answer any questions she has, take note of any messages or updates, and offer assistance as personal assistant.
 Keep your answers concise, natural, and helpful.
+""")
+        elif is_unknown:
+            self.prompt = central_ai_identity(f"""You are Leo, the personal assistant representing {company or 'Central AI'} on WhatsApp.
+You are speaking with a caller at +{caller_digits}. This caller may be a customer, client, partner, prospect, or team member.
+Greet the caller warmly, politely, and professionally.
+Introduce yourself as Leo, representing {company or 'Central AI'}.
+Speak in a friendly, conversational manner in clear English (or natural Filipino / Taglish if preferred).
+Ask how you can assist them today.
 """)
         else:
             self.prompt = PROMPT.replace('speaking privately with Mark Tech on WhatsApp.',
-                'speaking privately with ' + self.member['name'] + ' on WhatsApp.')
+                f'speaking privately with {caller_name}{company_str} on WhatsApp.')
             if self.member.get('role') == 'business':
                 member_name = self.member.get('name', 'Business')
                 self.prompt += f"""\nThis is {member_name}'s separate business channel. Personal chat, memory,
@@ -601,14 +626,33 @@ Do not start background jobs to rediscover these known missing connections.\n"""
                 self.service.metrics['processed_frames'] = self.service.metrics.get('processed_frames', 0) + 1
 
     async def start(self, recovery=False):
+        company = ""
+        try:
+            from central_ai_identity import get_company_name
+            company = get_company_name()
+        except Exception:
+            pass
+        company_str = f" representing {company}" if company else ""
+
+        caller_name = self.member.get('name', '')
+        caller_digits = self.member.get('number', '')
+        is_unknown = (
+            not caller_name
+            or caller_name.startswith('+')
+            or 'Caller' in caller_name
+            or (self.member.get('role') == 'contact' and caller_name.replace('+', '').isdigit())
+        )
+
         if self.member['number'] == '639606637666':
-            first_msg = "Hello May, good day! It's Leo, the Personal Assistant to Michael Vazquez. I'm calling to introduce myself to the accounts department. How are you doing today?"
+            first_msg = f"Hello May, good day! It's Leo, the Personal Assistant to Michael Vazquez{company_str}. I'm calling to introduce myself to the accounts department. How are you doing today?"
         elif self.callback_notice and not recovery:
-            first_msg = "Hi Michael, it's Leo. I'm calling with the task update you requested."
+            first_msg = f"Hi, it's Leo{company_str}. I'm calling with the task update you requested."
         elif recovery:
             first_msg = "I'm still here. The connection recovered. What would you like to do next?"
+        elif is_unknown:
+            first_msg = f"Hello! I'm Leo, your personal assistant{company_str}. Thank you for calling! How can I help you today?"
         else:
-            first_msg = "Hey " + self.member['name'] + ", it's Leo. What can I help you with?"
+            first_msg = f"Hey {caller_name}, it's Leo{company_str}. What can I help you with?"
         overrides = {'language': 'en', 'voice_id': self.voice_id,
                      'voice': {'voice_id': self.voice_id, 'speaking_language': 'en', 'expressive': False},
                      'conversation': {
@@ -633,20 +677,32 @@ Do not start background jobs to rediscover these known missing connections.\n"""
             'agent_id': self.service.agent, 'name': 'Leo private WhatsApp voice',
             'end_user_id': 'whatsapp:' + self.member['number'], 'record_audio': False, 'tool_events': False,
             'timezone': 'Asia/Taipei', 'overrides': overrides}
+        fish_failed = False
         try:
             self.token = await asyncio.to_thread(fish_api, self.service.config, 'sessions', request)
         except urllib.error.HTTPError as error:
             fallback = self.service.config.get('FISH_ENGLISH_FALLBACK_VOICE_ID')
-            if error.code not in {400, 404, 410, 422} or not fallback or fallback == self.voice_id:
-                raise
-            # Only retry a rejected session creation, never a live session/tool/action.
-            self.voice_id = fallback
-            overrides['voice_id'] = fallback
-            overrides['voice'] = {'voice_id': fallback, 'speaking_language': 'en', 'expressive': False}
-            self.token = await asyncio.to_thread(fish_api, self.service.config, 'sessions', request)
-            self.service.metrics['english_voice_fallbacks'] = self.service.metrics.get('english_voice_fallbacks', 0) + 1
-        if self.token.get('transport') != 'livekit':
-            raise RuntimeError('Unsupported Fish voice transport')
+            if error.code in {400, 404, 410, 422} and fallback and fallback != self.voice_id:
+                self.voice_id = fallback
+                overrides['voice_id'] = fallback
+                overrides['voice'] = {'voice_id': fallback, 'speaking_language': 'en', 'expressive': False}
+                try:
+                    self.token = await asyncio.to_thread(fish_api, self.service.config, 'sessions', request)
+                    self.service.metrics['english_voice_fallbacks'] = self.service.metrics.get('english_voice_fallbacks', 0) + 1
+                except Exception:
+                    fish_failed = True
+            else:
+                fish_failed = True
+                print(f"[Fish Voice] LiveKit session unavailable (HTTP {error.code}): {error}", flush=True)
+        except Exception as error:
+            fish_failed = True
+            print(f"[Fish Voice] LiveKit session creation failed: {error}", flush=True)
+
+        if fish_failed or not self.token or self.token.get('transport') != 'livekit':
+            print("[Fish Voice] Falling back to local Piper speech to keep call active without dropping", flush=True)
+            self.task(self._run_fallback_audio(is_unknown, company_str))
+            return
+
         await self.room.connect(self.token['livekit_url'], self.token['token'])
         track = rtc.LocalAudioTrack.create_audio_track('whatsapp-microphone', self.source)
         await self.room.local_participant.publish_track(track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE))
@@ -655,9 +711,37 @@ Do not start background jobs to rediscover these known missing connections.\n"""
         self.task(self.feed())
         self.task(self.notices())
 
+    async def _run_fallback_audio(self, is_unknown, company_str):
+        from native_call_speech import pcm
+        from stream_conversation import TurnControl
+        self.change_state('speaking')
+        if is_unknown:
+            msg = f"Hello! I am Leo, your personal assistant{company_str}. Your call is connected! Please note that our voice line is operating in fallback mode. Please feel free to send a text message right here on WhatsApp, and I will assist you right away!"
+        else:
+            name = self.member.get('name', 'there')
+            msg = f"Hello {name}! It is Leo{company_str}. Your call is connected! Our voice line is operating in fallback mode. Please feel free to send me a text right here on WhatsApp, and I will take care of it right away!"
+        try:
+            audio_bytes = await asyncio.to_thread(lambda: b''.join(pcm(msg, {}, 16000, TurnControl())))
+            for offset in range(0, len(audio_bytes), 1920):
+                if self.closed:
+                    break
+                chunk = audio_bytes[offset:offset+1920]
+                if len(chunk) < 1920:
+                    chunk = chunk + bytes(1920 - len(chunk))
+                await self.output.put(struct.pack('>Q', self.generation) + chunk)
+                await asyncio.sleep(0.055)
+        except Exception as exc:
+            print(f"[Fallback Voice] Error during local synthesis: {exc}", flush=True)
+        self.change_state('idle')
+        while not self.closed:
+            await asyncio.sleep(1)
+
     async def disconnect_transport(self):
-        await self.room.disconnect()
-        await self.source.aclose()
+        try:
+            await self.room.disconnect()
+            await self.source.aclose()
+        except Exception:
+            pass
         if self.token:
             token, self.token = self.token, None
             try:
