@@ -122,7 +122,7 @@ class Routines:
         finally: db.close()
 
     def os_authorize(self, row):
-        url = os.environ.get('MICHAEL_OS_URL','').rstrip('/')
+        url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
         if not url: raise RoutineError('Workspace authorization is unavailable.',503)
         request = urllib.request.Request(url+'/api/routines/authorize',data=json.dumps({'org':row['org'],'user':row['user'],'assistant_id':json.loads(row['spec']).get('assistant_id')}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+self.settings['HERMES_API_KEY'],'User-Agent':'YourAIAgentOS/1.0'})
         try:

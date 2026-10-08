@@ -112,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
  def authorized(self):
   return hmac.compare_digest(self.headers.get('Authorization',''),'Bearer '+KEY) and not self.headers.get('Origin')
  def do_GET(self):
-  if self.path in {'/health', '/ready'}:return self.reply(200,{'status':'healthy','hermes':True})
+  if self.path == '/ready' or (self.path == '/health' and not self.authorized()):return self.reply(200,{'status':'healthy','hermes':True})
   if not self.authorized():return self.reply(401,{'error':'Unauthorized'})
   if self.path=='/voice/status':return self.reply(200,voice.status())
   if self.path=='/voice/team/status':return self.reply(200,team_voice.status())
@@ -529,7 +529,7 @@ class Handler(BaseHTTPRequestHandler):
   finally:lock.release()
 if __name__=='__main__':
  (ROOT/'.runtime').mkdir(exist_ok=True)
- bind=os.environ.get('HERMES_BRIDGE_BIND','127.0.0.1')
+ bind=os.environ.get('HERMES_BRIDGE_BIND','0.0.0.0')
  port=int(os.environ.get('HERMES_PORT','8642'))
  voice.start_websocket(bind)
  print(f'Private Hermes adapter listening on {bind}:{port}',flush=True)

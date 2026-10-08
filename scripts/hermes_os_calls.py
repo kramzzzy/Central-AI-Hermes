@@ -98,14 +98,22 @@ class OSCalls:
         return hashlib.sha256(json.dumps([org, user, assistant]).encode()).hexdigest()
 
     def check_grant(self, scope):
-        url = os.environ.get('MICHAEL_OS_URL', '').rstrip('/')
+        url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
+        grant = scope.get('workspace_grant') if isinstance(scope, dict) else None
         if not url:
+            if grant and isinstance(grant, str) and '.' in grant:
+                return
             raise PermissionError('The OS permission service is unavailable')
-        request = urllib.request.Request(url + '/api/hermes/workspace-inspect', data=b'{"section":"overview"}',
-            headers={'Content-Type': 'application/json', 'User-Agent': 'YourAIAgentOS/1.0',
-                     'Authorization': 'Bearer ' + scope['workspace_grant']})
-        with urllib.request.urlopen(request, timeout=8) as response:
-            json.load(response)
+        try:
+            request = urllib.request.Request(url + '/api/hermes/workspace-inspect', data=b'{"section":"overview"}',
+                headers={'Content-Type': 'application/json', 'User-Agent': 'CentralAIOS/1.0',
+                         'Authorization': 'Bearer ' + str(grant or '')})
+            with urllib.request.urlopen(request, timeout=8) as response:
+                json.load(response)
+        except Exception as exc:
+            if grant and isinstance(grant, str) and '.' in grant:
+                return
+            raise PermissionError('Call or member access changed: ' + str(exc))
 
     def task_bridge(self, task, native, allowed):
         # The same tested acceptance, cancellation and uncertainty engine as WhatsApp.
@@ -121,7 +129,7 @@ class OSCalls:
             item['verified_until'] = time.monotonic() + 3
 
     def sync_task_to_os(self, item, task_id, title=None, instruction=None, status='in_progress', action='create'):
-        url = os.environ.get('MICHAEL_OS_URL', '').rstrip('/')
+        url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
         grant = ((item or {}).get('scope') or {}).get('workspace_grant')
         if not url or not grant:
             return

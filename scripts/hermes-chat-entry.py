@@ -6,7 +6,7 @@ from hermes_profile import load_profile
 
 with contextlib.redirect_stdout(sys.stderr):
     home, _ = load_profile()
-    if os.environ.get('HERMES_ROUTINE_ONLY')!='true' and os.environ.get('MICHAEL_OS_URL') and os.environ.get('MICHAEL_OS_TOOL_TOKEN_FILE'):
+    if os.environ.get('HERMES_ROUTINE_ONLY')!='true' and (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL')) and os.environ.get('MICHAEL_OS_TOOL_TOKEN_FILE'):
         from hermes_os import configure_profile, install_process_token
         configure_profile(home)
         install_process_token()

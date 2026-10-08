@@ -20,6 +20,7 @@ try:
     token = Path(os.environ['MICHAEL_OS_TOOL_TOKEN_FILE']).read_text().strip()
 except (KeyError, OSError):
     token = ''
+PORT = os.environ.get('HERMES_PORT', '8642')
 
 
 @server.tool(name='inspect_workspace')
@@ -34,7 +35,7 @@ def inspect_workspace(section: str, search: str = '', id: str | None = None, off
     validate_inspection(body)
     if not token:
         return {'error': 'Open Central OS Chat or a call to inspect its authenticated workspace. No current app data was verified.'}
-    request = urllib.request.Request('http://127.0.0.1:8643/os/inspect', data=json.dumps(body).encode(),
+    request = urllib.request.Request(f'http://127.0.0.1:{PORT}/os/inspect', data=json.dumps(body).encode(),
         headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -66,7 +67,7 @@ def google_workspace(operation: str, args: dict | None = None) -> dict:
     if not token:
         return {'error':'Open an authenticated OS conversation before using Google tools.'}
     body={'operation':operation,'args':args or {}}
-    request=urllib.request.Request('http://127.0.0.1:8643/google/tool', data=json.dumps(body).encode(),
+    request=urllib.request.Request(f'http://127.0.0.1:{PORT}/google/tool', data=json.dumps(body).encode(),
         headers={'Content-Type':'application/json','Authorization':'Bearer '+token})
     try:
         with urllib.request.urlopen(request,timeout=75) as response:
@@ -87,7 +88,7 @@ def delegate_specialists(action: str, tasks: list[dict] | None = None) -> dict:
     if tasks is not None:body['tasks']=tasks
     from hermes_specialists import validate_tasks
     validate_tasks(body)
-    request=urllib.request.Request('http://127.0.0.1:8643/specialists/tool',data=json.dumps(body).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+token})
+    request=urllib.request.Request(f'http://127.0.0.1:{PORT}/specialists/tool',data=json.dumps(body).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+token})
     try:
         with urllib.request.urlopen(request,timeout=150) as response:return json.load(response)
     except (OSError,ValueError):return {'error':'Specialist execution could not be verified. Check its progress before retrying.'}
@@ -118,7 +119,7 @@ def open_widget(widget: str, url: str | None = None, title: str | None = None, c
     if token:
         try:
             req = urllib.request.Request(
-                'http://127.0.0.1:8643/os/widget',
+                f'http://127.0.0.1:{PORT}/os/widget',
                 data=json.dumps(payload).encode(),
                 headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
             )
@@ -153,7 +154,7 @@ def update_assistant_profile(instructions_delta: str, action: str = 'append', as
     }
     try:
         req = urllib.request.Request(
-            'http://127.0.0.1:8643/os/profile-update',
+            f'http://127.0.0.1:{PORT}/os/profile-update',
             data=json.dumps(payload).encode(),
             headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
         )
@@ -177,7 +178,7 @@ def call_contact(phone_or_name: str, reason: str = '') -> dict:
     }
     try:
         req = urllib.request.Request(
-            'http://127.0.0.1:8643/os/call',
+            f'http://127.0.0.1:{PORT}/os/call',
             data=json.dumps(payload).encode(),
             headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
         )

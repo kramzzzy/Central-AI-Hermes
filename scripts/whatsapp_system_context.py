@@ -181,7 +181,8 @@ def _native_health():
         key = settings['HERMES_API_KEY']
         if len(key) < 32:
             return None
-        return _probe('http://hermes:8643/health', {'Authorization': 'Bearer ' + key})
+        port = settings.get('HERMES_PORT') or os.environ.get('HERMES_PORT', '8642')
+        return _probe(f'http://hermes:{port}/health', {'Authorization': 'Bearer ' + key})
     except (OSError, KeyError):
         return None
 

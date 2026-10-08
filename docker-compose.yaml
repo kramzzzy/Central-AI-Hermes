@@ -35,12 +35,18 @@ services:
       SCRAPLING_URL: http://scrapling:8008
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
+      APP_OS_URL: ${APP_OS_URL:-http://web:3000}
+      MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
       HOME: /opt/data
     volumes:
       - hermes-profiles:/opt/data
     networks:
-      - hermes-net
-      - coolify
+      hermes-net:
+        aliases:
+          - hermes
+      coolify:
+        aliases:
+          - hermes
 
   # ----------------------------------------------------------------------------
   # 2. Superpower 1: Hindsight Long-Term Vector Memory (:8888)
@@ -77,6 +83,8 @@ services:
     restart: unless-stopped
     ports:
       - "8001:8000"
+    environment:
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
     networks:
       - hermes-net
 
@@ -108,6 +116,10 @@ services:
         aliases:
           - caller
           - whatsapp-connector
+      coolify:
+        aliases:
+          - caller
+          - whatsapp-connector
 
   # ----------------------------------------------------------------------------
   # 4b. Superpower 3b: WhatsApp Customer Connector (:8086:8080)
@@ -135,6 +147,10 @@ services:
       - customer-phone-state:/data
     networks:
       hermes-net:
+        aliases:
+          - customer-caller
+          - whatsapp-customer-connector
+      coolify:
         aliases:
           - customer-caller
           - whatsapp-customer-connector

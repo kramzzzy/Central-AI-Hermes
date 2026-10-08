@@ -52,7 +52,8 @@ def inspect_workspace(arguments, **kwargs):
         token = process_token()
         if not token:
             return json.dumps({"error": "Open an authenticated App OS conversation first. No workspace data was verified."})
-        request = urllib.request.Request("http://127.0.0.1:8643/os/inspect",
+        port = os.environ.get("HERMES_PORT", "8642")
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/os/inspect",
             data=json.dumps(arguments).encode(), headers={"Content-Type": "application/json", "Authorization": "Bearer " + token})
         # Disable proxy discovery as well as redirects: the private capability
         # may only reach the adapter in this native runtime's network namespace.

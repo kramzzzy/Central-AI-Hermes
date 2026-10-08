@@ -97,7 +97,7 @@ def authenticated_exchange(chat, body, endpoint):
         if not grant or chat.workspace_actor != chat.actor or time.monotonic() > chat.lease:
             raise PermissionError('No active authenticated OS conversation. Reconnect in Central OS.')
         binding = (chat.workspace_actor, chat.workspace_turn, chat.epoch)
-    url = os.environ.get('MICHAEL_OS_URL', '').rstrip('/')
+    url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
     if not url:
         raise RuntimeError('Central OS inspection is not connected in this deployment.')
     request = urllib.request.Request(url + endpoint,

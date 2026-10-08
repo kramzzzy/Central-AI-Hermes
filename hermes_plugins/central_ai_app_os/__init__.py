@@ -24,9 +24,8 @@ SCHEMA = {
 def dashboard_origin(value):
     url = urlsplit(value)
     if (url.scheme not in {"http", "https"} or not url.hostname or url.username or
-            url.password or url.query or url.fragment or url.path not in {"", "/"} or
-            (url.scheme != "https" and url.hostname not in {"localhost", "127.0.0.1"})):
-        raise ValueError("Configure a public App OS HTTPS origin")
+            url.password or url.query or url.fragment or url.path not in {"", "/"}):
+        raise ValueError("Configure a valid App OS origin")
     return value.rstrip("/")
 
 
