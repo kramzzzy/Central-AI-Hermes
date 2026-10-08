@@ -201,8 +201,6 @@ func main() {
    http.Error(w, "Invalid target", http.StatusBadRequest)
    return
   }
-		owner := getEnv("WHATSAPP_OWNER", "LEO_WHATSAPP_OWNER")
-		business := getEnv("WHATSAPP_BUSINESS_CONTACT", "LEO_WHATSAPP_BUSINESS_CONTACT")
 		cleanTarget := cleanDigits(req.Target)
 		if len(cleanTarget) < 7 {
 			w.Header().Set("Content-Type", "application/json")
@@ -433,7 +431,7 @@ func main() {
  go func(){
   ticker:=time.NewTicker(5*time.Second);defer ticker.Stop()
   for {select{case <-ctx.Done():return;case <-ticker.C:}
-   if os.Getenv("WHATSAPP_CONVERSATION_MODE") != fish {continue}
+   if os.Getenv("WHATSAPP_CONVERSATION_MODE") != "fish" {continue}
    current.Lock()
    if current.State!="connected" || current.busy {current.Unlock();continue}
    current.Unlock()
