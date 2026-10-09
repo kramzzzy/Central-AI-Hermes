@@ -118,14 +118,14 @@ class VoiceProvider:
                 self.config[env_key] = os.environ[env_key].strip()
         if self.config.get('FISH_API_KEY'):
             self.config.setdefault('FISH_OS_CALL_ENGINE', 'stream')
-            self.config.setdefault('FISH_ASR_ENABLED', 'true')
+            self.config.setdefault('FISH_ASR_ENABLED', 'false')
         from central_ai_integrations import integration_config
         self.config = integration_config(self.config)
         from voice_setup import load_settings
         self.config.update(load_settings(settings))
         if self.config.get('FISH_API_KEY'):
             self.config.setdefault('FISH_OS_CALL_ENGINE', 'stream')
-            self.config.setdefault('FISH_ASR_ENABLED', 'true')
+            self.config.setdefault('FISH_ASR_ENABLED', 'false')
         self.bridge_key = settings['HERMES_API_KEY']
         self.slots = threading.BoundedSemaphore(4)
 
