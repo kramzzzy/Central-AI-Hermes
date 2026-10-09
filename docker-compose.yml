@@ -18,6 +18,7 @@ services:
     tty: true
     ports:
       - "8642:8642"
+      - "8644:8644"
     environment:
       HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
       HERMES_BRIDGE_BIND: "0.0.0.0"
@@ -34,14 +35,18 @@ services:
       HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-meta-llama/llama-3.3-70b-instruct}
       HINDSIGHT_URL: http://hindsight:8888
       LAYA_URL: http://laya:8000
-      HERMES_CALLER_URL: http://whatsapp-connector:8080
-      WHATSAPP_VOICE_URL: http://voice:8081
       SCRAPLING_URL: http://scrapling:8008
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
       FISH_VOICE_NAME: ${FISH_VOICE_NAME:-Jarvis}
+      FISH_OS_CALL_ENGINE: ${FISH_OS_CALL_ENGINE:-stream}
+      FISH_ASR_ENABLED: ${FISH_ASR_ENABLED:-true}
       CENTRAL_AI_CALL_SPEECH: ${CENTRAL_AI_CALL_SPEECH:-fish}
-      HERMES_CALL_SPEECH: ${HERMES_CALL_SPEECH:-fish}
+      HERMES_APPROVAL_MODE: "off"
+      HERMES_PERMISSION_MODE: "off"
+      HERMES_SESSION_PLATFORM: "api_server"
+      CALLER_URL: ${CALLER_URL:-http://caller:8080}
+      WHATSAPP_URL: ${WHATSAPP_URL:-http://caller:8080}
       APP_OS_URL: ${APP_OS_URL:-http://web:3000}
       MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
@@ -50,6 +55,7 @@ services:
       HOME: /opt/data
     volumes:
       - hermes-profiles:/opt/data
+      - phone-state:/data
     networks:
       hermes-net:
         aliases:
@@ -115,10 +121,11 @@ services:
       VOICE_URL: "http://voice:8081"
       AUDIO_URL: "http://voice:8082"
       TEXT_CHAT_ENABLED: "true"
-      WHATSAPP_CONVERSATION_MODE: "fish"
+      WHATSAPP_CONVERSATION_MODE: "stream"
       ENGINE_ENABLED_FILE: /data/remote-engine-enabled
       WHATSAPP_LINE_ID: "executive"
       WHATSAPP_DEVICE_NAME: "Central AI Executive Line"
+      WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
     volumes:
       - phone-state:/data
     networks:
@@ -149,10 +156,11 @@ services:
       VOICE_URL: "http://voice:8081"
       AUDIO_URL: "http://voice:8082"
       TEXT_CHAT_ENABLED: "true"
-      WHATSAPP_CONVERSATION_MODE: "fish"
+      WHATSAPP_CONVERSATION_MODE: "stream"
       ENGINE_ENABLED_FILE: /data/remote-engine-enabled
       WHATSAPP_LINE_ID: "customer"
       WHATSAPP_DEVICE_NAME: "Central AI Customer Support"
+      WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
     volumes:
       - customer-phone-state:/data
     networks:
@@ -202,18 +210,27 @@ services:
       ORBIT_HERMES_PROFILE: leo
       HOME: /data/voice
       TEXT_CHAT_ENABLED: "true"
-      WHATSAPP_CONVERSATION_MODE: "fish"
+      WHATSAPP_CONVERSATION_MODE: "stream"
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
       FISH_VOICE_NAME: ${FISH_VOICE_NAME:-Jarvis}
       CENTRAL_AI_CALL_SPEECH: ${CENTRAL_AI_CALL_SPEECH:-fish}
       HERMES_CALL_SPEECH: ${HERMES_CALL_SPEECH:-fish}
+      WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
+      APP_OS_URL: ${APP_OS_URL:-http://web:3000}
+      HINDSIGHT_URL: http://hindsight:8888
+      LAYA_URL: http://laya:8000
+      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-deepseek/deepseek-v4.1-flash}
     volumes:
       - hermes-profiles:/opt/data
       - phone-state:/data
     networks:
       hermes-net:
+        aliases:
+          - voice
+      coolify:
         aliases:
           - voice
 

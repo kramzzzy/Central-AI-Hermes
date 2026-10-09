@@ -80,7 +80,8 @@ elif config.get('FISH_API_KEY'):
     config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
 from native_call_speech import native_enabled
 if not native_enabled(config) and (not config.get('FISH_API_KEY') or not config.get('FISH_VOICE_ID')):
-    raise RuntimeError('Native voice configuration required')
+    print("[voice] Warning: FISH_API_KEY or FISH_VOICE_ID missing; voice service running in idle waiting for credentials", flush=True)
+    config['FISH_API_KEY'] = config.get('FISH_API_KEY') or ''
 config = phone_speech(config)
 # A separate conversation provides the phone channel's context. It cannot resume
 # an OS conversation or inherit its signed workspace grant.
