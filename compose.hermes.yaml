@@ -140,13 +140,10 @@ services:
   # Dedicated channel for customer inquiries, assigned to customer or custom agents
   # ----------------------------------------------------------------------------
   whatsapp-customer-connector:
-    build:
-      context: .
-      dockerfile: deploy/whatsapp/Dockerfile.caller
     image: central-ai-whatsapp-caller:latest
     restart: unless-stopped
     depends_on:
-      - voice
+      - whatsapp-connector
     ports:
       - "8086:8080"
     environment:
@@ -186,10 +183,7 @@ services:
   # 6. Superpower 5: Voice Pipeline (:8081 / :8082) - WhatsApp Call Voice (Jarvis)
   # ----------------------------------------------------------------------------
   voice:
-    build:
-      context: .
-      dockerfile: deploy/hermes/Dockerfile
-    image: central-ai-voice:latest
+    image: central-ai-backend:latest
     entrypoint:
       - /opt/hermes/.venv/bin/python
       - /opt/os-adapter/scripts/central_ai_service.py
