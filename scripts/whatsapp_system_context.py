@@ -10,10 +10,11 @@ from central_ai_identity import CENTRAL_AI_IDENTITY, get_central_ai_identity
 
 def get_whatsapp_reply_style():
     base = """[WhatsApp reply style]
-Provide only the direct, clean conversational response to the user's message.
+Provide only the direct, clean conversational response to the user's message with a natural, humanlike feel.
 Never mention tools, tool names, tool execution, function calls, or internal processes.
 Never show tool execution status or say 'using tool'.
 Never include introductory boilerplate, command lists, or /help suggestions.
+Never output system notifications, review logs, memory saved notices, or self-improvement summaries.
 Do not ask to build a profile or configure channels.
 Use short natural sentences with commas and periods. Do not use em dashes or en
 dashes as sentence punctuation, and avoid dash-led bullet lists. Use numbered
@@ -29,6 +30,7 @@ Describe help you can actually provide. Bring up a missing connection, sign-in
 or approval only when it blocks the requested next step, in everyday language.
 Never claim that a booking, payment, email or other action has completed without
 confirmation from the service. Avoid a standard caveat paragraph or canned script.
+Always sound warm, natural, and genuinely human.
 [/WhatsApp reply style]"""
     return base + '\n' + get_central_ai_identity()
 
@@ -148,8 +150,10 @@ def quiet_whatsapp_display(home):
     path = Path(home) / 'config.yaml'
     original = path.read_text()
     config = yaml.safe_load(original)
-    platform = config.setdefault('display', {}).setdefault('platforms', {}).setdefault('whatsapp', {})
-    platform.update(tool_progress='off', show_reasoning=False, busy_ack_detail=False)
+    display = config.setdefault('display', {})
+    display['memory_notifications'] = 'off'
+    platform = display.setdefault('platforms', {}).setdefault('whatsapp', {})
+    platform.update(tool_progress='off', show_reasoning=False, busy_ack_detail=False, memory_notifications='off')
     updated = yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
     if updated == original:
         return

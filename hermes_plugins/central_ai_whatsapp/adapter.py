@@ -42,6 +42,40 @@ def _retain_memory_item(content, sender, route):
         pass
 
 
+_NONCONVERSATIONAL_PATTERNS = (
+    'self-improvement review',
+    'user profile updated',
+    'memory updated',
+    'memory saved',
+    'profile updated',
+    'skill \'',
+    'skill "',
+    '[background process',
+    'hermes update',
+    'gateway restarted',
+    '/sethome',
+    'home channel is set',
+    'no home channel',
+    'build a short profile',
+    'working —',
+    'working -',
+)
+
+def _is_non_conversational(content, metadata=None):
+    if metadata and isinstance(metadata, dict):
+        if any(metadata.get(k) for k in ('non_conversational', 'non_conversational_history', 'is_progress')):
+            return True
+        if metadata.get('kind') in {'tool_progress', 'thinking', 'status', 'card', 'review', 'diagnostic', 'system'}:
+            return True
+    if not content or not isinstance(content, str):
+        return False
+    text = content.strip()
+    if '💾' in text:
+        return True
+    lower = text.lower()
+    return any(p in lower for p in _NONCONVERSATIONAL_PATTERNS)
+
+
 def build_engine_adapter(route,member,home,group):
     import aiohttp
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
@@ -123,10 +157,39 @@ def build_engine_adapter(route,member,home,group):
                 'bridgeLease':data['bridgeLease'],'status':status}) as response:
                 if response.status!=200:logging.error('Text processing receipt unavailable for %s',route)
 
+        async def _send_typing(self,chat_id,lease=None,presence='composing'):
+            if not chat_id or not self._http_session:
+                return
+            try:
+                payload={'chatId':chat_id,'presence':presence}
+                if lease:payload['bridgeLease']=lease
+                async with self._bridge_req('post','typing',5,json=payload) as resp:
+                    pass
+            except Exception:
+                pass
+
+        async def _typing_loop(self,chat_id,lease,stop_event):
+            while not stop_event.is_set():
+                await self._send_typing(chat_id,lease,'composing')
+                try:
+                    await asyncio.wait_for(stop_event.wait(),timeout=6.0)
+                except (asyncio.TimeoutError,asyncio.CancelledError):
+                    pass
+
         async def _process_message_background(self,event,session_key):
             token=binding.set(event.raw_message)
-            try:return await super()._process_message_background(event,session_key)
-            finally:binding.reset(token)
+            stop_typing=asyncio.Event()
+            raw=event.raw_message if isinstance(event.raw_message,dict) else {}
+            chat_id=raw.get('chatId')
+            lease=raw.get('bridgeLease')
+            typing_task=asyncio.create_task(self._typing_loop(chat_id,lease,stop_typing))
+            try:
+                return await super()._process_message_background(event,session_key)
+            finally:
+                stop_typing.set()
+                typing_task.cancel()
+                await self._send_typing(chat_id,lease,'paused')
+                binding.reset(token)
 
         async def _dispatch_inline_reply(self,event,**kwargs):
             token=binding.set(event.raw_message)
@@ -147,17 +210,16 @@ def build_engine_adapter(route,member,home,group):
             return await super()._post_bridge_message(path,payload,timeout=timeout)
 
         async def send(self,chat_id,content,reply_to=None,metadata=None):
-            if any(term in (content or '') for term in ('/sethome', 'home channel is set', 'No home channel', 'build a short profile')):
-                return SendResult(success=True)
-            if metadata and (metadata.get('kind') in {'tool_progress', 'thinking', 'status', 'card'} or metadata.get('is_progress')):
+            if _is_non_conversational(content, metadata):
                 return SendResult(success=True)
             cleaned = clean_reply_punctuation(content)
-            if cleaned:
-                asyncio.create_task(asyncio.to_thread(_retain_memory_item, cleaned, 'Leo', route))
+            if not cleaned or not cleaned.strip():
+                return SendResult(success=True)
+            asyncio.create_task(asyncio.to_thread(_retain_memory_item, cleaned, 'Leo', route))
             return await super().send(chat_id,cleaned,reply_to=None,metadata=metadata)
 
         async def edit_message(self,chat_id,message_id,content,*,finalize=False):
-            if any(term in (content or '') for term in ('/sethome', 'home channel is set', 'No home channel')):
+            if _is_non_conversational(content):
                 return SendResult(success=True)
             return await self._post_bridge_message('edit',{'chatId':chat_id,'messageId':message_id,
                 'message':clean_reply_punctuation(content)},timeout=30)

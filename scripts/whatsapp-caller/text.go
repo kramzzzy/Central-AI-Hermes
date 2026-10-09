@@ -58,6 +58,7 @@ type textBridge struct {
  enabled string
  send func(context.Context,types.JID,*waE2E.Message)(string,error)
  upload func(context.Context,[]byte,wa.MediaType)(wa.UploadResponse,error)
+ setPresence func(context.Context,types.JID,types.ChatPresence,types.ChatPresenceMedia)error
  guard sync.Mutex
 }
 
@@ -168,22 +169,52 @@ func(b *textBridge)serve(w http.ResponseWriter,r *http.Request){
  if r.Method=="GET" && action=="health"{reply(200,map[string]string{"status":"connected"});return}
  if r.Method=="GET" && action=="messages"{packets,err:=b.claim(route);if err!=nil{reply(503,map[string]string{"error":"Inbox unavailable"});return};reply(200,packets);return}
  if r.Method!="POST"{reply(405,map[string]string{"error":"Method rejected"});return}
- var body struct{ChatID string `json:"chatId"`;Message string `json:"message"`;MessageID string `json:"messageId"`;Lease string `json:"bridgeLease"`;SendKey string `json:"sendKey"`;Status string `json:"status"`;Media string `json:"mediaBase64"`;MediaType string `json:"mediaType"`;MIME string `json:"mimetype"`;FileName string `json:"fileName"`}
+ var err error
+ var body struct{ChatID string `json:"chatId"`;Message string `json:"message"`;MessageID string `json:"messageId"`;Lease string `json:"bridgeLease"`;SendKey string `json:"sendKey"`;Status string `json:"status"`;Presence string `json:"presence"`;Media string `json:"mediaBase64"`;MediaType string `json:"mediaType"`;MIME string `json:"mimetype"`;FileName string `json:"fileName"`}
  if err:=json.NewDecoder(http.MaxBytesReader(w,r.Body,24*1024*1024)).Decode(&body);err!=nil{reply(400,map[string]string{"error":"Invalid body"});return}
- packet,err:=b.binding(route,body.Lease,body.ChatID);if err!=nil{reply(403,map[string]string{"error":"Reply target rejected"});return}
  if action=="complete"{
+  if b.setPresence!=nil && body.ChatID!=""{
+   if t,e:=types.ParseJID(body.ChatID);e==nil && t.Server!=""{
+    _ = b.setPresence(r.Context(),t,types.ChatPresencePaused,types.ChatPresenceMediaText)
+   }
+  }
   status:="complete";if body.Status!="complete"{status="interrupted"}
   if _,err=b.db.Exec(`UPDATE text_inbox SET status=? WHERE (route=? OR ?='owner') AND lease=?`,status,route,route,body.Lease);err!=nil{reply(503,map[string]string{"error":"Receipt persistence failed"});return}
   reply(200,map[string]bool{"success":true});return
  }
- if action=="typing"{reply(200,map[string]bool{"success":true});return}
+ if action=="typing"{
+  targetStr:=body.ChatID
+  if body.Lease!=""{
+   if packet,err:=b.binding(route,body.Lease,body.ChatID);err==nil && packet.WireChat!=""{
+    targetStr=packet.WireChat
+   }
+  }
+  target,err:=types.ParseJID(targetStr)
+  if err==nil && target.Server!="" && b.setPresence!=nil{
+   state:=types.ChatPresenceComposing
+   if strings.EqualFold(body.Presence,"paused"){
+    state=types.ChatPresencePaused
+   }
+   ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+   defer cancel()
+   _ = b.setPresence(ctx,target,state,types.ChatPresenceMediaText)
+  }
+  reply(200,map[string]bool{"success":true})
+  return
+ }
+ packet,err:=b.binding(route,body.Lease,body.ChatID);if err!=nil{reply(403,map[string]string{"error":"Reply target rejected"});return}
  if action!="send" && action!="edit" && action!="send-media"{reply(422,map[string]string{"error":"This message format is not available"});return}
  if (action!="send-media" && len(strings.TrimSpace(body.Message))==0) || len(body.Message)>65536 || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(body.SendKey){reply(400,map[string]string{"error":"Invalid reply"});return}
  var attachment []byte;mediaType:=wa.MediaDocument
  if action=="send-media"{
   attachment,err=base64.StdEncoding.DecodeString(body.Media)
   if err!=nil || len(attachment)==0 || len(attachment)>16*1024*1024 || b.upload==nil{reply(400,map[string]string{"error":"Attachment unavailable or exceeds 16 MB"});return}
-  switch body.MediaType{case "image":mediaType=wa.MediaImage;case "audio":mediaType=wa.MediaAudio;case "document":default:reply(400,map[string]string{"error":"Attachment type rejected"});return}
+  switch body.MediaType{
+  case "image":mediaType=wa.MediaImage
+  case "audio":mediaType=wa.MediaAudio
+  case "document":mediaType=wa.MediaDocument
+  default:mediaType=wa.MediaDocument
+  }
  }
  key:=route+"/"+body.Lease+"/"+action+"/"+body.SendKey
  b.guard.Lock()
@@ -212,6 +243,9 @@ func(b *textBridge)serve(w http.ResponseWriter,r *http.Request){
  }
  id,err=b.send(ctx,target,message)
  if err!=nil{b.db.Exec(`UPDATE text_outbox SET status='unconfirmed' WHERE key=?`,key);reply(409,map[string]string{"error":"Delivery unconfirmed; do not retry"});return}
+ if b.setPresence!=nil{
+  _ = b.setPresence(ctx,target,types.ChatPresencePaused,types.ChatPresenceMediaText)
+ }
  if action=="edit"{id=body.MessageID}
  if _,err=b.db.Exec(`UPDATE text_outbox SET status='sent',message_id=? WHERE key=?`,id,key);err!=nil{reply(409,map[string]string{"error":"Delivery receipt unconfirmed; do not retry"});return}
  reply(200,map[string]string{"messageId":id})
@@ -292,6 +326,7 @@ func installTextBridge(ctx context.Context,socket *wa.Client,keyfile string)erro
   func(ctx context.Context,target types.JID,message *waE2E.Message)(string,error){response,err:=socket.SendMessage(ctx,target,message);return string(response.ID),err})
  if err!=nil{return fmt.Errorf("text initialization: %w",err)}
  bridge.upload=socket.Upload
+ bridge.setPresence=socket.SendChatPresence
  http.HandleFunc("/text/",bridge.serve)
  downloads:=make(chan struct{},2)
  socket.AddEventHandler(func(value any){
