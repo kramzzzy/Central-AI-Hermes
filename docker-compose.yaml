@@ -4,11 +4,18 @@
 # Services: Hermes Engine (:8642) + Hindsight Memory (:8888) + Laya Router (:8001)
 #           + WhatsApp Connector (:8085->:8080) + Scrapling (:8008)
 # ==============================================================================
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # ----------------------------------------------------------------------------
   # 1. Hermes AI Reasoning Engine (:8642)
   # ----------------------------------------------------------------------------
   hermes:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/hermes/Dockerfile
@@ -65,6 +72,7 @@ services:
   # 2. Superpower 1: Hindsight Long-Term Vector Memory (:8888)
   # ----------------------------------------------------------------------------
   hindsight:
+    logging: *default-logging
     image: ghcr.io/vectorize-io/hindsight:0.10.2-slim
     restart: unless-stopped
     ports:
@@ -89,6 +97,7 @@ services:
   # 3. Superpower 2: Laya Fast Intent Classifier & Decision Router (:8001:8000)
   # ----------------------------------------------------------------------------
   laya:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/laya/Dockerfile
@@ -105,6 +114,7 @@ services:
   # 4. Superpower 3: WhatsApp Connector (Meowcaller VoIP & Chat Telephony) (:8085:8080)
   # ----------------------------------------------------------------------------
   whatsapp-connector:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/whatsapp/Dockerfile.caller
@@ -140,6 +150,7 @@ services:
   # Dedicated channel for customer inquiries, assigned to customer or custom agents
   # ----------------------------------------------------------------------------
   whatsapp-customer-connector:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/whatsapp/Dockerfile.caller
@@ -174,6 +185,7 @@ services:
   # 5. Superpower 4: Scrapling Stealth Web Scraper & Cloudflare Bypass (:8008)
   # ----------------------------------------------------------------------------
   scrapling:
+    logging: *default-logging
     image: ghcr.io/d4vinci/scrapling:latest
     restart: unless-stopped
     ports:
@@ -186,6 +198,7 @@ services:
   # 6. Superpower 5: Voice Pipeline (:8081 / :8082) - WhatsApp Call Voice (Jarvis)
   # ----------------------------------------------------------------------------
   voice:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/hermes/Dockerfile
