@@ -1,29 +1,44 @@
-# Pinned public Laya source with CPU-only inference.
-FROM python:3.11-slim-bookworm@sha256:2333bd330d12de02514770b3585cad313644316047cdee24a7acfdece6de6efb AS build
-ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && python -m venv --upgrade-deps /opt/venv
-ENV PATH=/opt/venv/bin:$PATH
-RUN git init /src && cd /src \
-    && git remote add origin https://github.com/NandhaKishorM/laya.git \
-    && git fetch --depth 1 origin 6d942c92081fbc139e736bbd9ac0023223c29b7f \
-    && git checkout --detach FETCH_HEAD \
-    && test "$(git rev-parse HEAD)" = 6d942c92081fbc139e736bbd9ac0023223c29b7f
-RUN pip install 'torch==2.14.0' --index-url https://download.pytorch.org/whl/cpu \
-    && pip install 'transformers==5.5.4' '/src[serve]' && pip check \
-    && python -c "import torch,laya; assert torch.version.cuda is None"
+# Lightweight Laya Decision Engine powered by EmbeddingGemma 2 ONNX Runtime
+# Completely removes PyTorch and HuggingFace cache bloat (drops from ~4GB to ~350MB).
+FROM python:3.11-slim-bookworm
 
-FROM python:3.11-slim-bookworm@sha256:2333bd330d12de02514770b3585cad313644316047cdee24a7acfdece6de6efb
-ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
-    TORCH_DISABLE_NATIVE_JIT=1 USE_TF=0 USE_TORCH=1 TOKENIZERS_PARALLELISM=false \
-    HF_HOME=/home/laya/.cache/huggingface LAYA_DEVICE=cpu LAYA_REVISION=reviewed
-RUN groupadd --gid 10001 laya && useradd --uid 10001 --gid laya --create-home laya \
-    && mkdir -p /home/laya/.cache/huggingface /opt/setup \
-    && chown -R laya:laya /home/laya/.cache
-COPY --from=build /opt/venv /opt/venv
-COPY --from=build /src/LICENSE /usr/share/doc/laya/LICENSE
-COPY scripts/laya-router-service.py /opt/setup/laya-router-service.py
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    LAYA_MODEL_DIR=/app/models
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 10001 laya && useradd --uid 10001 --gid laya --create-home laya
+
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115.0" \
+    "uvicorn[standard]>=0.32.0" \
+    "onnxruntime>=1.20.0" \
+    "tokenizers>=0.21.0" \
+    "numpy>=1.26.0" \
+    "httpx>=0.28.0"
+
+# Pre-download EmbeddingGemma 2 Quantized ONNX model & tokenizer during build
+# Kept in single RUN layer with chown to prevent Docker UnionFS layer duplication
+RUN mkdir -p /app/models \
+    && curl -sL "https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/onnx/model_q4.onnx" -o /app/models/model_q4.onnx \
+    && curl -sL "https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/onnx/model_q4.onnx_data" -o /app/models/model_q4.onnx_data \
+    && curl -sL "https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/tokenizer.json" -o /app/models/tokenizer.json \
+    && ln -sf /app/models/model_q4.onnx /app/models/model.onnx \
+    && ln -sf /app/models/model_q4.onnx_data /app/models/model.onnx_data \
+    && test -f /app/models/model_q4.onnx && test -f /app/models/model_q4.onnx_data \
+    && chown -R laya:laya /app \
+    && rm -rf /root/.cache /tmp/*
+
+COPY --chown=laya:laya scripts/laya_embedding_service.py /app/main.py
+
 USER 10001:10001
-WORKDIR /home/laya
-ENTRYPOINT ["python", "/opt/setup/laya-router-service.py"]
+EXPOSE 8000
+
+ENTRYPOINT ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
