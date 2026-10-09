@@ -75,9 +75,22 @@ def install_memory(home):
                 enabled = plugins.setdefault('enabled', [])
                 if 'hindsight' not in enabled:
                     enabled.append('hindsight')
+                cfg['memory'] = {'provider': 'hindsight'}
                 atomic_write(path, yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
             except Exception:
                 pass
+        hindsight_dir = home / 'hindsight'
+        hindsight_dir.mkdir(parents=True, exist_ok=True)
+        hindsight_cfg = hindsight_dir / 'config.json'
+        if not hindsight_cfg.is_file():
+            h_data = {
+                "mode": "local_external",
+                "bank_id": "michael-os-leo",
+                "recall_budget": "mid",
+                "timeout": 120
+            }
+            atomic_write(hindsight_cfg, json.dumps(h_data, indent=2) + '\n')
+
 
 
 def get_standalone_config():
@@ -110,7 +123,7 @@ def get_standalone_config():
             'GOOGLE_CLIENT_SECRET': os.environ.get('GOOGLE_CLIENT_SECRET', '').strip(),
             'GOOGLE_REDIRECT_URI': os.environ.get('GOOGLE_REDIRECT_URI', '').strip(),
         },
-        'phone_profiles': ['leo', 'sarah'],
+        'phone_profiles': ['leo', 'sarah', 'leo-whatsapp-text', 'team-whatsapp-social'],
     }
 
 
@@ -203,6 +216,11 @@ def bootstrap(mode, config):
             if not path.is_file():
                 path.write_text('plugins:\n  enabled: []\n', encoding='utf-8')
             install_memory(home); install_whatsapp(home); sync_profile(home)
+            try:
+                from central_ai_identity import configure_identity
+                configure_identity(home)
+            except Exception:
+                pass
         return '/opt/setup/whatsapp-call-voice.py'
     raise RuntimeError('Choose a supported backend service')
 

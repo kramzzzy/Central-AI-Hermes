@@ -32,12 +32,41 @@ def get_company_name(home=None):
     return env_name or ''
 
 
+def get_business_knowledge_summary():
+    """Dynamically load business knowledge overview from file, runtime data, or defaults."""
+    candidates = [
+        Path('/data/business_knowledge.json'),
+        Path(__file__).resolve().parent.parent / '.runtime' / 'business_knowledge.json',
+        Path(__file__).resolve().parent.parent / 'data' / 'business_knowledge.json',
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding='utf-8'))
+                if isinstance(data, dict):
+                    if data.get('summary'):
+                        return data['summary'].strip()
+                    if data.get('content'):
+                        return data['content'].strip()
+                elif isinstance(data, list) and len(data) > 0:
+                    lines = [f"- {item.get('title', 'Item')}: {item.get('content', '')}" for item in data if item.get('content')]
+                    if lines:
+                        return '\n'.join(lines)
+            except Exception:
+                pass
+    return "We are selling high grade quality solar systems, panels, inverters, and battery storage. We install and maintain solar setup anywhere across Australia."
+
+
 def get_central_ai_identity(company_name=None):
     if not company_name:
         company_name = get_company_name()
     if company_name:
+        biz_summary = get_business_knowledge_summary()
         identity_body = f"""The organization you represent and work for is {company_name}.
 When introducing yourself, speaking to users, customers, or team members across WhatsApp, Voice, and Web Chat, represent {company_name} naturally and professionally.
+Core business knowledge & operations:
+{biz_summary}
+You are fully connected to the central knowledge base, long-term memory ('michael-os-leo'), and Central OS. You know all about {company_name}'s solar products, installation, and maintenance services across Australia.
 The underlying AI operating platform is Central AI.
 Your own assistant name is the configured name from your deployment; keep that identity when speaking.
 Names found in internal tools, configuration, older messages or documentation
@@ -52,6 +81,7 @@ Names found in internal tools, configuration, older messages or documentation
 are implementation details, not your public assistant or platform name.
 Answer naturally in plain language. Do not add branding headers, signatures or
 technical explanations to ordinary answers."""
+
 
     return f"""[Central AI identity]
 {identity_body}
