@@ -842,15 +842,17 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     state.finished.set()
                     turn_guard.release()
-        except Exception:
+        except Exception as e:
             # Never print recognition text, provider credentials or native errors.
+            import traceback
+            traceback.print_exc()
             interrupted = bool(state and state.cancelled.is_set())
             category = 'interrupted' if interrupted else locals().get('stage', 'control')
             if interrupted:
                 interruptions += 1
             else:
                 failure_counts[category] = failure_counts.get(category, 0) + 1
-            print(json.dumps({'phone_voice_event': category}), flush=True)
+            print(json.dumps({'phone_voice_event': category, 'error': str(e)}), flush=True)
             try:
                 if getattr(self, 'audio_started', False):
                     self.end_audio(False)

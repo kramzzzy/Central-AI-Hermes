@@ -17,6 +17,13 @@ from whatsapp_fish import (PROMPT, business_connection_limit, is_callback_reques
 from fish_conversation import is_correction, is_task_cancellation
 from whatsapp_audio import PhoneAudioFilter
 
+try:
+    from central_ai_identity import central_ai_identity, get_company_name
+except Exception:
+    def central_ai_identity(x): return x
+    def get_company_name(): return ""
+
+
 
 class PhonePCM:
     """Keep provider chunks continuous; pad only the final transport frame."""
@@ -90,12 +97,10 @@ class StreamPhoneCall:
         self.early_asr=None
         self.capture_version=0
         self.callback_new_tasks_since = time.time() if callback_notice else None
-        company = ""
         try:
-            from central_ai_identity import get_company_name
             company = get_company_name()
         except Exception:
-            pass
+            company = ""
         company_str = f" representing {company}" if company else ""
 
         caller_name = self.member.get('name', '')
