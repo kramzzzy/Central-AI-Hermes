@@ -157,6 +157,22 @@ class Installation:
             if not environment.exists(): environment.symlink_to(source/'.env')
         for path,content in [(home/'config.yaml',yaml.safe_dump(configured,sort_keys=False,allow_unicode=True)),(home/'SOUL.md',identity)]:
             temporary=path.with_suffix('.setup.tmp'); temporary.write_text(content,encoding='utf-8');os.chmod(temporary,0o600);temporary.replace(path)
+        import subprocess, sys
+        skills_synced = False
+        if Path('/opt/hermes').is_dir():
+            try:
+                res = subprocess.run(
+                    [sys.executable, '-c', 'from tools.skills_sync import sync_skills; sync_skills(quiet=True)'],
+                    env=dict(os.environ, HERMES_HOME=str(home)), cwd='/opt/hermes', timeout=30
+                )
+                if res.returncode == 0:
+                    skills_synced = True
+            except Exception:
+                pass
+        if not skills_synced and (source / 'skills').is_dir():
+            dest_skills = home / 'skills'
+            if not dest_skills.exists():
+                shutil.copytree(source / 'skills', dest_skills, ignore=shutil.ignore_patterns('__pycache__', '.git'))
         return dict(self.settings,HERMES_PROFILE=marker['profile'],HERMES_TEAM_CONTEXT='true',HERMES_TEAM_AUTH_HOME=str(source))
 
     def handle(self,body):
