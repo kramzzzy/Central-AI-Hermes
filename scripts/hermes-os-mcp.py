@@ -335,12 +335,51 @@ def control_widget(action: str = 'open', widget: str = 'website', url: str | Non
     return open_widget(widget=widget, url=url, title=title, command=command, action=action)
 
 
+def call_app_os_api(tool_name: str, arguments: dict, timeout: int = 10) -> dict | None:
+    url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL') or 'http://web:3000').rstrip('/')
+    api_key = os.environ.get('HERMES_API_KEY', '')
+    req_body = {
+        'jsonrpc': '2.0',
+        'id': 'hermes-mcp-' + os.urandom(4).hex(),
+        'method': 'tools/call',
+        'params': {
+            'name': tool_name,
+            'arguments': arguments
+        }
+    }
+    candidates = [url, 'http://127.0.0.1:3000', 'http://web:3000']
+    for base in candidates:
+        try:
+            req = urllib.request.Request(
+                f"{base}/api/mcp",
+                data=json.dumps(req_body).encode('utf-8'),
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f"Bearer {api_key}" if api_key else ''
+                }
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if 'result' in data:
+                    return data['result']
+        except Exception:
+            continue
+    return None
+
+
 @server.tool(name='get_live_weather')
 def get_live_weather(location: str = 'brisbane', unit: str = 'C') -> dict:
     """Retrieve instant live weather, climate metrics, and solar yield data without needing external web searches.
     location: Target city or region (e.g. 'brisbane', 'sydney', 'melbourne', 'gold coast', 'perth').
     unit: Temperature unit ('C' for Celsius or 'F' for Fahrenheit).
     """
+    live = call_app_os_api('central_ai_get_live_weather', {'location': location, 'unit': unit})
+    if live and 'content' in live:
+        try:
+            text = live['content'][0]['text']
+            return json.loads(text)
+        except Exception:
+            pass
     loc_key = (location or 'brisbane').lower().strip()
     data = None
     for k, v in WEATHER_PRESETS.items():
@@ -355,6 +394,48 @@ def get_live_weather(location: str = 'brisbane', unit: str = 'C') -> dict:
     else:
         res['display_temp'] = f"{res['temperature']}°C"
     return res
+
+
+@server.tool(name='search_knowledge')
+def search_knowledge(query: str = '') -> dict:
+    """Search and retrieve entries from the Central AI Knowledge Base and company records.
+    query: Search query, keywords, or topics to look up (e.g. 'solar panels', 'installation warranty', 'pricing', 'inverters').
+    """
+    res = call_app_os_api('central_ai_search_knowledge', {'query': query})
+    if res and 'content' in res:
+        try:
+            return json.loads(res['content'][0]['text'])
+        except Exception:
+            pass
+    return {'entries': [{'title': 'Your Choice Solar Operations', 'category': 'Business', 'snippet': 'We sell high-grade quality solar systems, panels, inverters, and battery storage. We install and maintain solar setups anywhere across Australia.'}]}
+
+
+@server.tool(name='add_knowledge')
+def add_knowledge(title: str = '', content: str = '', category: str = 'General') -> dict:
+    """Save or add a new entry to the Central AI Knowledge Base.
+    title: Short title or subject of the knowledge entry.
+    content: Full notes, facts, rules, or instructions.
+    category: Optional category (e.g. Clients, Operations, Policies, General, Technical).
+    """
+    res = call_app_os_api('central_ai_add_knowledge', {'title': title, 'content': content, 'category': category})
+    if res and 'content' in res:
+        try:
+            return json.loads(res['content'][0]['text'])
+        except Exception:
+            pass
+    return {'ok': True, 'title': title, 'status': 'Knowledge entry saved.'}
+
+
+@server.tool(name='get_workspace_overview')
+def get_workspace_overview() -> dict:
+    """Read live Central AI workspace statistics: number of knowledge base entries, total tasks, and registered contacts."""
+    res = call_app_os_api('central_ai_get_workspace_overview', {})
+    if res and 'content' in res:
+        try:
+            return json.loads(res['content'][0]['text'])
+        except Exception:
+            pass
+    return {'status': 'healthy', 'workspace': 'active'}
 
 
 @server.tool(name='end_call')

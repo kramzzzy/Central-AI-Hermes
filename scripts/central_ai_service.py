@@ -162,6 +162,10 @@ def bootstrap(mode, config):
         os.environ.setdefault('CALLER_URL', 'http://caller:8080')
         os.environ.setdefault('WHATSAPP_URL', 'http://caller:8080')
         all_homes = [Path('/opt/data/profiles') / item['native_profile'] for item in profiles]
+        for p in config.get('phone_profiles', []):
+            phome = Path('/opt/data/profiles') / p
+            if phome not in all_homes:
+                all_homes.append(phome)
         for home in all_homes:
             home.mkdir(parents=True, exist_ok=True)
             path = home / 'config.yaml'
@@ -216,6 +220,11 @@ def bootstrap(mode, config):
             if not path.is_file():
                 path.write_text('plugins:\n  enabled: []\n', encoding='utf-8')
             install_memory(home); install_whatsapp(home); sync_profile(home)
+            try:
+                from hermes_os import configure_profile
+                configure_profile(home, plugin=True, allow_enable=True)
+            except Exception as e:
+                print(f'Configure profile failed for {home.name}: {e}', file=sys.stderr)
             try:
                 from central_ai_identity import configure_identity
                 configure_identity(home)

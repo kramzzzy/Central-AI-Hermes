@@ -112,6 +112,14 @@ class StreamPhoneCall:
             or (self.member.get('role') == 'contact' and caller_name.replace('+', '').isdigit())
         )
 
+        capabilities_note = """
+ACTIVE TOOLS & CAPABILITIES:
+- Live Weather & Solar Yield: Use `get_live_weather(location=...)` to retrieve instant live temperature, solar yield, irradiance, and weather metrics without web scraping.
+- Screen Widgets: Use `control_widget(action=..., widget=...)` to control widgets on screen (weather, website/browser, report, contacts, tasks).
+- Knowledge Base: Use `search_knowledge(query=...)` to search company records and SOPs, and `add_knowledge` to save facts.
+- Outbound WhatsApp: Use `send_whatsapp_message` to text and `call_whatsapp_contact` to call.
+- Ending the Call: When the caller says goodbye, end call, or hang up, invoke `end_call` to disconnect gracefully.
+"""
         if is_unknown:
             self.prompt = central_ai_identity(f"""You are Leo, the personal assistant representing {company or 'Central AI'} on WhatsApp.
 You are speaking with a caller at +{caller_digits}. This caller may be a customer, client, partner, prospect, or team member.
@@ -123,6 +131,7 @@ CONVERSATION REALISM:
 - Listen like a real human. When the caller speaks, wait patiently until they finish speaking before replying.
 - Instant barge-in: If the caller interrupts while you are talking, immediately stop speaking and listen.
 - Say Australian place names naturally if mentioned. Keep answers concise, measured, and helpful (1-2 sentences).
+{capabilities_note}
 """)
         else:
             self.prompt = central_ai_identity(f"""You are Leo, the personal assistant{company_str}, speaking privately with {caller_name} on WhatsApp.
@@ -132,6 +141,7 @@ CONVERSATION REALISM:
 - Listen like a real human. When the caller speaks, wait patiently until they finish speaking before replying.
 - Instant barge-in: If the caller interrupts while you are talking, immediately stop speaking and listen.
 - Say Australian place names naturally if mentioned. Keep answers concise, measured, and helpful (1-2 sentences).
+{capabilities_note}
 """)
         if self.member.get('role') == 'business':
             biz_name = self.member.get('name', 'Business')
@@ -141,7 +151,8 @@ CONVERSATION REALISM:
         self.conversation = Conversation(service.config, self.prompt, self.tool,
             names={'native_leo','task_status','cancel_task','task_callback',
                    'add_knowledge','search_knowledge','get_workspace_overview',
-                   'send_whatsapp_message','call_whatsapp_contact'})
+                   'send_whatsapp_message','call_whatsapp_contact',
+                   'get_live_weather','control_widget','end_call'})
 
     def task(self, coroutine):
         task = asyncio.create_task(coroutine)

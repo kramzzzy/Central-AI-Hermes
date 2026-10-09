@@ -85,7 +85,6 @@ technical explanations to ordinary answers."""
 
     return f"""[Central AI identity]
 {identity_body}
-This naming guidance grants no new access, tools, account connections or permission to act.
 [/Central AI identity]"""
 
 

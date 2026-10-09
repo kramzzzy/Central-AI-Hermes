@@ -86,6 +86,14 @@ You have a comprehensive suite of real native and integration tools that you mus
 12. Call Termination & Hangup (mcp__michael_os__end_call):
     - When the user says "Goodbye [Name]", "Bye [Name]", "End call", "Hang up", or asks to terminate the current voice or WhatsApp call:
       * Invoke mcp__michael_os__end_call() to gracefully disconnect the call.
+13. Central AI Knowledge Base & Operations (mcp__michael_os__search_knowledge & mcp__michael_os__add_knowledge):
+    - You are directly connected to the central knowledge base in PostgreSQL and persistent Hindsight memory ('michael-os-leo').
+    - When the user asks about the knowledge base ("You connected to knowledge base?", "What do we know about solar?", "Check our knowledge"):
+      * NEVER claim you have no knowledge base or that you are an unconnected AI. You have active live access.
+      * Invoke mcp__michael_os__search_knowledge(query=...) to retrieve actual documented knowledge entries.
+      * State what was found warmly, directly, and accurately.
+    - When the user asks to save, note down, or add knowledge:
+      * Invoke mcp__michael_os__add_knowledge(title=..., content=..., category=...).
 
 In voice calls use a short natural answer, grounded in the tool result. Tools execute directly without approval delays. Do not redirect routine questions to Chat.
 [/Central OS integration]"""
@@ -192,12 +200,19 @@ def _configure_profile(home, plugin, allow_enable):
     if plugin:
         from app_os_plugin import install_files
         install_files(home, config, allow_enable=allow_enable)
+    all_tools = [
+        'inspect_workspace', 'google_workspace', 'delegate_specialists',
+        'open_widget', 'close_widget', 'control_widget', 'navigate_browser',
+        'update_assistant_profile', 'send_whatsapp_message', 'send_message',
+        'call_contact', 'call_whatsapp_contact', 'get_live_weather',
+        'search_knowledge', 'add_knowledge', 'get_workspace_overview', 'end_call'
+    ]
     server = {'command': '/opt/hermes/.venv/bin/python',
         'args': ['/opt/os-adapter/scripts/hermes-os-mcp.py'],
         # The MCP child inherits its native process's private token path. A shared
         # profile must never persist one worker's credential for another worker.
         'env': {'HERMES_REPO': '/opt/hermes', 'MICHAEL_OS_INHERIT_TOOL_TOKEN': 'true'},
-        'tools': {'include': (['inspect_workspace'] + (['google_workspace'] if config.get('os_specialist',{}).get('google') else [])) if config.get('os_specialist') else ['inspect_workspace','google_workspace','delegate_specialists','open_widget','close_widget','control_widget','navigate_browser','update_assistant_profile','send_whatsapp_message','send_message','call_contact','call_whatsapp_contact','get_live_weather','end_call']}}
+        'tools': {'include': (['inspect_workspace'] + (['google_workspace'] if config.get('os_specialist',{}).get('google') else [])) if config.get('os_specialist') else all_tools}}
     servers = config.setdefault('mcp_servers', {})
     existing_server = servers.get('michael_os', {})
     if not isinstance(existing_server, dict):
@@ -207,6 +222,18 @@ def _configure_profile(home, plugin, allow_enable):
     config['approval_mode'] = 'off'
     config['permission_mode'] = 'off'
     config['unattended'] = True
+    # Ensure active LLM model is always explicitly configured with no fallback to weak glm-5.2
+    model_cfg = config.setdefault('model', {})
+    if isinstance(model_cfg, dict):
+        if home.name in {'leo-whatsapp-text', 'team-whatsapp-michael-text', 'team-whatsapp-social'}:
+            model_name = os.environ.get('WHATSAPP_CHAT_MODEL', 'deepseek/deepseek-v4.1-flash')
+        else:
+            model_name = os.environ.get('HERMES_CHAT_MODEL', 'deepseek/deepseek-v4.1-flash')
+        if not model_cfg.get('default') or 'glm-5.2' in str(model_cfg.get('default')):
+            model_cfg['default'] = model_name
+        model_cfg['provider'] = os.environ.get('HERMES_CHAT_PROVIDER', 'openrouter')
+        model_cfg['base_url'] = 'https://openrouter.ai/api/v1'
+        model_cfg['api_mode'] = 'chat_completions'
     mem = config.setdefault('memory', {})
     if isinstance(mem, dict):
         mem['provider'] = 'hindsight'

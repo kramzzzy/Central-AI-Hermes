@@ -22,6 +22,11 @@ async def run_route(route):
     home, _ = load_profile()
     if home.name != member['profile']:
         raise RuntimeError(f"Text profile binding mismatch: expected {member['profile']}, got {home.name}")
+    try:
+        from hermes_os import configure_profile
+        configure_profile(home, plugin=True, allow_enable=True)
+    except Exception as e:
+        logging.error('configure_profile failed in text engine: %s', e)
     quiet_whatsapp_display(home)
     group=routing()['group'] if member['group'] else ''
     allow_all=member.get('allow_all', True)
