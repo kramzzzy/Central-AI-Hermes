@@ -219,7 +219,13 @@ class VoiceProvider:
             text = body.get('text')
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 1800 or not self.status()['configured']:
                 return handler.reply(400, {'error': 'Invalid speech request'})
-            data = json.dumps({'text': text, 'reference_id': self.config['FISH_VOICE_ID'], 'format': 'pcm', 'sample_rate': 24000, 'latency': 'balanced'}).encode()
+            tts_voice_id = body.get('voice_id') or body.get('reference_id')
+            if not tts_voice_id and body.get('voice') == 'michael':
+                tts_voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
+            elif not tts_voice_id and body.get('voice') == 'jarvis':
+                tts_voice_id = '612b878b113047d9a770c069c8b4fdfe'
+            tts_voice_id = tts_voice_id or self.config['FISH_VOICE_ID']
+            data = json.dumps({'text': text, 'reference_id': tts_voice_id, 'format': 'pcm', 'sample_rate': 24000, 'latency': 'balanced'}).encode()
             target = '/v1/tts'
             headers.update({'Content-Type': 'application/json', 'model': self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'})
         elif path == '/voice/asr':
@@ -241,9 +247,15 @@ class VoiceProvider:
                 # the authenticated user's display name, never a browser prompt.
                 greeting = call_greeting(body.pop('display_name', ''))
                 overrides = dict(body.get('overrides') or {})
-                if self.config.get('FISH_VOICE_ID'):
-                    overrides['voice_id'] = self.config['FISH_VOICE_ID']
-                    overrides['voice'] = {'voice_id': self.config['FISH_VOICE_ID'], 'speaking_language': 'en', 'expressive': False}
+                session_voice_id = body.get('voice_id') or overrides.get('voice_id')
+                if not session_voice_id and body.get('voice') == 'michael':
+                    session_voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
+                elif not session_voice_id and body.get('voice') == 'jarvis':
+                    session_voice_id = '612b878b113047d9a770c069c8b4fdfe'
+                session_voice_id = session_voice_id or self.config.get('FISH_VOICE_ID')
+                if session_voice_id:
+                    overrides['voice_id'] = session_voice_id
+                    overrides['voice'] = {'voice_id': session_voice_id, 'speaking_language': 'en', 'expressive': False}
                 overrides['language'] = 'en'
                 overrides.pop('first_message_prompt', None)
                 if isinstance(overrides.get('system_prompt'), str):
