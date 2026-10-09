@@ -177,7 +177,7 @@ class VoiceProvider:
                 text = json.loads(data).get('text')
             except (ValueError, AttributeError):
                 return handler.reply(400, {'error': 'Invalid speech request'})
-            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 1800:
+            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
                 return handler.reply(400, {'error': 'Invalid speech request'})
             if not self.slots.acquire(blocking=False):
                 return handler.reply(429, {'error': 'Local speech is busy'})
@@ -187,7 +187,7 @@ class VoiceProvider:
                 chunks, size = [], 0
                 for chunk in pcm(text, self.config, 24000, TurnControl()):
                     size += len(chunk)
-                    if size > 24000 * 2 * 45:
+                    if size > 24000 * 2 * 180:
                         raise ValueError('Speech is too long')
                     chunks.append(chunk)
                 audio = b''.join(chunks)
@@ -217,7 +217,7 @@ class VoiceProvider:
         if path == '/voice/tts':
             body = json.loads(data)
             text = body.get('text')
-            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 1800 or not self.status()['configured']:
+            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or not self.status()['configured']:
                 return handler.reply(400, {'error': 'Invalid speech request'})
             tts_voice_id = body.get('voice_id') or body.get('reference_id')
             if not tts_voice_id and body.get('voice') == 'michael':

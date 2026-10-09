@@ -65,12 +65,12 @@ class OSStreamVoice:
                                               'event': event, 'spoken_request': text})
                 self.contexts[call] = {'identity': identity, 'scope': dict(scope), 'config': config,
                     'conversation': Conversation(config, prompt, tool), 'control': None, 'turn': None,
-                    'until': time.monotonic()+90, 'greeting': call_greeting(body.get('display_name', ''))}
+                    'until': time.monotonic()+180, 'greeting': call_greeting(body.get('display_name', ''))}
             return handler.reply(200, {'started': True})
         with self.guard:
             if not item: raise PermissionError('Voice call is inactive')
             item['scope'] = dict(scope)
-            item['until'] = time.monotonic()+35
+            item['until'] = time.monotonic()+180
             if action == 'heartbeat': return handler.reply(200, {'active': True})
             if action == 'stop':
                 if item['turn'] == body.get('turn_id') and item['control']: item['control'].cancel()

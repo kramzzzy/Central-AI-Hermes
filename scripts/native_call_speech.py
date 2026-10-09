@@ -90,7 +90,7 @@ class NativeSpeech:
         self.first_audio = self.first_flush = None
         self.bytes = 0
         self.complete = False
-        self.deadline = time.monotonic() + 60
+        self.deadline = time.monotonic() + 180
         threading.Thread(target=self.receive, daemon=True).start()
 
     def receive(self):
@@ -106,7 +106,7 @@ class NativeSpeech:
                     return
                 for data in pcm(text, self.config, self.rate, self.control):
                     self.bytes += len(data)
-                    if self.bytes > self.rate * 2 * 45:
+                    if self.bytes > self.rate * 2 * 180:
                         raise RuntimeError('Speech size exceeded')
                     self.control.check()
                     self.first_audio = self.first_audio or time.monotonic()

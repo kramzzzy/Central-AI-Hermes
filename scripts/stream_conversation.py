@@ -194,7 +194,7 @@ class FreeSpeech:
                     'condition_on_previous_chunks': True}}, use_bin_type=True))
                 self.ready.set()
                 opened = time.monotonic()
-                while time.monotonic() < (self.started+45 if self.started else opened+35):
+                while time.monotonic() < (self.started+180 if self.started else opened+180):
                     self.control.check()
                     try: raw = socket.recv(timeout=.3)
                     except TimeoutError: continue
@@ -203,7 +203,7 @@ class FreeSpeech:
                     if event.get('event') == 'audio' and event.get('audio'):
                         data = event['audio']
                         self.bytes += len(data)
-                        if self.bytes > self.rate*2*45 or len(data) % 2:
+                        if self.bytes > self.rate*2*180 or len(data) % 2:
                             raise RuntimeError('Invalid speech size')
                         self.control.check()
                         self.first_audio = self.first_audio or time.monotonic()
@@ -337,7 +337,7 @@ class FreeSpeech:
                     return
                 except Exception:
                     pass
-        if not self.done.wait(15) or self.error:
+        if not self.done.wait(45) or self.error:
             if not self.fallback and not self.control.cancelled.is_set():
                 try:
                     self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
@@ -349,7 +349,7 @@ class FreeSpeech:
                 except Exception:
                     pass
             raise
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 60
         while not self.done.wait(.1):
             self.control.check()
             if time.monotonic() > deadline: raise RuntimeError('Speech did not finish')
@@ -373,7 +373,7 @@ def openrouter_stream(config, messages, tools, control):
     custom = conversation_llm(config)['custom']
     if not custom: raise ValueError('A configured economical conversation model is required')
     payload = {'model': custom['model'], 'messages': messages, 'stream': True,
-               'max_tokens': 320, 'temperature': .4,
+               'max_tokens': 1500, 'temperature': .4,
                'provider':{'sort':'latency','allow_fallbacks':True}}
     if custom['model'] in {'openai/gpt-4o-mini','openai/gpt-4.1-mini'}:
         fallback='openai/gpt-4.1-mini' if custom['model']=='openai/gpt-4o-mini' else 'openai/gpt-4o-mini'
@@ -397,7 +397,7 @@ def openrouter_stream(config, messages, tools, control):
             if not line.startswith(b'data: '): continue
             value = line[6:].strip()
             if value == b'[DONE]':
-                if finished not in {'stop','tool_calls'}: raise RuntimeError('Incomplete conversation response: '+str(finished))
+                if finished not in {'stop','tool_calls','length'}: raise RuntimeError('Incomplete conversation response: '+str(finished))
                 return
             event = json.loads(value)
             if event.get('error'): raise RuntimeError('Conversation provider unavailable')
@@ -405,7 +405,7 @@ def openrouter_stream(config, messages, tools, control):
             if choices:
                 finished = choices[0].get('finish_reason') or finished
                 yield choices[0].get('delta') or {}
-        if finished not in {'stop','tool_calls'}: raise RuntimeError('Incomplete conversation response: '+str(finished))
+        if finished not in {'stop','tool_calls','length'}: raise RuntimeError('Incomplete conversation response: '+str(finished))
 
 
 class Conversation:
@@ -462,7 +462,7 @@ class Conversation:
                     value = delta.get('content') or ''
                     if not isinstance(value, str): raise RuntimeError('Invalid conversation text')
                     if value:
-                        if len(response) + len(value) > 2400: raise RuntimeError('Reply too long')
+                        if len(response) + len(value) > 12000: raise RuntimeError('Reply too long')
                         part += value; response += value; emit(value)
                     for fragment in delta.get('tool_calls') or []:
                         index = fragment.get('index')
