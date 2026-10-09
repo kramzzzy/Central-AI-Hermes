@@ -190,7 +190,7 @@ class FreeSpeech:
                 self.socket = self.control.track(socket)
                 socket.send(msgpack.packb({'event': 'start', 'request': {'text': '',
                     'reference_id': self.config.get('FISH_VOICE_ID') or '', 'format': 'pcm',
-                    'sample_rate': self.rate, 'latency': 'balanced', 'chunk_length': 150,
+                    'sample_rate': self.rate, 'latency': 'low', 'chunk_length': 100,
                     'condition_on_previous_chunks': True}}, use_bin_type=True))
                 self.ready.set()
                 opened = time.monotonic()
@@ -250,34 +250,51 @@ class FreeSpeech:
             self.ready.wait(2.5)
             if self.fallback:
                 return self.fallback.text(value)
-        # The conversation prompt prohibits markdown; strip simple markers as
-        # an extra guard without changing the existing voice reference.
-        self.pending += value.replace('**', '').replace('`', '')
-        # Match the public Fish/LiveKit integration's sentence-level delivery.
-        # Forcing a flush after 24 characters cut clauses and damaged prosody.
-        while self.pending:
-            end=None
-            for boundary in re.finditer(r'[.!?](?:["\')\]]*)(?:\s+|$)', self.pending):
-                prefix=self.pending[:boundary.end()].strip()
-                if boundary.group()[0]=='.' and (re.search(r'\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|e\.g|i\.e)\.$|\b[A-Z]\.$',prefix)
-                        or boundary.end()==len(self.pending) and re.search(r'\d\.$',prefix)):
-                    continue
-                end=boundary.end();break
-            if end is None:break
-            self.sentence(self.pending[:end]);self.pending=self.pending[end:]
-        # A long sentence can start on a real clause boundary, never an
-        # arbitrary word count. Short complete answers flush in finish().
-        if len(self.pending)>50 and (clause:=re.search(r'[,;:]\s+',self.pending[25:])):
-            end=25+clause.end();self.sentence(self.pending[:end]);self.pending=self.pending[end:]
+        # Strip markdown markers to protect voice prosody
+        cleaned = value.replace('**', '').replace('`', '').replace('*', '')
+        self.pending += cleaned
+        self.unflushed += cleaned
 
-    def sentence(self,text):
+        # Stream words as soon as boundaries are reached
+        boundaries = list(re.finditer(r'\s+|[!?;:]$|\.(?<!\d\.)$', self.pending))
+        if not boundaries:
+            return
+        cut = boundaries[-1].end()
+        phrase, self.pending = self.pending[:cut], self.pending[cut:]
+        self.started = self.started or time.monotonic()
+        try:
+            self.send({'event': 'text', 'text': phrase})
+            # Ultra-low latency flush: start synthesis on the first phrase (4+ words or >= 18 chars)
+            # so Fish Audio begins generating audio in ~300ms while the model continues generating!
+            first_phrase = (self.first_flush is None and 
+                            len(self.unflushed.strip()) >= 18 and 
+                            len(self.unflushed.split()) >= 4)
+            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed))
+            overflow = len(self.unflushed) >= 80
+
+            if punct_boundary or first_phrase or overflow:
+                self.send({'event': 'flush'})
+                self.first_flush = self.first_flush or time.monotonic()
+                self.unflushed = ''
+        except Exception:
+            if not self.control.cancelled.is_set():
+                try:
+                    if not self.fallback:
+                        self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
+                    return self.fallback.text(phrase + self.pending)
+                except Exception:
+                    pass
+            raise
+
+    def sentence(self, text):
         if self.fallback:
             return self.fallback.sentence(text)
-        self.started=self.started or time.monotonic()
+        self.started = self.started or time.monotonic()
         try:
-            self.send({'event':'text','text':text.strip()+' '})
-            self.send({'event':'flush'})
-            self.first_flush=self.first_flush or time.monotonic()
+            self.send({'event': 'text', 'text': text.strip() + ' '})
+            self.send({'event': 'flush'})
+            self.first_flush = self.first_flush or time.monotonic()
+            self.unflushed = ''
         except Exception:
             if not self.control.cancelled.is_set():
                 try:
@@ -300,11 +317,27 @@ class FreeSpeech:
             self.bytes = self.fallback.bytes
             return
         if self.pending:
-            self.sentence(self.pending)
-            self.pending = ''
+            try:
+                self.send({'event': 'text', 'text': self.pending})
+                self.pending = ''
+            except Exception:
+                pass
         try:
+            if self.unflushed:
+                self.send({'event': 'flush'})
+                self.unflushed = ''
             self.send({'event': 'stop'})
         except Exception:
+            if not self.fallback and not self.control.cancelled.is_set():
+                try:
+                    self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
+                    self.fallback.finish()
+                    self.complete = self.fallback.complete
+                    self.first_audio = self.fallback.first_audio
+                    return
+                except Exception:
+                    pass
+        if not self.done.wait(15) or self.error:
             if not self.fallback and not self.control.cancelled.is_set():
                 try:
                     self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)

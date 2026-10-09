@@ -969,7 +969,7 @@ class FishService:
                     self.state_changed.clear()
                     await connection.send(session.state_event())
                 try:
-                    packet = await asyncio.wait_for(session.output.get(), timeout=.03)
+                    packet = await asyncio.wait_for(session.output.get(), timeout=.015)
                 except asyncio.TimeoutError:
                     continue
                 if self.state_changed.is_set():

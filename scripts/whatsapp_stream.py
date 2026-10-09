@@ -28,8 +28,8 @@ except Exception:
 class PhonePCM:
     """Keep provider chunks continuous; pad only the final transport frame."""
     frame_bytes = 1920
-    prefill_frames = 3
-    single_burst_frames = 10
+    prefill_frames = 2
+    single_burst_frames = 4
 
     def __init__(self):
         self.pending = bytearray()
@@ -45,13 +45,10 @@ class PhonePCM:
             self.chunks += 1
             self.previous_padding += (-len(data)) % self.frame_bytes
             self.pending.extend(data)
-        # Two provider bursts give the sink headroom for uneven synthesis.
-        # A single burst holding 600ms is already sufficient. This waits for
-        # available audio, not a fixed sleep, and short answers flush on finish.
+        # Prefill 2 frames (120ms) for low-latency streaming without holding speech back
         if not self.started and not final:
-            minimum=len(self.pending)>=self.frame_bytes*self.prefill_frames
-            headroom=self.chunks>=2 or len(self.pending)>=self.frame_bytes*self.single_burst_frames
-            if not minimum or not headroom:return
+            if len(self.pending) < self.frame_bytes * self.prefill_frames:
+                return
         self.started = True
         while len(self.pending) >= self.frame_bytes:
             frame = bytes(self.pending[:self.frame_bytes])
@@ -594,7 +591,7 @@ CONVERSATION REALISM:
                 # caller has only just resumed. The three-frame threshold still
                 # applies to interrupting speech that was already committed.
                 if self.state=='thinking' and self.pending_input:self.resume_input()
-                if self.speech_run>=3 and (self.state in {'speaking','thinking'} or self.playback_until>time.monotonic()):
+                if self.speech_run>=2 and (self.state in {'speaking','thinking'} or self.playback_until>time.monotonic()):
                     if not self.resume_input():self.flush()
             else: self.speech_run=0
             if not self.capture:

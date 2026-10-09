@@ -94,7 +94,8 @@ class PhoneAudioFilter:
         if probabilities:
             self.probability = max(probabilities)
         # The caller consumes a speech decision followed by cleaned PCM16.
-        return bytes([int(self.probability >= .50)]) + bytes(result)
+        # Threshold 0.35 enables sensitive, instant barge-in during call playback with AEC.
+        return bytes([int(self.probability >= .35)]) + bytes(result)
 
 
 def start_audio_server(key, allowed_call, metrics):
