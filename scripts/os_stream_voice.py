@@ -18,7 +18,7 @@ class OSStreamVoice:
         self.slots = threading.BoundedSemaphore(2)
 
     def handle(self, handler, body):
-        if not isinstance(body, dict) or set(body) - {'action', 'call_id', 'scope', 'prompt', 'display_name', 'turn_id', 'text'}:
+        if not isinstance(body, dict) or set(body) - {'action', 'call_id', 'scope', 'prompt', 'display_name', 'turn_id', 'text', 'voice', 'voice_id'}:
             raise ValueError('Invalid voice request')
         call = str(UUID(body['call_id']))
         scope, action = body['scope'], body['action']
@@ -44,6 +44,13 @@ class OSStreamVoice:
                 if call in self.contexts: raise ValueError('Call already started')
                 if len(self.contexts) >= 4: raise RuntimeError('Voice calls are busy')
                 config = dict((self.team_voice if scope.get('assistant') else self.voice).config)
+                voice_id = body.get('voice_id')
+                if not voice_id and body.get('voice') == 'michael':
+                    voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
+                elif not voice_id and body.get('voice') == 'jarvis':
+                    voice_id = '612b878b113047d9a770c069c8b4fdfe'
+                if voice_id:
+                    config['FISH_VOICE_ID'] = voice_id
                 # Team voice providers share model authentication, not memory.
                 config['OPENROUTER_API_KEY'] = config.get('OPENROUTER_API_KEY') or self.voice.config.get('OPENROUTER_API_KEY') or os.environ.get('OPENROUTER_API_KEY', '')
                 config['OPENAI_API_KEY'] = config.get('OPENAI_API_KEY') or self.voice.config.get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY', '')
@@ -69,6 +76,13 @@ class OSStreamVoice:
                 if item['turn'] == body.get('turn_id') and item['control']: item['control'].cancel()
                 return handler.reply(200, {'stopped': True})
             if action not in {'turn', 'greeting', 'notice'}: raise ValueError('Unsupported voice action')
+            turn_voice_id = body.get('voice_id')
+            if not turn_voice_id and body.get('voice') == 'michael':
+                turn_voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
+            elif not turn_voice_id and body.get('voice') == 'jarvis':
+                turn_voice_id = '612b878b113047d9a770c069c8b4fdfe'
+            if turn_voice_id:
+                item['config']['FISH_VOICE_ID'] = turn_voice_id
             turn = str(UUID(body['turn_id']))
             if item['control']: item['control'].cancel()
             control = TurnControl(lambda: self.contexts.get(call) is item and item['until'] > time.monotonic())
