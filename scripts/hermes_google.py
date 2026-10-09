@@ -192,20 +192,19 @@ class GoogleWorkspace:
             Path(__file__).resolve().parent.parent / '.runtime' / 'google',
             Path('/opt/hermes/.runtime/google'),
             Path('/opt/data/.runtime/google'),
-            Path('/root/.runtime/google'),
             Path.home() / '.runtime' / 'google',
         ]
         if not (self.root / 'connections.sqlite').is_file():
             import shutil
             for legacy_path in candidate_legacy_paths:
-                if legacy_path != self.root and (legacy_path / 'connections.sqlite').is_file():
-                    try:
+                try:
+                    if legacy_path != self.root and (legacy_path / 'connections.sqlite').is_file():
                         if (legacy_path / 'encryption.key').is_file() and not (self.root / 'encryption.key').is_file():
                             shutil.copy2(legacy_path / 'encryption.key', self.root / 'encryption.key')
                         shutil.copy2(legacy_path / 'connections.sqlite', self.root / 'connections.sqlite')
                         break
-                    except Exception:
-                        pass
+                except (PermissionError, OSError):
+                    continue
         self.transport, self.clock, self.lock = transport, clock, threading.RLock()
         from cryptography.fernet import Fernet
         keyfile = self.root/'encryption.key'
