@@ -49,9 +49,6 @@ services:
       WHATSAPP_URL: ${WHATSAPP_URL:-http://caller:8080}
       APP_OS_URL: ${APP_OS_URL:-http://web:3000}
       MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
       HOME: /opt/data
     volumes:
       - hermes-profiles:/opt/data
