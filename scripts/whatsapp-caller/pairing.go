@@ -64,16 +64,43 @@ func connectPairedDevice(ctx context.Context, socket *wa.Client) {
 		return
 	}
 	if socket.Store != nil && socket.Store.ID != nil {
-		if err := socket.Connect(); err != nil {
-			log.Printf("retained WhatsApp connection failed: %v", err)
+		backoff := 1 * time.Second
+		for ctx.Err() == nil {
+			if socket.IsConnected() {
+				current.Lock()
+				current.LinkedNumber = socket.Store.ID.User
+				if socket.Store.PushName != "" {
+					current.PushName = socket.Store.PushName
+				}
+				current.State = "connected"
+				current.Unlock()
+				return
+			}
+			err := socket.Connect()
+			if err == nil {
+				current.Lock()
+				current.LinkedNumber = socket.Store.ID.User
+				if socket.Store.PushName != "" {
+					current.PushName = socket.Store.PushName
+				}
+				current.State = "connected"
+				current.Unlock()
+				log.Printf("WhatsApp connected successfully for line +%s", socket.Store.ID.User)
+				return
+			}
+			log.Printf("retained WhatsApp connection attempt failed: %v (retrying in %v)", err, backoff)
+			current.Lock()
+			current.State = "reconnecting"
+			current.Unlock()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 16*time.Second {
+				backoff *= 2
+			}
 		}
-		current.Lock()
-		current.LinkedNumber = socket.Store.ID.User
-		if socket.Store.PushName != "" {
-			current.PushName = socket.Store.PushName
-		}
-		current.State = "connected"
-		current.Unlock()
 		return
 	}
 

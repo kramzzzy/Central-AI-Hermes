@@ -147,12 +147,12 @@ class Handler(BaseHTTPRequestHandler):
    import urllib.request
    for cu in [caller_url,'http://127.0.0.1:8080','http://whatsapp-connector:8080','http://meowcaller:8080']:
     try:
-     with urllib.request.urlopen(f"{cu}/status",timeout=2) as r:
+     with urllib.request.urlopen(f"{cu}/status",timeout=4) as r:
       caller_data=json.loads(r.read());break
     except Exception:pass
    for vu in [voice_url,'http://127.0.0.1:8081','http://voice-pipeline:8081']:
     try:
-     with urllib.request.urlopen(f"{vu}/health",timeout=2) as r:
+     with urllib.request.urlopen(f"{vu}/health",timeout=4) as r:
       voice_data=json.loads(r.read());break
     except Exception:pass
    return self.reply(200,{'caller':caller_data,'voice':voice_data,'timestamp':time.time()})
@@ -388,7 +388,7 @@ class Handler(BaseHTTPRequestHandler):
      import urllib.request, urllib.error
      for cu in caller_urls:
       try:
-       with urllib.request.urlopen(f"{cu}/status",timeout=2) as sresp:
+       with urllib.request.urlopen(f"{cu}/status",timeout=4) as sresp:
         caller_status=json.loads(sresp.read())
         active_caller_url=cu
         break
@@ -417,7 +417,7 @@ class Handler(BaseHTTPRequestHandler):
        })
       try:
        creq=urllib.request.Request(f"{active_caller_url}/call",data=json.dumps(call_payload).encode(),headers={'Content-Type':'application/json'})
-       with urllib.request.urlopen(creq,timeout=4) as cresp:
+       with urllib.request.urlopen(creq,timeout=12) as cresp:
         cdata=json.loads(cresp.read())
         if cresp.status in {200,201,202} and cdata.get('ok'):
          return self.reply(200,{

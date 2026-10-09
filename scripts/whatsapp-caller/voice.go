@@ -51,6 +51,15 @@ type speechFrame struct {
 	samples    []float32
 }
 
+var voiceHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        64,
+		MaxIdleConnsPerHost: 32,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  true,
+	},
+}
+
 func (v *voiceAudio) request(ctx context.Context, path string, body []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", getEnv("VOICE_URL", "LEO_VOICE_URL")+path, bytes.NewReader(body))
 	if err != nil {
@@ -59,7 +68,7 @@ func (v *voiceAudio) request(ctx context.Context, path string, body []byte) ([]b
 	req.Header.Set("Authorization", "Bearer "+v.key)
 	req.Header.Set("X-Call-ID", v.id)
 	if v.callerNumber != "" { req.Header.Set("X-Caller-Number", v.callerNumber) }
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := voiceHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -463,7 +472,7 @@ func (v *voiceAudio) streamTurnFor(ctx context.Context, data []byte, turn string
 	if final {
 		req.Header.Set("X-Voice-Final", "true")
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := voiceHTTPClient.Do(req)
 	if err != nil {
 		return false, err
 	}

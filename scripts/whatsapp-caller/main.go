@@ -92,14 +92,63 @@ func admittedCaller(peer, resolved string) string {
 	return ""
 }
 func wireAudio(ctx context.Context, call *meow.Call, voice *voiceAudio) error {
- callCtx,stop:=context.WithCancel(ctx)
- current.Lock();current.activeHangup=call.Hangup;current.Unlock()
- call.Receive(meow.SinkFunc(voice.Receive))
- call.Play(voice)
- call.OnReady(func(){voice.markReady();current.Lock();current.Call="audio_ready";current.Unlock();log.Print("owner call media ready")})
- call.OnEnd(func(reason string){stop();voice.Close();current.Lock();current.Call="ended";current.EndReason=reason;current.busy=false;current.activeHangup=nil;current.Unlock();log.Print("owner call ended")})
- go func(){select{case <-time.After(30*time.Minute):call.Hangup();case <-voice.ctx.Done():call.Hangup();case <-callCtx.Done():}}()
- return nil
+	callCtx, stop := context.WithCancel(ctx)
+	current.Lock()
+	current.activeHangup = call.Hangup
+	current.Unlock()
+	call.Receive(meow.SinkFunc(voice.Receive))
+	call.Play(voice)
+	call.OnReady(func() {
+		voice.markReady()
+		current.Lock()
+		current.Call = "audio_ready"
+		current.Unlock()
+		log.Print("owner call media ready")
+	})
+	call.OnEnd(func(reason string) {
+		stop()
+		voice.Close()
+		current.Lock()
+		current.Call = "ended"
+		current.EndReason = reason
+		current.busy = false
+		current.activeHangup = nil
+		current.Unlock()
+		log.Print("owner call ended")
+	})
+	// Ringing timeout: if outbound call is not answered within 50 seconds, hang up cleanly
+	go func() {
+		select {
+		case <-callCtx.Done():
+			return
+		case <-time.After(50 * time.Second):
+			current.Lock()
+			answered := current.Answered
+			busy := current.busy
+			current.Unlock()
+			if busy && !answered {
+				log.Print("outbound call ringing timeout (50s without answer); terminating call")
+				_ = call.Hangup()
+				voice.Close()
+				current.Lock()
+				current.Call = "no_answer"
+				current.EndReason = "ringing_timeout"
+				current.busy = false
+				current.activeHangup = nil
+				current.Unlock()
+			}
+		}
+	}()
+	go func() {
+		select {
+		case <-time.After(30 * time.Minute):
+			call.Hangup()
+		case <-voice.ctx.Done():
+			call.Hangup()
+		case <-callCtx.Done():
+		}
+	}()
+	return nil
 }
 func main() {
  if len(os.Args)==2 && os.Args[1]=="readycheck" { if serverReady("http://127.0.0.1:8080/ready") {return};os.Exit(1) }
@@ -227,6 +276,13 @@ func main() {
 		current.Target = cleanTarget
 		current.Kind = req.Mode
 		if current.Kind == "" { current.Kind = "native" }
+		current.Received = 0
+		current.Played = 0
+		current.VoiceErrors = 0
+		current.HeartbeatMisses = 0
+		current.Answered = false
+		current.AnsweredAt = ""
+		current.EndReason = ""
 		current.Unlock()
 
 		voice, err := prepareVoiceOutbound(ctx, cleanTarget)
@@ -265,6 +321,7 @@ func main() {
 			current.Call = "ended"
 			current.EndReason = reason
 			current.busy = false
+			current.Answered = false
 			current.activeHangup = nil
 			current.Unlock()
 			log.Printf("outbound call to %s ended: %s", req.Target, reason)
@@ -309,6 +366,7 @@ func main() {
 		current.busy = false
 		current.Call = "ended"
 		current.EndReason = "dropped_by_user"
+		current.Answered = false
 		current.activeHangup = nil
 		current.Unlock()
 
@@ -375,7 +433,14 @@ func main() {
      if socket.Store.PushName=="" || socket.Store.PushName=="Leo call test" || socket.Store.PushName=="Leo - youraiagent" {socket.Store.PushName=defaultPush}
      if err:=socket.SendPresence(ctx,types.PresenceAvailable);err!=nil {log.Print("call presence announcement failed")}
     }()
-  case *events.Disconnected:current.State="reconnecting"
+  case *events.Disconnected:
+    current.State="reconnecting"
+    go func() {
+      time.Sleep(2 * time.Second)
+      if socket.Store != nil && socket.Store.ID != nil && !socket.IsConnected() {
+        connectPairedDevice(ctx, socket)
+      }
+    }()
   case *events.LoggedOut:
     current.State="logged_out";current.code=""
     current.LinkedNumber=""
@@ -413,7 +478,36 @@ func main() {
   current.Lock();current.State="standby";current.Unlock()
   if err:=waitEngineEnabled(ctx,marker);err!=nil {log.Print("engine startup cancelled");return}
  }
- go connectPairedDevice(ctx,socket)
+	go connectPairedDevice(ctx, socket)
+	// Proactive WhatsApp Connection Keep-Alive & Self-Healing Watchdog
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if socket == nil || socket.Store == nil || socket.Store.ID == nil {
+					continue
+				}
+				if socket.IsConnected() {
+					_ = socket.SendPresence(ctx, types.PresenceAvailable)
+					current.Lock()
+					if current.State != "connected" {
+						current.State = "connected"
+					}
+					current.Unlock()
+				} else {
+					log.Printf("Watchdog detected disconnected WhatsApp socket; auto-reconnecting...")
+					current.Lock()
+					current.State = "reconnecting"
+					current.Unlock()
+					go connectPairedDevice(ctx, socket)
+				}
+			}
+		}
+	}()
  go func(){
   ticker:=time.NewTicker(5*time.Second);defer ticker.Stop()
   for {select{case <-ctx.Done():return;case <-ticker.C:}
