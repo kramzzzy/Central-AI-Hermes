@@ -41,7 +41,7 @@ func getSetupKey(keyPath string) string {
 }
 
 // Only the authenticated backend may begin pairing. Never clear an existing device.
-func pairingHandler(keyPath, marker string, connected func() bool) http.HandlerFunc {
+func pairingHandler(keyPath, marker string, connected func() bool, onPair ...func() error) http.HandlerFunc {
  return func(w http.ResponseWriter,r *http.Request) {
   w.Header().Set("Cache-Control","no-store")
   if r.Method!=http.MethodPost {w.WriteHeader(http.StatusMethodNotAllowed);return}
@@ -51,6 +51,14 @@ func pairingHandler(keyPath, marker string, connected func() bool) http.HandlerF
   if !hmac.Equal([]byte(r.Header.Get("Authorization")),[]byte(expected)) {http.Error(w,"Unauthorized",401);return}
   if !connected() {
    if err:=os.WriteFile(marker,[]byte("enabled\n"),0600);err!=nil {http.Error(w,"Pairing could not start",503);return}
+   for _, fn := range onPair {
+    if fn != nil {
+     if err := fn(); err != nil {
+      http.Error(w,"Pairing error: "+err.Error(),500)
+      return
+     }
+    }
+   }
   }
   w.Header().Set("Content-Type","application/json")
   json.NewEncoder(w).Encode(map[string]bool{"started":true})

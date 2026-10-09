@@ -72,7 +72,17 @@ class WhatsAppSetup:
             return settings.apply(self.root)
         if body['action']=='groups':
             return json.loads(self.fetch('/setup/groups',start=True, line=line))
-        if body['action'] == 'start': self.fetch('/pairing/start', start=True, line=line)
+        if body['action'] == 'start':
+            self.fetch('/pairing/start', start=True, line=line)
+            import time
+            for _ in range(5):
+                time.sleep(0.2)
+                try:
+                    st = json.loads(self.fetch('/status', line=line))
+                    if st.get('state') == 'pairing' and self.fetch('/qr.png', line=line):
+                        break
+                except Exception:
+                    pass
         if body['action'] == 'disconnect':
             try:
                 self.fetch('/pairing/disconnect', start=True, line=line)
@@ -90,10 +100,11 @@ class WhatsAppSetup:
         name = state.get('state')
         if name not in allowed: raise SetupError('Unrecognized WhatsApp connection state')
         result = {'state': name, 'connected': name == 'connected', 'voice_ready': False, 'line': line}
-        if state.get('linked_number'):
-            result['linked_number'] = state['linked_number']
-        if state.get('push_name'):
-            result['push_name'] = state['push_name']
+        if name == 'connected':
+            if state.get('linked_number'):
+                result['linked_number'] = state['linked_number']
+            if state.get('push_name'):
+                result['push_name'] = state['push_name']
         if name == 'pairing':
             pixels = self.fetch('/qr.png', line=line)
             if pixels and pixels.startswith(b'\x89PNG\r\n\x1a\n'):

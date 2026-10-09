@@ -110,7 +110,6 @@ func main() {
  if !unconfigured && !managedCallerAllowed(owner) { log.Fatal("configured owner required") }
  ctx,cancel:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM);defer cancel()
  http.HandleFunc("/ready",func(w http.ResponseWriter,r *http.Request){w.Header().Set("Cache-Control","no-store");w.Header().Set("Content-Type","application/json");json.NewEncoder(w).Encode(map[string]bool{"service_running":true})})
- http.HandleFunc("/pairing/start",pairingHandler("/run/secrets/whatsapp_setup_key","/data/remote-engine-enabled",func()bool{current.Lock();defer current.Unlock();return current.State=="connected"}))
  http.HandleFunc("/health",func(w http.ResponseWriter,r *http.Request){
   current.Lock();connected:=current.State=="connected";current.Unlock()
   w.Header().Set("Content-Type","application/json");w.Header().Set("Cache-Control","no-store")
@@ -127,9 +126,12 @@ func main() {
   stage:=receiveStage()
   current.Lock();defer current.Unlock();w.Header().Set("Content-Type","application/json")
   current.ReceiveStage=stage
-  if socket!=nil && socket.Store!=nil && socket.Store.ID!=nil {
+  if socket!=nil && socket.Store!=nil && socket.Store.ID!=nil && current.State=="connected" {
    current.LinkedNumber = socket.Store.ID.User
    if socket.Store.PushName!="" { current.PushName = socket.Store.PushName }
+  } else if current.State!="connected" {
+   current.LinkedNumber = ""
+   current.PushName = ""
   }
   w.Header().Set("Cache-Control","no-store");json.NewEncoder(w).Encode(&current)
  })
@@ -154,15 +156,29 @@ func main() {
  store.DeviceProps.Os=ptr(getEnvDefault("Central AI Assistant","WHATSAPP_DEVICE_NAME","LEO_WHATSAPP_DEVICE_NAME"))
  socket = wa.NewClient(device,walog.Zerolog(logger))
  http.HandleFunc("/setup/groups",groupsHandler(socket))
+ http.HandleFunc("/pairing/start",pairingHandler(
+  "/run/secrets/whatsapp_setup_key",
+  "/data/remote-engine-enabled",
+  func()bool{current.Lock();defer current.Unlock();return current.State=="connected"},
+  func()error{
+   startPairing(ctx,socket)
+   return nil
+  },
+ ))
  http.HandleFunc("/pairing/disconnect",disconnectHandler("/run/secrets/whatsapp_setup_key",func()error{
-  current.Lock();current.State="logged_out";current.code="";current.Unlock()
+  current.Lock();current.State="logged_out";current.code="";current.LinkedNumber="";current.PushName="";current.Unlock()
   go func(){
+   pairingMu.Lock()
+   if pairingCancel != nil {
+    pairingCancel()
+    pairingCancel = nil
+   }
+   pairingMu.Unlock()
    if socket.Store!=nil {
     _=socket.Store.Delete(ctx)
     socket.Store.ID=nil
    }
    socket.Disconnect()
-   go connectPairedDevice(ctx,socket)
   }()
   return nil
  }))
