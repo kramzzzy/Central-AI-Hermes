@@ -10,7 +10,7 @@ from uuid import uuid4
 
 TOOL = {
     'tool_type': 'client', 'name': 'native_leo',
-    'description': 'Start an independent Central AI background task with normal permissions and approvals. Returns acceptance and task_id immediately, not the task result. Keep conversing; completion and progress arrive separately. Do not retry uncertain actions.',
+    'description': 'Start an independent Central AI background task ONLY for explicit, concrete business work or research requests. NEVER invoke this tool for casual greetings, small talk, check-ins, or questions like "what\'s up" or "how are you". Returns acceptance and task_id immediately, not the task result.',
     'arguments': [{'name': 'request', 'description': 'Complete English request with the caller intent and relevant details. Preserve negation, recipients and corrections. For a previously uncertain action ask to check its status before doing anything again.'},
                   {'name': 'label', 'description': 'Short task name, e.g. weekly report or meeting preparation. Maximum 100 characters.'}],
     'expects_response': True, 'timeout_seconds': 10,
@@ -134,6 +134,24 @@ def is_goodbye_intent(text, assistant_name='Leo'):
         return True
     if re.match(r'^(?:goodbye|good\s*bye|bye\s*bye|bye|end\s*call|hang\s*up)[.!?]*$', trimmed, re.I):
         return True
+    return False
+
+def is_casual_greeting_intent(text):
+    if not text:
+        return False
+    trimmed = text.strip().lower()
+    trimmed = re.sub(r'[.!?]+$', '', trimmed).strip()
+    patterns = [
+        r'^(?:hey|hi|hello|yo|sup|hiya|howdy)(?:\s+(?:leo|there|man|buddy|friend|eddy|mark))?$',
+        r'^(?:hey\s+)?what(?:\'?s|\s+is)?\s+up(?:\s+(?:leo|there|man|buddy))?$',
+        r'^(?:hey\s+)?what\s*up(?:\s+(?:leo|there|man|buddy))?$',
+        r'^(?:how\s+are\s+you|how\s+r\s+u|how(?:\'?s|\s+is)\s+it\s+going|how\s+do\s+you\s+do|how\s+have\s+you\s+been)(?:\s+doing)?(?:\s+(?:today|leo))?$',
+        r'^(?:good\s+)?(?:morning|afternoon|evening|day)(?:\s+(?:leo|there))?$',
+        r'^(?:what(?:\'?s|\s+is)\s+good|what(?:\'?s|\s+is)\s+happening|what(?:\'?s|\s+is)\s+new)$',
+    ]
+    for p in patterns:
+        if re.search(p, trimmed, re.I):
+            return True
     return False
 
 def is_correction(text):
@@ -437,7 +455,9 @@ def fish_api(config, path, body=None, method=None):
 
 def conversation_llm(config):
     """Explicit low-cost voice routing; reject arbitrary models and expensive fallbacks."""
-    model = (config.get('FISH_LLM_MODEL') or os.environ.get('HERMES_VOICE_MODEL') or 'openai/gpt-4.1-mini').strip()
+    model = (os.environ.get('HERMES_VOICE_MODEL') or config.get('HERMES_VOICE_MODEL') or config.get('FISH_LLM_MODEL') or 'meta-llama/llama-3.3-70b-instruct').strip()
+    if not model or model == 'openai/gpt-4.1-mini':
+        model = 'meta-llama/llama-3.3-70b-instruct'
     if not model:
         return {'custom': None}
     openai_key = (config.get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()

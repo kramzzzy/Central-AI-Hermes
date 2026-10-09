@@ -116,6 +116,12 @@ ACTIVE TOOLS & CAPABILITIES:
 - Knowledge Base: Use `search_knowledge(query=...)` to search company records and SOPs, and `add_knowledge` to save facts.
 - Outbound WhatsApp: Use `send_whatsapp_message` to text and `call_whatsapp_contact` to call.
 - Ending the Call: When the caller says goodbye, end call, or hang up, invoke `end_call` to disconnect gracefully.
+
+CONVERSATION & GREETING RULES:
+- When the caller says "Hey", "Hello", "What's up", "Hey what up", "How are you", or any casual greeting, reply directly and conversationally in 1 short sentence (e.g. "Hey! Doing great, ready to help. What's on your mind?").
+- NEVER invoke any tools (NEVER native_leo, NEVER task_status) for casual greetings, small talk, or check-ins.
+- NEVER start a background task or say "I'll look into that" unless the caller gives an explicit, concrete instruction to perform work, search something, or create a report.
+- NEVER invent or guess the caller's name (never call them "Eddy", "Mark", etc. unless explicitly provided in context).
 """
         if is_unknown:
             self.prompt = central_ai_identity(f"""You are Leo, the personal assistant representing {company or 'Central AI'} on WhatsApp.
@@ -458,7 +464,7 @@ CONVERSATION REALISM:
                         # Obvious unfinished clauses get one short opportunity
                         # to continue, rather than dispatching a draft request.
                         return 'continue'
-                    from fish_conversation import is_goodbye_intent
+                    from fish_conversation import is_goodbye_intent, is_casual_greeting_intent
                     if is_goodbye_intent(text):
                         speak("Goodbye! Have a great day.")
                         speech.finish()
@@ -474,8 +480,11 @@ CONVERSATION REALISM:
                         self.dispatch_context.confirmation=None
                         self.dispatch_context.prepared_confirmation=None
                         self.dispatch_context.control=control
+                        is_greeting = is_casual_greeting_intent(text)
                         def pending_tool(name,caller_text,needs_acknowledgement):
                             nonlocal first
+                            if is_greeting or name not in {'native_leo'}:
+                                return None
                             # Reading this caller's isolated task ledger has no
                             # action effects. Final cloud words are sufficient;
                             # changes/cancellations/callbacks retain independent
@@ -492,9 +501,9 @@ CONVERSATION REALISM:
                                 return phrase
                         try:
                             messages=[{'role':'system','content':self.prompt},*self.conversation.history,{'role':'user','content':text}]
-                            reused=bool(speculative and speculative.matches(messages,tool_definitions(self.conversation.names)))
+                            reused=bool(speculative and not is_greeting and speculative.matches(messages,tool_definitions(self.conversation.names)))
                             self.service.metrics['prepared_replies_used']=self.service.metrics.get('prepared_replies_used',0)+int(reused)
-                            self.conversation.reply(text,speak,control,speculative=speculative,on_tool_pending=pending_tool)
+                            self.conversation.reply(text,speak,control,speculative=(None if is_greeting else speculative),on_tool_pending=pending_tool,allow_tools=not is_greeting)
                         finally:
                             self.service.metrics['last_conversation_timing']=getattr(self.conversation,'last_timing',{})
                             self.dispatch_context.audio=None;self.dispatch_context.control=None;self.dispatch_context.source=None;self.dispatch_context.confirmation=None;self.dispatch_context.prepared_confirmation=None

@@ -430,7 +430,7 @@ class Conversation:
             return SpeculativeReply(self.config,messages,tool_definitions(self.names),control,self.stream)
         finally:self.guard.release()
 
-    def reply(self, text, emit, control, notice=False, speculative=None, on_tool_pending=None):
+    def reply(self, text, emit, control, notice=False, speculative=None, on_tool_pending=None, allow_tools=True):
         if not self.guard.acquire(timeout=3):
             raise RuntimeError('The previous spoken reply is still settling')
         utterance, response = [], ''
@@ -448,7 +448,7 @@ class Conversation:
             utterance = [{'role': 'user', 'content': content}]
             for step in range(4):
                 control.check()
-                tools = tool_definitions(self.names) if not notice and step < 3 else []
+                tools = tool_definitions(self.names) if not notice and allow_tools and step < 3 else []
                 calls, part = {}, ''
                 messages=[{'role': 'system', 'content': self.prompt}, *self.history, *utterance]
                 prepared=speculative if step==0 and not notice and speculative and speculative.matches(messages,tools) else None

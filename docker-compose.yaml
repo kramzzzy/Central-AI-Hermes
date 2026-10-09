@@ -220,6 +220,7 @@ services:
       HINDSIGHT_URL: http://hindsight:8888
       LAYA_URL: http://laya:8000
       WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-deepseek/deepseek-v4.1-flash}
+      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-meta-llama/llama-3.3-70b-instruct}
     volumes:
       - hermes-profiles:/opt/data
       - phone-state:/data
