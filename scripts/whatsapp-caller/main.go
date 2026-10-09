@@ -401,7 +401,8 @@ func main() {
  go func(){
   ticker:=time.NewTicker(5*time.Second);defer ticker.Stop()
   for {select{case <-ctx.Done():return;case <-ticker.C:}
-   if os.Getenv("WHATSAPP_CONVERSATION_MODE") != "fish" {continue}
+   mode := os.Getenv("WHATSAPP_CONVERSATION_MODE")
+   if mode != "fish" && mode != "stream" {continue}
    current.Lock()
    if current.State!="connected" || current.busy {current.Unlock();continue}
    current.Unlock()

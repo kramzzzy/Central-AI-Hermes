@@ -104,7 +104,8 @@ func prepareVoiceInternal(ctx context.Context, callerNumber, callbackID string, 
 	id[6] = (id[6] & 15) | 64
 	id[8] = (id[8] & 63) | 128
 	callCtx, cancel := context.WithCancel(ctx)
-	v := &voiceAudio{ctx: callCtx, cancel: cancel, key: string(key), id: fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:]), output: make(chan []float32, 8), playback: make(chan speechFrame, 8), capture: make(chan []byte, 64), generation: 1, mediaReady: make(chan struct{}), fish: os.Getenv("WHATSAPP_CONVERSATION_MODE") == "fish"}
+	mode := os.Getenv("WHATSAPP_CONVERSATION_MODE")
+	v := &voiceAudio{ctx: callCtx, cancel: cancel, key: string(key), id: fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:]), output: make(chan []float32, 8), playback: make(chan speechFrame, 8), capture: make(chan []byte, 64), generation: 1, mediaReady: make(chan struct{}), fish: mode == "fish" || mode == "stream"}
 	v.callerNumber = callerNumber
 	startCtx, stop := context.WithTimeout(ctx, 80*time.Second)
 	defer stop()

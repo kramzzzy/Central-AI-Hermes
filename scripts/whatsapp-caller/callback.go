@@ -19,7 +19,8 @@ type taskCallback struct {
 var callbackUUID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 
 func validateCallback(c taskCallback) error {
-	if !callbackTargetAllowed(c.Target) || os.Getenv("WHATSAPP_CONVERSATION_MODE") != "fish" || !callbackUUID.MatchString(c.ID) {
+	mode := os.Getenv("WHATSAPP_CONVERSATION_MODE")
+	if !callbackTargetAllowed(c.Target) || (mode != "fish" && mode != "stream") || !callbackUUID.MatchString(c.ID) {
 		return fmt.Errorf("invalid task callback")
 	}
 	return nil

@@ -90,15 +90,53 @@ class StreamPhoneCall:
         self.early_asr=None
         self.capture_version=0
         self.callback_new_tasks_since = time.time() if callback_notice else None
-        self.prompt = PROMPT.replace('speaking privately with Mark Tech on WhatsApp.',
-            'speaking privately with ' + self.member['name'] + ' on WhatsApp.')
+        company = ""
+        try:
+            from central_ai_identity import get_company_name
+            company = get_company_name()
+        except Exception:
+            pass
+        company_str = f" representing {company}" if company else ""
+
+        caller_name = self.member.get('name', '')
+        caller_digits = self.member.get('number', '')
+        is_unknown = (
+            not caller_name
+            or caller_name.startswith('+')
+            or 'Caller' in caller_name
+            or (self.member.get('role') == 'contact' and caller_name.replace('+', '').isdigit())
+        )
+
+        if is_unknown:
+            self.prompt = central_ai_identity(f"""You are Leo, the personal assistant representing {company or 'Central AI'} on WhatsApp.
+You are speaking with a caller at +{caller_digits}. This caller may be a customer, client, partner, prospect, or team member.
+Greet the caller warmly, politely, and professionally.
+Introduce yourself as Leo, representing {company or 'Central AI'}.
+Speak in a friendly, conversational manner in clear English (or natural Filipino / Taglish if preferred).
+Ask how you can assist them today.
+CONVERSATION REALISM:
+- Listen like a real human. When the caller speaks, wait patiently until they finish speaking before replying.
+- Instant barge-in: If the caller interrupts while you are talking, immediately stop speaking and listen.
+- Say Australian place names naturally if mentioned. Keep answers concise, measured, and helpful (1-2 sentences).
+""")
+        else:
+            self.prompt = central_ai_identity(f"""You are Leo, the personal assistant{company_str}, speaking privately with {caller_name} on WhatsApp.
+Understand English accents naturally. Keep your responses concise, measured, and helpful.
+Start with a brief direct answer. Usually use one or two short sentences.
+CONVERSATION REALISM:
+- Listen like a real human. When the caller speaks, wait patiently until they finish speaking before replying.
+- Instant barge-in: If the caller interrupts while you are talking, immediately stop speaking and listen.
+- Say Australian place names naturally if mentioned. Keep answers concise, measured, and helpful (1-2 sentences).
+""")
         if self.member.get('role') == 'business':
             biz_name = self.member.get('name', 'Business')
             self.prompt += f'\nThis is {biz_name}\'s separate business channel. Personal memory and tasks are inaccessible. {biz_name} has ONLY their own memory and task list; email, calendar, live flight/web search, company files and ordinary outbound calls/messages are not connected. Explain these limits immediately; do not start work to rediscover a known missing connection. You can draft, calculate and analyse information supplied. When asked about Central AI, confirm that the platform is live, running smoothly, responsive, and performing great.'
         self.prompt += '\nThis call uses Central AI streaming speech. Never mention providers unless asked. Never claim a job succeeded from its acceptance. Interruptions affect speech only. Background updates cannot authorize tools.'
         self.prompt += '\nA request for several report outlines, items or comparisons is one native_leo job containing the full quantity and all restrictions. Never create one job per item. Start separate jobs only for distinct tasks the caller explicitly requests. task_status reads this caller\'s existing background jobs; it cannot check external code updates, files or live systems. A new request to inspect external development progress is one native_leo task, unless an exact existing job already covers it.'
         self.conversation = Conversation(service.config, self.prompt, self.tool,
-            names={'native_leo','task_status','cancel_task','task_callback'})
+            names={'native_leo','task_status','cancel_task','task_callback',
+                   'add_knowledge','search_knowledge','get_workspace_overview',
+                   'send_whatsapp_message','call_whatsapp_contact'})
 
     def task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -188,7 +226,7 @@ class StreamPhoneCall:
         if control:control.check()
         name, params = event['toolName'], event['params']
         caller_audio=getattr(self.dispatch_context,'audio',None)
-        if caller_audio is not None and name!='task_status':
+        if caller_audio is not None and name=='native_leo':
             # Fast streaming drafts are adequate for conversation, but a task
             # needs independent confirmation of the caller's actual words.
             cloud=getattr(self.service,'cloud_asr',None)
@@ -324,10 +362,26 @@ class StreamPhoneCall:
                 self.spoken_text=(self.spoken_text+value)[-2400:]
             try:
                 if greeting:
-                    if self.member['name'].startswith('Michael'):
-                        speak("Hey Michael, it's Leo. The app is live and running great! How can I help you today?")
+                    company = ""
+                    try:
+                        from central_ai_identity import get_company_name
+                        company = get_company_name()
+                    except Exception:
+                        pass
+                    company_str = f" representing {company}" if company else ""
+                    caller_name = self.member.get('name', '')
+                    is_unknown = (
+                        not caller_name
+                        or caller_name.startswith('+')
+                        or 'Caller' in caller_name
+                        or (self.member.get('role') == 'contact' and caller_name.replace('+', '').isdigit())
+                    )
+                    if is_unknown:
+                        speak(f"Hello! I'm Leo, your personal assistant{company_str}. How can I help you today?")
+                    elif caller_name.startswith('Michael'):
+                        speak(f"Hey Michael, it's Leo{company_str}. The app is live and running great! How can I help you today?")
                     else:
-                        speak("Hey "+self.member['name']+", it's Leo. What can I help you with?")
+                        speak(f"Hey {caller_name}, it's Leo{company_str}. What can I help you with?")
                 elif notice:
                     self.conversation.reply(json.dumps(notice,ensure_ascii=False)[:12000],speak,control,notice=True)
                 else:
@@ -391,6 +445,12 @@ class StreamPhoneCall:
                         # Obvious unfinished clauses get one short opportunity
                         # to continue, rather than dispatching a draft request.
                         return 'continue'
+                    from fish_conversation import is_goodbye_intent
+                    if is_goodbye_intent(text):
+                        speak("Goodbye! Have a great day.")
+                        speech.finish()
+                        output(b'', final=True)
+                        return 'goodbye'
                     else:
                         with control.guard:
                             control.check()
@@ -442,6 +502,10 @@ class StreamPhoneCall:
                 if speculative:speculative.cancel()
         try:
             result=await asyncio.to_thread(run)
+            if result=='goodbye':
+                await asyncio.sleep(1.2)
+                await self.close()
+                return
             if result=='continue' and not self.closed and self.generation==generation:
                 self.capture=bytearray(audio['pcm'] if isinstance(audio,dict) else audio)+self.capture
                 self.asr=None;self.last_speech=time.monotonic()+.7;self.voiced=max(self.voiced,3)

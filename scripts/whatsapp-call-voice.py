@@ -32,7 +32,9 @@ from whatsapp_callers import resolve_caller, provision_business_phone
 from whatsapp_routing import routing, caller_data
 from whatsapp_speech import phone_speech, PREFERRED_LOCALE, FALLBACK_LOCALE
 
-CONVERSATION_MODE = os.environ.get('WHATSAPP_CONVERSATION_MODE', 'native')
+CONVERSATION_MODE = os.environ.get('WHATSAPP_CONVERSATION_MODE', 'stream')
+if CONVERSATION_MODE == 'fish':
+    CONVERSATION_MODE = 'stream'
 if CONVERSATION_MODE not in {'native', 'fish', 'stream'}:
     raise RuntimeError('Invalid phone conversation mode')
 fish_service = None
