@@ -82,7 +82,7 @@ class TurnControl:
             threading.Thread(target=close,daemon=True).start()
 
 
-def fish_rest_tts(text, config, rate=24000):
+def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
     import urllib.request
     key = (config.get('FISH_API_KEY') or '').strip()
     voice_id = (config.get('FISH_VOICE_ID') or '').strip()
@@ -107,7 +107,35 @@ def fish_rest_tts(text, config, rate=24000):
         method='POST'
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
-        return resp.read()
+        if audio is None:
+            return resp.read()
+        if control:
+            control.track(resp)
+        # read() without a size waits for the whole clip. read1() returns the
+        # available HTTP chunk, so callers can play the first PCM immediately.
+        read = getattr(resp, 'read1', resp.read)
+        carry, size, deadline = b'', 0, time.monotonic() + 180
+        while True:
+            if control:
+                control.check()
+            if time.monotonic() > deadline:
+                raise RuntimeError('Speech deadline exceeded')
+            chunk = read(4096)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > rate * 2 * 180:
+                raise RuntimeError('Speech size exceeded')
+            data = carry + chunk
+            cut = len(data) - len(data) % 2
+            carry = data[cut:]
+            if cut:
+                if control:
+                    control.check()
+                audio(data[:cut])
+        if carry:
+            raise RuntimeError('Incomplete speech sample')
+        return b''
 
 
 class FishRestSpeech:
@@ -134,15 +162,20 @@ class FishRestSpeech:
             return
         self.control.check()
         try:
-            pcm = fish_rest_tts(text, self.config, self.rate)
-            if pcm:
+            self.first_flush = time.monotonic()
+            def emit(pcm):
                 self.control.check()
-                self.first_audio = time.monotonic()
+                self.first_audio = self.first_audio or time.monotonic()
                 self.bytes += len(pcm)
                 self.audio(pcm)
+            fish_rest_tts(text, self.config, self.rate, emit, self.control)
+            if self.bytes:
                 self.complete = True
                 return
         except Exception as exc:
+            self.control.check()
+            if self.bytes:
+                raise  # Never replay a partly spoken reply through another TTS.
             import sys
             print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc}), falling back to NativeSpeech", file=sys.stderr)
         try:
@@ -176,18 +209,27 @@ class FreeSpeech:
         self.started = None
         self.bytes = 0
         self.fallback = None
+        self.transcript = ''
+        self.transport_guard = threading.RLock()
+        self.abandoned = False
+        self.connect_deadline = time.monotonic() + 2
         threading.Thread(target=self.receive, daemon=True).start()
 
     def receive(self):
-        import msgpack
-        from websockets.sync.client import connect
         model = self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'
         try:
+            import msgpack
+            from websockets.sync.client import connect
             with connect('wss://api.fish.audio/v1/tts/live', additional_headers={
                     'Authorization': 'Bearer ' + (self.config.get('FISH_API_KEY') or ''),
-                    'model': model}, open_timeout=8, close_timeout=1,
+                    'model': model}, open_timeout=2, close_timeout=1,
                     max_size=4*1024*1024, max_queue=8) as socket:
-                self.socket = self.control.track(socket)
+                with self.transport_guard:
+                    if self.abandoned:
+                        return
+                    self.socket = self.control.track(socket)
+                # Never hold the transport guard across a provider write: a
+                # stalled start must not block the bounded HTTP handover.
                 socket.send(msgpack.packb({'event': 'start', 'request': {'text': '',
                     'reference_id': self.config.get('FISH_VOICE_ID') or '', 'format': 'pcm',
                     'sample_rate': self.rate, 'latency': 'low', 'chunk_length': 100,
@@ -196,18 +238,25 @@ class FreeSpeech:
                 opened = time.monotonic()
                 while time.monotonic() < (self.started+180 if self.started else opened+180):
                     self.control.check()
+                    if self.abandoned:
+                        return
+                    if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 4:
+                        raise RuntimeError('Speech first audio deadline exceeded')
                     try: raw = socket.recv(timeout=.3)
                     except TimeoutError: continue
                     if not isinstance(raw, bytes): raise RuntimeError('Invalid speech frame')
                     event = msgpack.unpackb(raw, raw=False)
                     if event.get('event') == 'audio' and event.get('audio'):
                         data = event['audio']
-                        self.bytes += len(data)
-                        if self.bytes > self.rate*2*180 or len(data) % 2:
-                            raise RuntimeError('Invalid speech size')
-                        self.control.check()
-                        self.first_audio = self.first_audio or time.monotonic()
-                        self.audio(data)
+                        with self.transport_guard:
+                            if self.abandoned:
+                                return
+                            if self.bytes + len(data) > self.rate*2*180 or len(data) % 2:
+                                raise RuntimeError('Invalid speech size')
+                            self.control.check()
+                            self.bytes += len(data)
+                            self.first_audio = self.first_audio or time.monotonic()
+                            self.audio(data)
                     elif event.get('event') == 'finish':
                         self.complete = event.get('reason') in {'stop', 'ended', 'normal'}
                         if not self.complete: raise RuntimeError('Speech rejected')
@@ -216,42 +265,46 @@ class FreeSpeech:
         except Exception as exc:
             if not self.control.cancelled.is_set():
                 import sys
-                print(f"[FreeSpeech] Cloud WS TTS unavailable ({type(exc).__name__}: {exc}), engaging FishRestSpeech fallback...", file=sys.stderr)
-                self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-                self.error = None
+                print(f"[FreeSpeech] Cloud WS TTS unavailable ({type(exc).__name__})", file=sys.stderr)
+                self.error = type(exc).__name__
         finally:
             self.ready.set()
             self.done.set()
+
+    def use_fallback(self):
+        self.control.check()
+        with self.transport_guard:
+            if self.bytes:
+                raise RuntimeError('Speech interrupted; partial audio cannot be replayed')
+            self.abandoned = True  # A late socket must never compete with HTTP.
+            if not self.fallback:
+                self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
+            self.pending = self.unflushed = ''
 
     def send(self, event):
         import msgpack
         self.control.check()
         if self.fallback:
             return
-        if not self.ready.wait(6):
-            if not self.fallback and not self.control.cancelled.is_set():
-                self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-            if self.fallback:
-                return
-            raise RuntimeError('Jarvis speech is temporarily unavailable')
-        if not self.socket or self.error:
+        while not self.ready.wait(.05):
             self.control.check()
-            if not self.fallback and not self.control.cancelled.is_set():
-                self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-            if self.fallback:
+            if time.monotonic() >= self.connect_deadline:
+                self.use_fallback()
                 return
-            raise RuntimeError('Jarvis speech is temporarily unavailable')
-        self.socket.send(msgpack.packb(event, use_bin_type=True))
+        if not self.socket or self.error:
+            self.use_fallback()
+            return
+        try:
+            self.socket.send(msgpack.packb(event, use_bin_type=True))
+        except Exception:
+            self.use_fallback()
 
     def text(self, value):
-        if self.fallback:
-            return self.fallback.text(value)
-        if not self.ready.is_set():
-            self.ready.wait(2.5)
-            if self.fallback:
-                return self.fallback.text(value)
         # Strip markdown markers to protect voice prosody
         cleaned = value.replace('**', '').replace('`', '').replace('*', '')
+        self.transcript += cleaned
+        if self.fallback:
+            return
         self.pending += cleaned
         self.unflushed += cleaned
 
@@ -262,10 +315,9 @@ class FreeSpeech:
         cut = boundaries[-1].end()
         phrase, self.pending = self.pending[:cut], self.pending[cut:]
         self.started = self.started or time.monotonic()
-        try:
-            self.send({'event': 'text', 'text': phrase})
-            # Ultra-low latency flush: start synthesis on the first phrase (4+ words or >= 18 chars)
-            # so Fish Audio begins generating audio in ~300ms while the model continues generating!
+        self.send({'event': 'text', 'text': phrase})
+        if not self.fallback:
+            # Flush the first usable phrase while subsequent model words arrive.
             first_phrase = (self.first_flush is None and 
                             len(self.unflushed.strip()) >= 18 and 
                             len(self.unflushed.split()) >= 4)
@@ -276,97 +328,55 @@ class FreeSpeech:
                 self.send({'event': 'flush'})
                 self.first_flush = self.first_flush or time.monotonic()
                 self.unflushed = ''
-        except Exception:
-            if not self.control.cancelled.is_set():
-                try:
-                    if not self.fallback:
-                        self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-                    return self.fallback.text(phrase + self.pending)
-                except Exception:
-                    pass
-            raise
 
     def sentence(self, text):
+        self.transcript += text.strip() + ' '
         if self.fallback:
-            return self.fallback.sentence(text)
+            return
         self.started = self.started or time.monotonic()
-        try:
-            self.send({'event': 'text', 'text': text.strip() + ' '})
+        self.send({'event': 'text', 'text': text.strip() + ' '})
+        if not self.fallback:
             self.send({'event': 'flush'})
             self.first_flush = self.first_flush or time.monotonic()
             self.unflushed = ''
-        except Exception:
-            if not self.control.cancelled.is_set():
-                try:
-                    if not self.fallback:
-                        self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-                    return self.fallback.sentence(text)
-                except Exception:
-                    pass
-            raise
+
+    def finish_fallback(self):
+        # Retain every committed word if the socket failed before any audio.
+        # Transport retries synthesize text only; they never resubmit to Hermes.
+        self.fallback.text(self.transcript)
+        self.fallback.finish()
+        self.first_audio = self.fallback.first_audio
+        self.first_flush = self.fallback.first_flush
+        self.complete = self.fallback.complete
+        self.bytes = self.fallback.bytes
+        if not self.complete or not self.bytes:
+            raise RuntimeError('Speech did not finish')
 
     def finish(self):
-        if self.fallback:
-            if self.pending:
-                self.fallback.text(self.pending)
-                self.pending = ''
-            self.fallback.finish()
-            self.first_audio = self.fallback.first_audio
-            self.first_flush = self.fallback.first_flush
-            self.complete = self.fallback.complete
-            self.bytes = self.fallback.bytes
+        if not self.transcript.strip():
+            self.control.check()
+            self.complete = True
             return
+        if self.fallback:
+            return self.finish_fallback()
         if self.pending:
-            try:
-                self.send({'event': 'text', 'text': self.pending})
-                self.pending = ''
-            except Exception:
-                pass
-        try:
-            if self.unflushed:
-                self.send({'event': 'flush'})
-                self.unflushed = ''
-            self.send({'event': 'stop'})
-        except Exception:
-            if not self.fallback and not self.control.cancelled.is_set():
-                try:
-                    self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-                    self.fallback.finish()
-                    self.complete = self.fallback.complete
-                    self.first_audio = self.fallback.first_audio
-                    return
-                except Exception:
-                    pass
-        if not self.done.wait(45) or self.error:
-            if not self.fallback and not self.control.cancelled.is_set():
-                try:
-                    self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-                    self.fallback.finish()
-                    self.first_audio = self.fallback.first_audio
-                    self.complete = self.fallback.complete
-                    self.bytes = self.fallback.bytes
-                    return
-                except Exception:
-                    pass
-            raise
-        deadline = time.monotonic() + 60
+            self.send({'event': 'text', 'text': self.pending})
+            self.pending = ''
+        if self.unflushed:
+            self.send({'event': 'flush'})
+            self.first_flush = self.first_flush or time.monotonic()
+            self.unflushed = ''
+        self.send({'event': 'stop'})
+        if self.fallback:
+            return self.finish_fallback()
+        deadline = time.monotonic() + 45
         while not self.done.wait(.1):
             self.control.check()
             if time.monotonic() > deadline: raise RuntimeError('Speech did not finish')
         self.control.check()
         if self.error or not self.complete or not self.bytes:
-            if not self.bytes and not self.fallback and not self.control.cancelled.is_set():
-                try:
-                    self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-                    self.fallback.finish()
-                    self.first_audio = self.fallback.first_audio
-                    self.complete = self.fallback.complete
-                    self.bytes = self.fallback.bytes
-                    if self.bytes:
-                        return
-                except Exception:
-                    pass
-            raise RuntimeError('Speech did not finish')
+            self.use_fallback()
+            return self.finish_fallback()
 
 
 def openrouter_stream(config, messages, tools, control):
