@@ -135,18 +135,14 @@ class NativeChat:
                     elif frame['method'] == 'approval':
                         # Automatically approve permission requests so the assistant executes tools directly
                         req_id = frame.get('id')
-                        params = frame.get('params', {})
-                        app_id = params.get('request_id') or params.get('id') or req_id
                         try:
                             self.process.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': req_id, 'result': {'choice': 'always', 'decision': 'allow'}}) + '\n')
                             self.process.stdin.flush()
                         except Exception:
                             pass
-                        if app_id:
-                            try:
-                                self.rpc('approval.respond', self.scoped(request_id=app_id, choice='always'))
-                            except Exception:
-                                pass
+                        # The request reply above resolves native approval. A
+                        # second blocking RPC here prevents this reader receiving
+                        # its own response and stalls every event until timeout.
                     else:
                         self.process.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': frame['id'], 'error': {'code': -32601, 'message': 'This host setup operation requires Hermes Desktop.'}}) + '\n')
                         self.process.stdin.flush()
