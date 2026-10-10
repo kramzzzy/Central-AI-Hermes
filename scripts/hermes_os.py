@@ -92,6 +92,8 @@ You have a comprehensive suite of real native and integration tools that you mus
     - When the user asks about the knowledge base ("You connected to knowledge base?", "What do we know about solar?", "Check our knowledge"):
       * NEVER claim you have no knowledge base or that you are an unconnected AI. You have active live access.
       * Invoke mcp__michael_os__search_knowledge(query=...) to retrieve actual documented knowledge entries.
+      * Search results are previews. Invoke mcp__michael_os__get_knowledge(card_id=...) before answering from a card, especially tables. Never invent missing rows or values.
+      * Assigned team knowledge is permission-scoped: use inspect_workspace(section='knowledge', id=...) for a complete assigned card, not owner tools.
       * State what was found warmly, directly, and accurately.
     - When the user asks to save, note down, or add knowledge:
       * Invoke mcp__michael_os__add_knowledge(title=..., content=..., category=...).
@@ -206,7 +208,7 @@ def _configure_profile(home, plugin, allow_enable):
         'open_widget', 'close_widget', 'control_widget', 'navigate_browser',
         'update_assistant_profile', 'send_whatsapp_message', 'send_message',
         'call_contact', 'call_whatsapp_contact', 'get_live_weather',
-        'search_knowledge', 'add_knowledge', 'get_workspace_overview', 'end_call'
+        'search_knowledge', 'get_knowledge', 'add_knowledge', 'get_workspace_overview', 'end_call'
     ]
     server = {'command': '/opt/hermes/.venv/bin/python',
         'args': ['/opt/os-adapter/scripts/hermes-os-mcp.py'],

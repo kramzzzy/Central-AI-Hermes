@@ -449,7 +449,7 @@ class Conversation:
         self.names = names or {
             'native_leo', 'task_status', 'cancel_task', 'send_whatsapp_message',
             'call_whatsapp_contact', 'get_live_weather', 'control_widget',
-            'end_call', 'search_knowledge', 'add_knowledge', 'get_workspace_overview'
+            'end_call', 'search_knowledge', 'get_knowledge', 'add_knowledge', 'get_workspace_overview'
         }
         self.stream = stream or openrouter_stream
         self.history = []

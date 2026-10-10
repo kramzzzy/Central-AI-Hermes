@@ -90,7 +90,7 @@ class BackgroundTasks:
         if (not isinstance(call_id, str) or not 1 <= len(call_id) <= 160
                 or event.get('expectsResponse') is not True or not isinstance(params, dict)
                 or name not in {'native_leo', 'task_status', 'cancel_task', 'task_callback',
-                                'add_knowledge', 'search_knowledge', 'get_workspace_overview',
+                                'add_knowledge', 'search_knowledge', 'get_knowledge', 'get_workspace_overview',
                                 'send_whatsapp_message', 'call_whatsapp_contact'}):
             return response({'status': 'invalid_request'}, True)
         with self.lock:
@@ -100,7 +100,7 @@ class BackgroundTasks:
             previous = self.packets.get(packet)
             if previous:
                 return previous
-            if name in {'add_knowledge', 'search_knowledge', 'get_workspace_overview', 'send_whatsapp_message', 'call_whatsapp_contact'}:
+            if name in {'add_knowledge', 'search_knowledge', 'get_knowledge', 'get_workspace_overview', 'send_whatsapp_message', 'call_whatsapp_contact'}:
                 bridge = self.bridge_factory(call, None, allowed)
                 result = bridge.execute(event)
                 self.packets[packet] = result
