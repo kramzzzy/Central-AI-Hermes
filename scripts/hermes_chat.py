@@ -315,6 +315,31 @@ class NativeChat:
         return {'profile': self.settings['HERMES_PROFILE'], 'sessions': sessions,
                 'current_session_id': self.stored, 'limit': 500, 'protocol': 1}
 
+    def delete_session(self, body):
+        profile = self.settings['HERMES_PROFILE']
+        if body.get('profile') != profile:
+            raise RuntimeError('The connected profile changed. Refresh before continuing.')
+        if body.get('confirm') is not True:
+            raise RuntimeError('Confirm before deleting a conversation.')
+        target = body.get('session_id')
+        if not isinstance(target, str) or not target.strip() or len(target) > 200:
+            raise RuntimeError('Choose a saved conversation to delete.')
+        if self.voice_call:
+            raise RuntimeError('End the active voice call before deleting conversations.')
+        available = self.sessions()['sessions']
+        target_info = next((s for s in available if s['id'] == target), None)
+        if not target_info:
+            raise RuntimeError('This conversation is not available in the connected profile. Refresh the library.')
+        # Profile comes from the server's listing, never a client-selected path.
+        target_profile = target_info.get('profile') or profile
+        if (target_profile == getattr(self, 'active_profile', profile)
+                and self.stored in {target, target_info.get('resolved_id')} and self.stored):
+            raise RuntimeError('Open another conversation before deleting this one.')
+        result = self.rpc('session.delete', {'profile': target_profile, 'session_id': target})
+        if result.get('deleted') != target:
+            raise RuntimeError('Deletion could not be confirmed. Refresh the library before trying again.')
+        return {'deleted': target, 'profile': profile, 'protocol': 1}
+
     def switch_session(self, body):
         if self.voice_call:
             raise RuntimeError('End the active voice call before changing conversations.')
@@ -371,6 +396,8 @@ class NativeChat:
             raise RuntimeError('The active conversation changed. Refresh before sending again.')
         if action == 'sessions':
             return self.sessions()
+        if action == 'session_delete':
+            return self.delete_session(body)
         if action in {'session_open', 'session_new'}:
             return self.switch_session(body)
         if isinstance(action, str) and action.startswith('voice_'):

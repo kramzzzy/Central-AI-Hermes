@@ -656,7 +656,12 @@ class Handler(BaseHTTPRequestHandler):
    try:
     length=int(self.headers.get('Content-Length','0'))
     if not 0<length<=12500000:return self.reply(413,{'error':'Chat request too large'})
-    return self.reply(200,chat.handle(json.loads(self.rfile.read(length))))
+    body=json.loads(self.rfile.read(length))
+    if body.get('action')=='session_delete':
+     with chat.control_guard,os_calls.guard:
+      if os_calls.busy():return self.reply(409,{'error':'Finish active app calls and call tasks before deleting conversations.'})
+      return self.reply(200,chat.handle(body))
+    return self.reply(200,chat.handle(body))
    except Exception as exc:
     return self.reply(400,{'error':str(exc)[:500]})
   if self.path=='/browser':
