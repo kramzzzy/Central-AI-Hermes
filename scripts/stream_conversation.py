@@ -280,6 +280,11 @@ class FreeSpeech:
             if not self.fallback:
                 self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
             self.pending = self.unflushed = ''
+        if self.socket:
+            def close():
+                try: self.socket.close()
+                except Exception: pass
+            threading.Thread(target=close, daemon=True).start()
 
     def send(self, event):
         import msgpack
@@ -294,9 +299,27 @@ class FreeSpeech:
         if not self.socket or self.error:
             self.use_fallback()
             return
-        try:
-            self.socket.send(msgpack.packb(event, use_bin_type=True))
-        except Exception:
+        sent, failed = threading.Event(), threading.Event()
+        socket, packet = self.socket, msgpack.packb(event, use_bin_type=True)
+        def write():
+            try:
+                self.control.check()
+                if not self.abandoned:
+                    socket.send(packet)
+            except Exception:
+                failed.set()
+            finally:
+                sent.set()
+        # A connected socket can stall on writes too, not just on first audio.
+        threading.Thread(target=write, daemon=True).start()
+        deadline = time.monotonic() + 2
+        while not sent.wait(.05):
+            self.control.check()
+            if time.monotonic() >= deadline:
+                self.use_fallback()
+                return
+        self.control.check()
+        if failed.is_set():
             self.use_fallback()
 
     def text(self, value):

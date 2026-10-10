@@ -212,6 +212,7 @@ class StreamPhoneCall:
 
     async def reply(self,audio,notice,greeting,control,generation,prepared=None,speculative=None,pending_input=None):
         loop=asyncio.get_running_loop()
+        stage='speech_setup'
         framer=PhonePCM()
         def output(data,final=False):
             control.check()
@@ -219,15 +220,17 @@ class StreamPhoneCall:
             try: future.result(timeout=3)
             except Exception: future.cancel();raise TurnCancelled()
         def run():
-            nonlocal framer,output,speculative
+            nonlocal framer,output,speculative,stage
             began=time.monotonic()
             if prepared:_,speech,framer,output=prepared
             else:speech=FreeSpeech(self.service.config,output,control,rate=16000)
             first=None
             def speak(value):
-                nonlocal first
+                nonlocal first,stage
                 if first is None:self.spoken_text=''
+                previous=stage;stage='speech'
                 first=first or time.monotonic();speech.text(value)
+                stage=previous
                 self.spoken_text=(self.spoken_text+value)[-2400:]
             try:
                 if greeting:
@@ -235,6 +238,7 @@ class StreamPhoneCall:
                 elif notice:
                     self.conversation.reply(json.dumps(notice,ensure_ascii=False)[:12000],speak,control,notice=True)
                 else:
+                    stage='recognition'
                     pcm=audio['pcm'] if isinstance(audio,dict) else audio
                     streaming=audio.get('stream') if isinstance(audio,dict) else None
                     cloud=getattr(self.service,'cloud_asr',None)
@@ -311,10 +315,12 @@ class StreamPhoneCall:
                             control.check()
                             if pending_input:pending_input['committed']=True
                         self.service.metrics['user_turns']=self.service.metrics.get('user_turns',0)+1
+                        stage='hermes'
                         try:
                             self.conversation.reply(text,speak,control)
                         finally:
                             self.service.metrics['last_conversation_timing']=self.conversation.last_timing
+                stage='speech'
                 speech.finish()
                 output(b'',final=True)
                 self.service.metrics['last_tts_chunks']=framer.chunks
@@ -346,8 +352,15 @@ class StreamPhoneCall:
             if greeting and self.callback_notice and self.generation==generation:
                 self.pending_notice=None  # Callback result is announced in the next quiet gap.
         except (TurnCancelled,asyncio.CancelledError): pass
-        except Exception:
+        except Exception as exc:
             self.service.metrics['reply_errors']=self.service.metrics.get('reply_errors',0)+1
+            # Log failure location, never transcripts, tokens or provider bodies.
+            import traceback
+            failure={'stage':stage,'exception':type(exc).__name__,
+                     'frames':[{'function':frame.name,'line':frame.lineno}
+                               for frame in traceback.extract_tb(exc.__traceback__)[-6:]]}
+            self.service.metrics['last_reply_failure']=failure
+            print(json.dumps({'phone_voice_reply_failure':failure}),flush=True)
             # Fail only this reply. Never disconnect/replay an accepted action.
             if (not self.closed and self.generation==generation and self.connected
                     and self.service.allowed(self.call) and time.monotonic()-self.last_recovery>10

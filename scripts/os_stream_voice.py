@@ -162,7 +162,7 @@ class OSStreamVoice:
                 pass
             else:
                 import traceback; traceback.print_exc()
-                try: emit({'type':'error','text':'That reply had a connection problem. You can speak again; accepted work keeps running.'})
+                try: emit({'type':'error','text':"I couldn't complete that reply. Check task status before repeating an action."})
                 except Exception: pass
         finally:
             # Stop socket readers before closing the response, and release the

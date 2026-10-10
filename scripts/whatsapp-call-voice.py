@@ -400,7 +400,7 @@ def speech(text):
 
 
 GREETING = "Hey Mark! It's Leo. I'm here. What can I help you with?"
-RECOVERY = "That reply had a connection problem. I'm still here. What would you like to do next?"
+RECOVERY = "I couldn't complete that reply. I'm still here. Check task status before repeating an action."
 TASK_ACK = "Let me check that."
 
 
