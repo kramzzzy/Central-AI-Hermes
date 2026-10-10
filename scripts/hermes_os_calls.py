@@ -36,9 +36,9 @@ class OSNativeTaskBridge(NativeTaskBridge):
 
 
 class CallTaskChat(NativeChat):
-    def __init__(self, settings, root, label, ready):
-        super().__init__(dict(settings, HERMES_VOICE_MODEL=''), root)
-        self.label, self.ready = label, ready
+    def __init__(self, settings, root, label, ready, conversation=False):
+        super().__init__(settings if conversation else dict(settings, HERMES_VOICE_MODEL=''), root)
+        self.label, self.ready, self.conversation = label, ready, conversation
 
     def prepare_voice_effort(self, live):
         # Business work keeps the configured Sol model/effort, as on WhatsApp.
@@ -49,7 +49,7 @@ class CallTaskChat(NativeChat):
             self.start()
             if not self.sid:
                 value = self.rpc('session.create', {'profile': self.settings['HERMES_PROFILE'],
-                    'title': 'Call task — ' + self.label[:80], 'source': 'desktop',
+                    'title': ('Voice call — ' if self.conversation else 'Call task — ') + self.label[:80], 'source': 'desktop',
                     'follow_profile_config': True}, timeout=60)
                 self.sid = value['session_id']
                 self.stored = value.get('stored_session_id') or value.get('session_key') or self.sid
@@ -61,7 +61,7 @@ class CallTaskChat(NativeChat):
             return {'info': dict(self.info)}
 
     def rpc(self, method, params=None, timeout=30):
-        if method == 'prompt.submit':
+        if method == 'prompt.submit' and not self.conversation:
             params = dict(params, surface='app')
             params['text'] = params['text'].replace('live WhatsApp conversation', 'live OS voice conversation', 1)
         return super().rpc(method, params, timeout)
@@ -168,13 +168,16 @@ class OSCalls:
                 # Retry the state mirror on heartbeat; never replay the business action.
                 print('voice_task_sync_failed', flush=True)
 
-    def native_task(self, item, task_id, label, ready):
+    def native_task(self, item, task_id, label, ready, conversation=False):
         self.authorize_context(item)
         root = item['root'] / task_id
         (root / '.runtime').mkdir(parents=True, exist_ok=True)
         if not (root / 'scripts').exists():
             (root / 'scripts').symlink_to(self.root / 'scripts', target_is_directory=True)
-        worker = CallTaskChat(item['settings'], root, label, ready)
+        settings = dict(item['settings'])
+        if conversation:
+            settings['HERMES_VOICE_MODEL'] = self.settings.get('HERMES_VOICE_MODEL', '')
+        worker = CallTaskChat(settings, root, label, ready, conversation=conversation)
         actor = item['scope']['org'] + ':' + item['scope']['user']
         if hasattr(self, 'on_chat'):
             self.on_chat(worker)
@@ -200,6 +203,20 @@ class OSCalls:
                 with self.guard:
                     self.workers.pop(task_id, None)
         return dispatch, close
+
+    def conversation(self, call_id, scope):
+        from native_voice_conversation import NativeVoiceConversation
+        identity = self.identity(scope)
+        with self.guard:
+            call = self.calls.get(call_id)
+            if not call or call['identity'] != identity or call['until'] <= time.monotonic():
+                raise PermissionError('Native voice call binding expired')
+            item = self.contexts[identity]
+            # Native process/profile admission can exceed an idle heartbeat.
+            call['until'] = time.monotonic() + 90
+        dispatch, close = self.native_task(item, call_id, 'App OS', lambda _: None, conversation=True)
+        return NativeVoiceConversation(dispatch, close, call_id,
+            admitted=lambda: self.calls.get(call_id, {}).get('until', 0) > time.monotonic())
 
     def reconcile_tasks(self, item):
         with self.guard:

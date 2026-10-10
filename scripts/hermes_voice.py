@@ -144,18 +144,14 @@ class VoiceProvider:
                 ready = False
                 local_name = 'Jarvis · local'
             return {**setup, 'configured': ready, 'voice': local_name,
-                    'transcription': 'local', 'realtime': ready and bool(c.get('OPENROUTER_API_KEY')),
-                    'conversation': 'stream'}
-        call_engine = c.get('FISH_OS_CALL_ENGINE') or os.environ.get('FISH_OS_CALL_ENGINE') or ('stream' if c.get('FISH_API_KEY') else '')
-        has_llm = bool(c.get('OPENROUTER_API_KEY') or c.get('OPENAI_API_KEY') or os.environ.get('OPENROUTER_API_KEY') or os.environ.get('OPENAI_API_KEY'))
+                    'transcription': 'local', 'realtime': ready,
+                    'conversation': 'stream', 'conversation_owner': 'hermes'}
         return {**setup, 'configured': bool(c.get('FISH_API_KEY') and c.get('FISH_VOICE_ID')),
                 'voice': c.get('FISH_VOICE_NAME') or 'Jarvis',
                 'transcription': 'fish' if (c.get('FISH_ASR_ENABLED') == 'true' or os.environ.get('FISH_ASR_ENABLED') == 'true') else 'browser',
-                'realtime': bool(c.get('FISH_API_KEY') and (
-                    call_engine == 'stream' and c.get('FISH_VOICE_ID') and has_llm or
-                    c.get('FISH_REALTIME_ENABLED') == 'true' and c.get('FISH_AGENT_ID') and c.get('FISH_AGENT_BRIDGE_SECRET'))),
-                'conversation': 'stream' if call_engine == 'stream' else (
-                    'fish' if call_engine == 'fish' and c.get('FISH_OS_LIVE_AGENT_ID') else 'hermes')}
+                'realtime': bool(c.get('FISH_API_KEY') and c.get('FISH_VOICE_ID')),
+                # stream is the audio transport protocol, not a separate LLM.
+                'conversation': 'stream', 'conversation_owner': 'hermes'}
 
     def callback_authorized(self, token):
         expected=self.config.get('FISH_AGENT_BRIDGE_SECRET')

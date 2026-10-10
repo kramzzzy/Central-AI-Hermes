@@ -233,12 +233,20 @@ class BackgroundTasks:
             finished = [job for job in jobs if job['status'] in TERMINAL and not job['announced']]
             if finished:
                 return {'kind': 'result', 'tasks': [self.view(job) for job in finished[:2]]}
-            active = [job for job in jobs if job['status'] in ACTIVE]
+            active = [job for job in jobs if job['status'] in ACTIVE
+                      and job.get('spoken_progress') != job['status']]
             if active and now - min(job['created'] for job in active) >= 12 and now - last_progress >= 25:
                 return {'kind': 'progress', 'tasks': [self.view(job, False) for job in active]}
             return None
 
     def announced(self, notice):
+        if notice['kind'] == 'progress':
+            with self.lock:
+                for item in notice['tasks']:
+                    job = self.jobs.get(item['task_id'])
+                    if job and job['status'] == item['status']:
+                        job['spoken_progress'] = item['status']
+                self.save()
         if notice['kind'] == 'result':
             with self.lock:
                 for item in notice['tasks']:

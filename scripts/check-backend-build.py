@@ -37,7 +37,7 @@ def main():
         'hermes_cli.plugins', 'gateway.platform_registry',
         'hermes_chat', 'hermes_voice', 'hermes_plugins.central_ai_app_os',
         'hermes_plugins.central_ai_whatsapp', 'whatsapp_audio',
-        'whatsapp_text_supervisor', 'whatsapp_stream', 'os_stream_voice',
+        'whatsapp_text_supervisor', 'whatsapp_stream', 'os_stream_voice', 'native_voice_conversation',
         'faster_whisper', 'msgpack', 'livekit.rtc', 'onnxruntime',
     ):
         importlib.import_module(name)

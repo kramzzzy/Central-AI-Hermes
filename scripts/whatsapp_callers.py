@@ -25,9 +25,19 @@ def provision_business_phone(root):
     if home.is_symlink():
         raise RuntimeError('Invalid business phone profile')
     marker = home / 'phone-channel.json'
+    # A separate native profile must not point at the owner's memory bank.
+    bank_id = 'central-ai-phone-business-' + str(member['number'])
     if marker.exists():
         if json.loads(marker.read_text()) != binding:
             raise RuntimeError('Business phone profile ownership mismatch')
+        memory_path = home / 'hindsight' / 'config.json'
+        memory = json.loads(memory_path.read_text(encoding='utf-8')) if memory_path.is_file() else {}
+        if memory.get('bank_id') != bank_id or 'bank_id_template' in memory:
+            memory['bank_id'] = bank_id
+            memory.pop('bank_id_template', None)
+            memory_path.parent.mkdir(exist_ok=True)
+            memory_path.write_text(json.dumps(memory), encoding='utf-8')
+            memory_path.chmod(0o600)
         return member['profile']
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     base = yaml.safe_load((source / 'config.yaml').read_text(encoding='utf-8')) or {}
@@ -52,7 +62,7 @@ def provision_business_phone(root):
             ignore=shutil.ignore_patterns('__pycache__', '.git'), dirs_exist_ok=True)
     hindsight_cfg = source / 'hindsight' / 'config.json'
     memory = json.loads(hindsight_cfg.read_text(encoding='utf-8')) if hindsight_cfg.is_file() else {}
-    memory['bank_id'] = 'michael-os-leo'
+    memory['bank_id'] = bank_id
     memory.pop('bank_id_template', None)
     (home / 'hindsight').mkdir(exist_ok=True)
     for path, content in ((home / 'config.yaml', yaml.safe_dump(config, sort_keys=False)),

@@ -157,15 +157,17 @@ chat = PhoneChat({'HERMES_REPO': '/opt/hermes', 'HERMES_PYTHON': sys.executable,
 
 class PhoneTaskChat(PhoneChat):
     """Independent native session per accepted job, retaining Leo's normal settings."""
-    def __init__(self, task_id, label, on_session, member=None):
+    def __init__(self, task_id, label, on_session, member=None, conversation=False):
         member = member or resolve_caller(OWNER)
         context_data = caller_data(DATA_BASE, member['number'])
         root = context_data / 'task-workers' / task_id
         (root / '.runtime').mkdir(parents=True, exist_ok=True)
         (root / 'scripts').symlink_to('/opt/os-adapter/scripts', target_is_directory=True)
         self.task_id, self.label, self.on_session = task_id, label, on_session
-        settings = {**chat.settings, 'HERMES_PROFILE': member['profile'], 'HERMES_VOICE_MODEL': ''}
-        if member['number'] != OWNER:
+        self.conversation = conversation
+        settings = {**chat.settings, 'HERMES_PROFILE': member['profile'],
+            'HERMES_VOICE_MODEL': (os.environ.get('HERMES_VOICE_MODEL') or config.get('FISH_LLM_MODEL', '')) if conversation else ''}
+        if member['number'] != OWNER_MEMBER['number']:
             settings.update(HERMES_TEAM_CONTEXT='true', HERMES_TEAM_AUTH_HOME='/opt/data/profiles/leo')
         super().__init__(settings, root)
 
@@ -174,7 +176,7 @@ class PhoneTaskChat(PhoneChat):
             self.start()
             if not self.sid:
                 session = self.rpc('session.create', {'profile': self.settings['HERMES_PROFILE'],
-                    'title': 'WhatsApp task — ' + self.label, 'source': 'whatsapp',
+                    'title': ('WhatsApp call — ' if self.conversation else 'WhatsApp task — ') + self.label, 'source': 'whatsapp',
                     'follow_profile_config': True}, timeout=60)
                 self.sid = session['session_id']
                 self.stored = session.get('stored_session_id') or session.get('session_key') or self.sid
@@ -195,16 +197,20 @@ class PhoneTaskChat(PhoneChat):
                 time.sleep(.1)
 
     def rpc(self, method, params=None, timeout=30):
-        if method == 'prompt.submit':
+        if method == 'prompt.submit' and not self.conversation:
             # Report generation uses full native task output, not spoken-turn limits.
             params = {**params, 'surface': 'app'}
         return super().rpc(method, params, timeout)
 
 
-def task_native(task_id, label, on_session, member=None):
+def task_native(task_id, label, on_session, member=None, conversation=False):
     member = member or resolve_caller(OWNER)
+    if member['number'] == re.sub(r'\D', '', BUSINESS) and business_chat:
+        member = {**member, 'profile': business_chat.settings['HERMES_PROFILE']}
+    elif member['number'] != OWNER_MEMBER['number'] and member['profile'] == OWNER_MEMBER['profile']:
+        raise PermissionError('A separate native profile is required for this caller')
     actor = 'whatsapp:' + member['number']
-    worker = PhoneTaskChat(task_id, label, on_session, member)
+    worker = PhoneTaskChat(task_id, label, on_session, member, conversation=conversation)
     try:
         worker.handle_voice({'action': 'voice_start', 'actor': actor, 'call_id': task_id})
     except Exception:
@@ -233,10 +239,23 @@ def task_native(task_id, label, on_session, member=None):
     return dispatch, close
 
 
+def native_conversation(call_id, member):
+    from native_voice_conversation import NativeVoiceConversation
+    configured = resolve_caller(member['number'])
+    if not configured or not configured.get('calls') or configured['profile'] != member['profile']:
+        raise PermissionError('Caller has no authorized native profile')
+    if configured['number'] == re.sub(r'\D', '', BUSINESS) and business_chat:
+        configured = {**configured, 'profile': business_chat.settings['HERMES_PROFILE']}
+    elif configured['number'] != OWNER_MEMBER['number'] and configured['profile'] == OWNER_MEMBER['profile']:
+        raise PermissionError('A separate native profile is required for this caller')
+    dispatch, close = task_native(call_id, 'WhatsApp', lambda _: None, configured, conversation=True)
+    return NativeVoiceConversation(dispatch, close, call_id, admitted=lambda: allowed_audio_call(call_id))
+
+
 business_chat = None
 if CONVERSATION_MODE in {'fish', 'stream'} and BUSINESS:
     business_profile = resolve_caller(BUSINESS)['profile']
-    if not Path('/run/secrets/whatsapp_routing').exists():
+    if business_profile == OWNER_MEMBER['profile']:
         business_profile = provision_business_phone('/opt/data')
     business_root = caller_data(DATA_BASE, BUSINESS) / 'native'
     (business_root / '.runtime').mkdir(parents=True, exist_ok=True)
@@ -619,7 +638,8 @@ class Handler(BaseHTTPRequestHandler):
                         jobs=fish_service.members[member['number']]['jobs'] if fish_service else None
                         if not jobs or not jobs.callback_available(callback_id):
                             return self.reply(403, {})
-                    native('voice_start', call)
+                    if not fish_service:
+                        native('voice_start', call)
                     active = call
                     turn_records.clear()
                 if fish_service:
@@ -632,7 +652,6 @@ class Handler(BaseHTTPRequestHandler):
                         with guard:
                             active = None
                         fish_service.end(call)
-                        native('voice_end', call)
                         raise
                 return self.reply(200, {})
             with guard:
@@ -651,8 +670,6 @@ class Handler(BaseHTTPRequestHandler):
                 if fish_service:
                     # Native cleanup must run even when a provider's session
                     # end endpoint is slow. No expired call can keep a grant.
-                    if current_phone_chat().voice_call is not None:
-                        native('voice_end', call)
                     try:
                         fish_service.end(call)
                     except Exception:
@@ -660,12 +677,14 @@ class Handler(BaseHTTPRequestHandler):
                 for _, pending in states:
                     if pending.stream:
                         pending.stream.cancel()
-                if current_phone_chat().voice_call is not None:
+                if not fish_service and current_phone_chat().voice_call is not None:
                     native('voice_end', call)
                 with guard:
                     turn_records.clear()
                 return self.reply(200, {})
             if self.path == '/heartbeat':
+                if fish_service:
+                    return self.reply(200, {'conversation_owner': 'hermes'})
                 # Recover an expired idle lease without replaying any action.
                 if current_phone_chat().voice_call is None and not current_phone_chat().info.get('running'):
                     native('voice_start', call)
@@ -868,13 +887,15 @@ def allowed_audio_call(call):
         return active is not None and active == call
 
 
-# Start and resume the private native worker before accepting any phone call.
-# This performs no prompt submission and binds no voice/workspace permission.
+# Legacy native audio uses its existing persistent worker. Streamed calls
+# admit one private native session in StreamPhoneCall.start, not a second idle
+# session selected by the global active-caller variable.
 warm_began = time.monotonic()
 try:
-    chat.connect()
-    if business_chat:
-        business_chat.connect()
+    if CONVERSATION_MODE != 'stream':
+        chat.connect()
+        if business_chat:
+            business_chat.connect()
 except Exception as e:
     import traceback
     traceback.print_exc()
@@ -898,6 +919,7 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
             native_factory=task_native,
             **({'call_factory':StreamPhoneCall,'hosted':False} if CONVERSATION_MODE=='stream' else {}),
             members=extra_members)
+        fish_service.native_conversation = native_conversation
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -1,14 +1,13 @@
 """Private OS call transport bound to the existing authenticated task context."""
 import base64
 import json
-import os
 import threading
 import time
 from uuid import UUID
 
 from hermes_voice import call_greeting
-from fish_conversation import filter_playback_input, is_casual_greeting_intent
-from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, fish_rest_tts
+from fish_conversation import filter_playback_input
+from stream_conversation import FreeSpeech, TurnControl, TurnCancelled, fish_rest_tts
 
 
 class OSStreamVoice:
@@ -28,12 +27,14 @@ class OSStreamVoice:
             for key in [k for k,v in self.contexts.items() if v['until'] < time.monotonic()]:
                 stale = self.contexts.pop(key)
                 if stale['control']: stale['control'].cancel()
+                threading.Thread(target=stale['conversation'].close, daemon=True).start()
             item = self.contexts.get(call)
             if item and item['identity'] != identity: raise PermissionError('Call binding mismatch')
             if action == 'end':
                 if item:
                     self.contexts.pop(call)
                     if item['control']: item['control'].cancel()
+                    threading.Thread(target=item['conversation'].close, daemon=True).start()
                 return handler.reply(200, {'ended': True})
         # Also checks the exact existing call/member/assistant lease. The grant
         # is supplied by the OS, never by microphone text or model arguments.
@@ -52,20 +53,8 @@ class OSStreamVoice:
                     voice_id = '612b878b113047d9a770c069c8b4fdfe'
                 if voice_id:
                     config['FISH_VOICE_ID'] = voice_id
-                # Team voice providers share model authentication, not memory.
-                config['OPENROUTER_API_KEY'] = config.get('OPENROUTER_API_KEY') or self.voice.config.get('OPENROUTER_API_KEY') or os.environ.get('OPENROUTER_API_KEY', '')
-                config['OPENAI_API_KEY'] = config.get('OPENAI_API_KEY') or self.voice.config.get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY', '')
-                config['FISH_LLM_MODEL'] = config.get('FISH_LLM_MODEL') or self.voice.config.get('FISH_LLM_MODEL') or os.environ.get('HERMES_VOICE_MODEL') or 'openai/gpt-4.1-mini'
-                def tool(event, text):
-                    with self.guard:
-                        context = self.contexts.get(call)
-                        if not context or context['until'] <= time.monotonic(): raise PermissionError('Call ended')
-                        authority = dict(context['scope'])
-                        context['control'].check()
-                    return self.calls.handle({'action': 'tool', 'call_id': call, 'scope': authority,
-                                              'event': event, 'spoken_request': text})
                 self.contexts[call] = {'identity': identity, 'scope': dict(scope), 'config': config,
-                    'conversation': Conversation(config, prompt, tool), 'control': None, 'turn': None,
+                    'conversation': self.calls.conversation(call, scope), 'control': None, 'turn': None,
                     'until': time.monotonic()+180, 'greeting': call_greeting(body.get('display_name', '')),
                     'playback': []}
             return handler.reply(200, {'started': True})
@@ -148,8 +137,7 @@ class OSStreamVoice:
                 if value is None:
                     text('Speaker audio mixed with your words. Please repeat your request; no new work was started.')
                 elif value.strip():
-                    item['conversation'].reply(value, text, control, notice=bool(notice),
-                                               allow_tools=not is_casual_greeting_intent(value))
+                    item['conversation'].reply(value, text, control, notice=bool(notice), on_event=emit)
             try:
                 speech.finish()
             except Exception:

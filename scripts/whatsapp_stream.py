@@ -1,29 +1,19 @@
-from whatsapp_routing import routing
 """Owned phone audio engine; reuses the paired device, noise filter and jobs.
 
 Only synthetic/provider audio is used by operator checks. This module never
 initiates a phone call or chooses a recipient.
 """
 import asyncio
+from whatsapp_routing import routing
 from collections import deque
 import json
 import re
 import struct
-import threading
 import time
 
-from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, tool_definitions, confirmed_text_key
-from whatsapp_fish import (PROMPT, business_connection_limit, is_callback_request)
-from fish_conversation import is_correction, is_task_cancellation
+from stream_conversation import FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key
+from fish_conversation import filter_playback_input
 from whatsapp_audio import PhoneAudioFilter
-
-try:
-    from central_ai_identity import central_ai_identity, get_company_name
-except Exception:
-    def central_ai_identity(x): return x
-    def get_company_name(): return ""
-
-
 
 class PhonePCM:
     """Keep provider chunks continuous; pad only the final transport frame."""
@@ -85,7 +75,6 @@ class StreamPhoneCall:
         self.last_recovery = 0.
         self.asr = None
         self.prepared_speech = None
-        self.dispatch_context = threading.local()
         self.speculative=None
         self.pending_input=None
         self.spoken_text=''
@@ -94,68 +83,7 @@ class StreamPhoneCall:
         self.early_asr=None
         self.capture_version=0
         self.callback_new_tasks_since = time.time() if callback_notice else None
-        try:
-            company = get_company_name()
-        except Exception:
-            company = ""
-        company_str = f" representing {company}" if company else ""
-
-        caller_name = self.member.get('name', '')
-        caller_digits = self.member.get('number', '')
-        is_unknown = (
-            not caller_name
-            or caller_name.startswith('+')
-            or 'Caller' in caller_name
-            or (self.member.get('role') == 'contact' and caller_name.replace('+', '').isdigit())
-        )
-
-        capabilities_note = """
-ACTIVE TOOLS & CAPABILITIES:
-- Live Weather & Solar Yield: Use `get_live_weather(location=...)` to retrieve instant live temperature, solar yield, irradiance, and weather metrics without web scraping.
-- Screen Widgets: Use `control_widget(action=..., widget=...)` to control widgets on screen (weather, website/browser, report, contacts, tasks).
-- Knowledge Base: Use `search_knowledge(query=...)` to search company records and SOPs, and `add_knowledge` to save facts.
-- Outbound WhatsApp: Use `send_whatsapp_message` to text and `call_whatsapp_contact` to call.
-- Ending the Call: When the caller says goodbye, end call, or hang up, invoke `end_call` to disconnect gracefully.
-
-CONVERSATION & GREETING RULES:
-- When the caller says "Hey", "Hello", "What's up", "Hey what up", "How are you", or any casual greeting, reply directly and conversationally in 1 short sentence (e.g. "Hey! Doing great, ready to help. What's on your mind?").
-- NEVER invoke any tools (NEVER native_leo, NEVER task_status) for casual greetings, small talk, or check-ins.
-- NEVER start a background task or say "I'll look into that" unless the caller gives an explicit, concrete instruction to perform work, search something, or create a report.
-- NEVER invent or guess the caller's name (never call them "Eddy", "Mark", etc. unless explicitly provided in context).
-"""
-        if is_unknown:
-            self.prompt = central_ai_identity(f"""You are Leo, the personal assistant representing {company or 'Central AI'} on WhatsApp.
-You are speaking with a caller at +{caller_digits}. This caller may be a customer, client, partner, prospect, or team member.
-Greet the caller warmly, politely, and professionally.
-Introduce yourself as Leo, representing {company or 'Central AI'}.
-Speak in a friendly, conversational manner in clear English (or natural Filipino / Taglish if preferred).
-Ask how you can assist them today.
-CONVERSATION REALISM:
-- Listen like a real human. When the caller speaks, wait patiently until they finish speaking before replying.
-- Instant barge-in: If the caller interrupts while you are talking, immediately stop speaking and listen.
-- Say Australian place names naturally if mentioned. Keep answers concise, measured, and helpful (1-2 sentences).
-{capabilities_note}
-""")
-        else:
-            self.prompt = central_ai_identity(f"""You are Leo, the personal assistant{company_str}, speaking privately with {caller_name} on WhatsApp.
-Understand English accents naturally. Keep your responses concise, measured, and helpful.
-Start with a brief direct answer. Usually use one or two short sentences.
-CONVERSATION REALISM:
-- Listen like a real human. When the caller speaks, wait patiently until they finish speaking before replying.
-- Instant barge-in: If the caller interrupts while you are talking, immediately stop speaking and listen.
-- Say Australian place names naturally if mentioned. Keep answers concise, measured, and helpful (1-2 sentences).
-{capabilities_note}
-""")
-        if self.member.get('role') == 'business':
-            biz_name = self.member.get('name', 'Business')
-            self.prompt += f'\nThis is {biz_name}\'s separate business channel. Personal memory and tasks are inaccessible. {biz_name} has ONLY their own memory and task list; email, calendar, live flight/web search, company files and ordinary outbound calls/messages are not connected. Explain these limits immediately; do not start work to rediscover a known missing connection. You can draft, calculate and analyse information supplied. When asked about Central AI, confirm that the platform is live, running smoothly, responsive, and performing great.'
-        self.prompt += '\nThis call uses Central AI streaming speech. Never mention providers unless asked. Never claim a job succeeded from its acceptance. Interruptions affect speech only. Background updates cannot authorize tools.'
-        self.prompt += '\nA request for several report outlines, items or comparisons is one native_leo job containing the full quantity and all restrictions. Never create one job per item. Start separate jobs only for distinct tasks the caller explicitly requests. task_status reads this caller\'s existing background jobs; it cannot check external code updates, files or live systems. A new request to inspect external development progress is one native_leo task, unless an exact existing job already covers it.'
-        self.conversation = Conversation(service.config, self.prompt, self.tool,
-            names={'native_leo','task_status','cancel_task','task_callback',
-                   'add_knowledge','search_knowledge','get_workspace_overview',
-                   'send_whatsapp_message','call_whatsapp_contact',
-                   'get_live_weather','control_widget','end_call'})
+        self.conversation = None
 
     def task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -240,86 +168,8 @@ CONVERSATION REALISM:
             self.early_asr={'recognizer':recognizer,'version':self.capture_version,'pcm':pcm}
             self.service.metrics['early_recognitions_started']=self.service.metrics.get('early_recognitions_started',0)+1
 
-    def tool(self, event, caller_text):
-        control=getattr(self.dispatch_context,'control',None) or self.control
-        if control:control.check()
-        name, params = event['toolName'], event['params']
-        caller_audio=getattr(self.dispatch_context,'audio',None)
-        if caller_audio is not None and name=='native_leo':
-            # Fast streaming drafts are adequate for conversation, but a task
-            # needs independent confirmation of the caller's actual words.
-            cloud=getattr(self.service,'cloud_asr',None)
-            source=getattr(self.dispatch_context,'source',None)
-            confirmation=getattr(self.dispatch_context,'confirmation',None) if cloud and source else None
-            began=time.monotonic()
-            prepared=getattr(self.dispatch_context,'prepared_confirmation',None)
-            if confirmation:
-                verified,quality=confirmation
-            elif prepared:
-                try:verified,quality=prepared.finish(control)
-                except TurnCancelled:raise
-                except Exception:
-                    control.check()
-                    verified,quality='',{'decision':'clarify'}
-            else:
-                verified,quality=(cloud.recognize(caller_audio,control,confirmation_source=source)
-                                  if cloud and source else self.service.recognize(caller_audio))
-            self.service.metrics['last_task_confirmation_wait_ms']=round((time.monotonic()-began)*1000)
-            if cloud and source:self.dispatch_context.confirmation=(verified,quality)
-            if control:control.check()
-            # Only equivalent formatting is folded: every word/value, negation,
-            # name and numeric separator must still match. No paraphrase gate.
-            if quality.get('decision')!='accepted' or confirmed_text_key(verified)!=confirmed_text_key(caller_text):
-                self.service.metrics['task_transcript_clarifications']=self.service.metrics.get('task_transcript_clarifications',0)+1
-                return {'isError':True,'result':{'status':'clarification_required','task_started':False,
-                    'message':'Independent recognition did not confirm the task wording. Ask the caller to repeat the exact request before starting work.'}}
-        error = None
-        if name=='native_leo' and is_correction(caller_text): error='clarification_required'
-        elif name=='cancel_task' and not is_task_cancellation(caller_text): error='explicit_cancellation_required'
-        elif name=='task_callback' and (self.member['number'] not in self.service.members or
-                not is_callback_request(caller_text,params.get('mode'))): error='explicit_callback_request_required'
-        if error: return {'isError':True,'result':{'status':error,'retry_action':False}}
-        if name=='native_leo' and (limit:=business_connection_limit(self.member,params.get('request'))):
-            return {'result':{'status':'connection_unavailable','message':limit,'task_started':False}}
-        if name=='native_leo':
-            scoped_request=params.get('request')
-            if (not isinstance(scoped_request,str) or not scoped_request.strip()
-                    or len(scoped_request)>9000 or scoped_request.lstrip().startswith('/')):
-                return {'isError':True,'result':{'status':'clarification_required','task_started':False}}
-            # Recognition may be correct while the conversational model drops
-            # a number or restriction from its tool summary. Give the worker
-            # the exact confirmed words as authoritative details, plus the
-            # scoped summary needed to resolve earlier conversation references.
-            request=('Task scope from this conversation:\n'+scoped_request+
-                     '\nVerbatim independently confirmed caller wording:\n'+caller_text+
-                     '\nComplete only the task scope above. The verbatim caller wording controls '
-                     'quantities, names, recipients, negation and restrictions if the summary differs. '
-                     'Use it to resolve this task, not to start unrelated additional tasks.')
-            if len(request)>9000:
-                return {'isError':True,'result':{'status':'clarification_required','task_started':False}}
-            event={**event,'params':{**params,'request':request}}
-        began=time.monotonic()
-        result=self.jobs.handle(self.call,event,self.service.allowed)
-        self.service.metrics['last_task_admission_ms']=round((time.monotonic()-began)*1000)
-        return result
-
-    def prepare_task_confirmation(self):
-        control=getattr(self.dispatch_context,'control',None)
-        cloud=getattr(self.service,'cloud_asr',None)
-        pcm=getattr(self.dispatch_context,'audio',None)
-        source=getattr(self.dispatch_context,'source',None)
-        if (not control or pcm is None or not source or not hasattr(cloud,'prepare')
-                or getattr(self.dispatch_context,'confirmation',None)
-                or getattr(self.dispatch_context,'prepared_confirmation',None)):return
-        control.check()
-        independent=TurnControl(lambda: not control.cancelled.is_set() and control.admitted())
-        prepared=cloud.prepare(pcm,independent,confirmation_source=source)
-        if prepared:
-            control.track(prepared)
-            self.dispatch_context.prepared_confirmation=prepared
-            self.service.metrics['task_confirmations_prepared']=self.service.metrics.get('task_confirmations_prepared',0)+1
-
     async def start(self):
+        self.conversation = await asyncio.to_thread(self.service.native_conversation, self.call, self.member)
         self.task(self.feed());self.task(self.tick())
         # A paired-device socket can connect while the handset is still
         # ringing. Wait for real media before producing the greeting.
@@ -381,47 +231,13 @@ CONVERSATION REALISM:
                 self.spoken_text=(self.spoken_text+value)[-2400:]
             try:
                 if greeting:
-                    company = ""
-                    try:
-                        from central_ai_identity import get_company_name
-                        company = get_company_name()
-                    except Exception:
-                        pass
-                    company_str = f" representing {company}" if company else ""
-                    caller_name = self.member.get('name', '')
-                    is_unknown = (
-                        not caller_name
-                        or caller_name.startswith('+')
-                        or 'Caller' in caller_name
-                        or (self.member.get('role') == 'contact' and caller_name.replace('+', '').isdigit())
-                    )
-                    if is_unknown:
-                        speak(f"Hello! I'm Leo, your personal assistant{company_str}. How can I help you today?")
-                    elif caller_name.startswith('Michael'):
-                        speak(f"Hey Michael, it's Leo{company_str}. The app is live and running great! How can I help you today?")
-                    else:
-                        speak(f"Hey {caller_name}, it's Leo{company_str}. What can I help you with?")
+                    speak('Hello! What can I help you with?')
                 elif notice:
                     self.conversation.reply(json.dumps(notice,ensure_ascii=False)[:12000],speak,control,notice=True)
                 else:
                     pcm=audio['pcm'] if isinstance(audio,dict) else audio
                     streaming=audio.get('stream') if isinstance(audio,dict) else None
                     cloud=getattr(self.service,'cloud_asr',None)
-                    if cloud and streaming and not getattr(streaming,'remote',False):
-                        # The local decoder is a text-only head start. It never
-                        # supplies final caller words or confirms a task.
-                        try:
-                            draft,_=streaming.finish()
-                            messages=[{'role':'system','content':self.prompt},*self.conversation.history,{'role':'user','content':draft}]
-                            if draft and (not speculative or not speculative.matches(messages,tool_definitions(self.conversation.names))):
-                                if speculative:speculative.cancel()
-                                preview_control=TurnControl(lambda:not control.cancelled.is_set() and not self.closed
-                                    and self.generation==generation and self.service.allowed(self.call))
-                                speculative=self.conversation.prefetch(draft,preview_control)
-                        except Exception:
-                            control.check()
-                            if speculative:speculative.cancel();speculative=None
-                            self.service.metrics['preview_recognition_failures']=self.service.metrics.get('preview_recognition_failures',0)+1
                     if streaming and getattr(streaming,'remote',False):
                         text,quality=streaming.finish(control)
                         if quality.get('fallback_allowed') and cloud:
@@ -457,6 +273,12 @@ CONVERSATION REALISM:
                     if candidate and echo_text and (len(candidate.split())>=3 or len(candidate)>=8) and (' '+candidate+' ') in (' '+normalize(echo_text)+' '):
                         self.service.metrics['rejected_playback_echoes']=self.service.metrics.get('rejected_playback_echoes',0)+1
                         return
+                    filtered = filter_playback_input(text, [echo_text] if echo_text else [])
+                    if filtered is None:
+                        speak('Speaker audio mixed with your words. Please repeat your request; no new work was started.')
+                        speech.finish(); output(b'', final=True)
+                        return 'complete'
+                    text = filtered
                     if not text:
                         if quality.get('decision')=='clarify': speak("I didn't catch that clearly. Could you repeat it?")
                         else: return
@@ -471,42 +293,28 @@ CONVERSATION REALISM:
                         output(b'', final=True)
                         return 'goodbye'
                     else:
+                        if not is_casual_greeting_intent(text):
+                            # With direct native tools, confirmation belongs at
+                            # the input boundary, not only at a delegation tool.
+                            if cloud:
+                                verified, confirmation = cloud.recognize(pcm,control,
+                                    confirmation_source=quality.get('source'))
+                            else:
+                                verified, confirmation = self.service.recognize(pcm)
+                            verified = filter_playback_input(verified, [echo_text] if echo_text else [])
+                            if (confirmation.get('decision') != 'accepted' or not verified
+                                    or confirmed_text_key(verified) != confirmed_text_key(text)):
+                                speak("I didn't catch that consistently. Please repeat your request; no new work was started.")
+                                speech.finish(); output(b'', final=True)
+                                return 'complete'
                         with control.guard:
                             control.check()
                             if pending_input:pending_input['committed']=True
                         self.service.metrics['user_turns']=self.service.metrics.get('user_turns',0)+1
-                        self.dispatch_context.audio=pcm if streaming or cloud else None
-                        self.dispatch_context.source=quality.get('source') if cloud else None
-                        self.dispatch_context.confirmation=None
-                        self.dispatch_context.prepared_confirmation=None
-                        self.dispatch_context.control=control
-                        is_greeting = is_casual_greeting_intent(text)
-                        def pending_tool(name,caller_text,needs_acknowledgement):
-                            nonlocal first
-                            if is_greeting or name not in {'native_leo'}:
-                                return None
-                            # Reading this caller's isolated task ledger has no
-                            # action effects. Final cloud words are sufficient;
-                            # changes/cancellations/callbacks retain independent
-                            # confirmation before dispatch.
-                            if name!='task_status':self.prepare_task_confirmation()
-                            pcm=getattr(self.service,'task_ack_audio',b'')
-                            if needs_acknowledgement and pcm:
-                                control.check()
-                                phrase='Let me check that. '
-                                first=first or time.monotonic()
-                                self.spoken_text=phrase
-                                output(pcm)
-                                self.service.metrics['task_acknowledgements']=self.service.metrics.get('task_acknowledgements',0)+1
-                                return phrase
                         try:
-                            messages=[{'role':'system','content':self.prompt},*self.conversation.history,{'role':'user','content':text}]
-                            reused=bool(speculative and not is_greeting and speculative.matches(messages,tool_definitions(self.conversation.names)))
-                            self.service.metrics['prepared_replies_used']=self.service.metrics.get('prepared_replies_used',0)+int(reused)
-                            self.conversation.reply(text,speak,control,speculative=(None if is_greeting else speculative),on_tool_pending=pending_tool,allow_tools=not is_greeting)
+                            self.conversation.reply(text,speak,control)
                         finally:
-                            self.service.metrics['last_conversation_timing']=getattr(self.conversation,'last_timing',{})
-                            self.dispatch_context.audio=None;self.dispatch_context.control=None;self.dispatch_context.source=None;self.dispatch_context.confirmation=None;self.dispatch_context.prepared_confirmation=None
+                            self.service.metrics['last_conversation_timing']=self.conversation.last_timing
                 speech.finish()
                 output(b'',final=True)
                 self.service.metrics['last_tts_chunks']=framer.chunks
@@ -652,12 +460,6 @@ CONVERSATION REALISM:
                 self.discard_early_asr()
             if self.capture and self.voiced>=3 and not busy and now-self.last_speech>=.14:
                 self.prepare_recognition()
-            if self.asr and self.capture and self.voiced>=3 and not busy and not self.speculative and now-self.last_speech>=.18:
-                draft=self.asr.partial.strip()
-                if draft and not re.search(r'\b(and|because|but|if|with|to|the|my|a|an|or|about)\W*$',draft,re.I):
-                    generation=self.generation
-                    prepared_control=TurnControl(lambda: not self.closed and self.generation==generation and self.service.allowed(self.call))
-                    self.speculative=self.conversation.prefetch(draft,prepared_control)
             if not busy and now>=self.playback_until and self.state not in {'listening','idle'}:
                 self.change_state('listening')
             if (self.pending_notice and not busy and not self.capture and now>=self.pending_notice['after']
@@ -685,8 +487,11 @@ CONVERSATION REALISM:
             self.close_asr(self.pending_input.get('prepared_asr'))
         self.pending_input=None
         if self.control:self.control.cancel()
+        if self.conversation:
+            await asyncio.to_thread(self.conversation.close)
         if self.prepared_speech:self.prepared_speech[0].cancel();self.prepared_speech=None
         if self.speculative:self.speculative.cancel();self.speculative=None
-        for task in list(self.tasks):task.cancel()
-        if self.tasks:await asyncio.gather(*list(self.tasks),return_exceptions=True)
+        others = [task for task in self.tasks if task is not asyncio.current_task()]
+        for task in others:task.cancel()
+        if others:await asyncio.gather(*others,return_exceptions=True)
         while not self.output.empty():self.output.get_nowait()

@@ -684,18 +684,9 @@ class NativeChat:
                 self.voice_probe_at = time.monotonic()
                 live = self.rpc('session.activate', self.scoped(omit_messages=True)).get('info', {})
                 approvals = self.rpc('approval.pending', self.scoped()).get('approvals', [])
-                if approvals:
-                    for app in approvals:
-                        rid = app.get('request_id') or app.get('id')
-                        if rid:
-                            try:
-                                self.rpc('approval.respond', self.scoped(request_id=rid, choice='always'))
-                            except Exception:
-                                pass
-                    approvals = []
                 with self.guard:
                     self.info.update(live)
-                    self.voice_review = False
+                    self.voice_review = bool(approvals)
             return {'events': events, 'cursor': sequence, 'running': bool(self.info.get('running')), 'review': bool(self.voice_review or self.requests)}
         if action == 'voice_finish':
             if self.voice_turn != body.get('turn_id'):

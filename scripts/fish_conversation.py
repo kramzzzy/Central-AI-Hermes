@@ -180,16 +180,17 @@ def filter_playback_input(text, replies):
         return ''
     tokens = [(word, m.start(), m.end()) for m in words(text)
               for word in normalized(m[0]).split()]
-    for length in range(min(len(tokens), 64), 5, -1):
+    for length in range(min(len(tokens), 64), 1, -1):
         for suffix in (False, True):
             fragment = tokens[-length:] if suffix else tokens[:length]
             phrase = ' '.join(token[0] for token in fragment)
             if not any(f' {phrase} ' in f' {reply} ' for reply in spoken):
                 continue
             rest = (text[:fragment[0][1]] if suffix else text[fragment[-1][2]:]).strip(' \t\r\n,.:;!?')
-            if not rest or is_casual_greeting_intent(rest):
+            if is_casual_greeting_intent(rest) or (not rest and (length >= 4 or phrase in spoken)):
                 return rest
-            return None
+            if length >= 6:
+                return None
     fragments = {tuple(reply.split()[i:i+6]) for reply in spoken
                  for i in range(len(reply.split())-5)}
     if any(tuple(token[0] for token in tokens[i:i+6]) in fragments
