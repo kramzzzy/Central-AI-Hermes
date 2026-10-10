@@ -7,6 +7,7 @@ import time
 from uuid import UUID
 
 from hermes_voice import call_greeting
+from fish_conversation import is_casual_greeting_intent
 from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, fish_rest_tts
 
 
@@ -129,7 +130,8 @@ class OSStreamVoice:
                     import traceback; traceback.print_exc()
             else:
                 value = json.dumps(notice['notice'], ensure_ascii=False)[:12000] if notice else body.get('text')
-                item['conversation'].reply(value, text, control, notice=bool(notice))
+                item['conversation'].reply(value, text, control, notice=bool(notice),
+                                           allow_tools=not is_casual_greeting_intent(value))
             try:
                 speech.finish()
             except Exception:

@@ -139,14 +139,15 @@ def is_goodbye_intent(text, assistant_name='Leo'):
 def is_casual_greeting_intent(text):
     if not text:
         return False
-    trimmed = text.strip().lower()
+    trimmed = re.sub(r"[^\w\s']", ' ', text.lower()).strip()
+    trimmed = re.sub(r'\s+', ' ', trimmed)
     trimmed = re.sub(r'[.!?]+$', '', trimmed).strip()
     patterns = [
-        r'^(?:hey|hi|hello|yo|sup|hiya|howdy)(?:\s+(?:leo|there|man|buddy|friend|eddy|mark))?$',
-        r'^(?:hey\s+)?what(?:\'?s|\s+is)?\s+up(?:\s+(?:leo|there|man|buddy))?$',
-        r'^(?:hey\s+)?what\s*up(?:\s+(?:leo|there|man|buddy))?$',
-        r'^(?:how\s+are\s+you|how\s+r\s+u|how(?:\'?s|\s+is)\s+it\s+going|how\s+do\s+you\s+do|how\s+have\s+you\s+been)(?:\s+doing)?(?:\s+(?:today|leo))?$',
-        r'^(?:good\s+)?(?:morning|afternoon|evening|day)(?:\s+(?:leo|there))?$',
+        r'^(?:hey|hi|hello|yo|sup|hiya|howdy)(?:\s+\w+)?$',
+        r'^(?:hey(?:\s+\w+)?\s+)?what(?:\'?s|\s+is)?\s+up(?:\s+\w+)?$',
+        r'^(?:hey(?:\s+\w+)?\s+)?what\s*up(?:\s+\w+)?$',
+        r'^(?:how\s+are\s+you|how\s+r\s+u|how(?:\'?s|\s+is)\s+it\s+going|how\s+do\s+you\s+do|how\s+have\s+you\s+been)(?:\s+doing)?(?:\s+\w+)?$',
+        r'^(?:good\s+)?(?:morning|afternoon|evening|day)(?:\s+\w+)?$',
         r'^(?:what(?:\'?s|\s+is)\s+good|what(?:\'?s|\s+is)\s+happening|what(?:\'?s|\s+is)\s+new)$',
     ]
     for p in patterns:

@@ -18,7 +18,7 @@ import urllib.request
 from hermes_chat import NativeChat
 from hermes_team import context_name
 from whatsapp_tasks import BackgroundTasks, ACTIVE
-from fish_conversation import NativeTaskBridge, is_correction, is_task_cancellation
+from fish_conversation import NativeTaskBridge, is_correction, is_task_cancellation, is_casual_greeting_intent
 
 
 class OSNativeTaskBridge(NativeTaskBridge):
@@ -128,33 +128,45 @@ class OSCalls:
         with self.guard:
             item['verified_until'] = time.monotonic() + 3
 
-    def sync_task_to_os(self, item, task_id, title=None, instruction=None, status='in_progress', action='create'):
+    def sync_task_to_os(self, item, task_id):
         url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
         grant = ((item or {}).get('scope') or {}).get('workspace_grant')
         if not url or not grant:
             return
-        try:
-            payload = {'action': action, 'task_id': task_id, 'status': status}
-            if action == 'create':
-                payload['title'] = (title or 'Call task')[:150]
-                payload['instruction'] = (instruction or title or 'Call task')[:12000]
-                payload['agent'] = 'Personal assistant'
-                if item.get('scope', {}).get('assistant'):
-                    payload['agent_id'] = item['scope']['assistant']
-            data = json.dumps(payload).encode('utf-8')
-            req = urllib.request.Request(
-                url + '/api/hermes/task-sync',
-                data=data,
-                headers={
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'YourAIAgentOS/1.0',
-                    'Authorization': 'Bearer ' + grant
-                }
-            )
-            with urllib.request.urlopen(req, timeout=5) as _:
-                pass
-        except Exception:
-            pass
+        with item['sync_guard']:
+            with item['jobs'].lock:
+                job = dict(item['jobs'].jobs.get(task_id, {}))
+            if not job:
+                return
+            result = job.get('result') or {}
+            status = job['status']
+            mapped = ('queued' if status == 'queued' else 'in_progress' if status in ACTIVE
+                      else 'completed' if status == 'complete' else 'review' if status == 'approval_required'
+                      else 'cancelled' if status == 'interrupted' else 'failed')
+            payload = {'action': 'create', 'task_id': task_id, 'status': mapped,
+                'title': ('Call task: ' + job['label'])[:150], 'instruction': job['request'][:12000],
+                'agent': 'Personal assistant', 'output': str(result.get('message') or '')[:12000],
+                'native_session': str(job.get('native_session') or '')[:200]}
+            if status in {'unavailable', 'interrupted'}:
+                payload['error'] = payload['output'] or 'Outcome unconfirmed. Check actual status before retrying.'
+            if result.get('instruction'):
+                payload['output'] = (payload['output'] + '\n\n' + str(result['instruction']))[:12000]
+            if item.get('scope', {}).get('assistant'):
+                payload['agent_id'] = item['scope']['assistant']
+            signature = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+            if item['synced'].get(task_id) == signature:
+                return
+            try:
+                req = urllib.request.Request(url + '/api/hermes/task-sync', data=signature.encode('utf-8'),
+                    headers={'Content-Type': 'application/json', 'User-Agent': 'CentralAIOS/1.0',
+                             'Authorization': 'Bearer ' + grant})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if json.load(response).get('synced') is not True:
+                        raise RuntimeError('Sync was not acknowledged')
+                item['synced'][task_id] = signature
+            except Exception:
+                # Retry the state mirror on heartbeat; never replay the business action.
+                print('voice_task_sync_failed', flush=True)
 
     def native_task(self, item, task_id, label, ready):
         self.authorize_context(item)
@@ -173,9 +185,6 @@ class OSCalls:
             raise
         with self.guard:
             self.workers[task_id] = (worker, item)
-        job = item['jobs'].jobs.get(task_id)
-        instruction = (job.get('request') if job else None) or label
-        self.sync_task_to_os(item, task_id, 'Call task: ' + label[:130], instruction, 'in_progress', 'create')
         def dispatch(action, call, **extra):
             if call != task_id:
                 raise PermissionError('Task binding mismatch')
@@ -190,14 +199,21 @@ class OSCalls:
                 worker.shutdown()
                 with self.guard:
                     self.workers.pop(task_id, None)
-                final_job = item['jobs'].jobs.get(task_id, {})
-                jstatus = final_job.get('status')
-                mapped = ('review' if jstatus == 'approval_required'
-                          else 'cancelled' if jstatus in {'interrupted', 'cancelling'}
-                          else 'failed' if jstatus == 'unavailable'
-                          else 'completed')
-                self.sync_task_to_os(item, task_id, status=mapped, action='update')
         return dispatch, close
+
+    def reconcile_tasks(self, item):
+        with self.guard:
+            if item.get('syncing'):
+                return
+            item['syncing'] = True
+        def reconcile():
+            try:
+                for job in item['jobs'].snapshot(False):
+                    self.sync_task_to_os(item, job['task_id'])
+            finally:
+                with self.guard:
+                    item['syncing'] = False
+        threading.Thread(target=reconcile, daemon=True).start()
 
     def inspection_chat(self, authorization):
         with self.guard:
@@ -247,10 +263,12 @@ class OSCalls:
                     settings['HERMES_VOICE_MODEL'] = ''
                 path = self.root / '.runtime' / 'os-call-jobs' / identity
                 path.mkdir(mode=0o700, parents=True, exist_ok=True)
-                item = {'scope': dict(scope), 'settings': settings, 'root': path, 'revision': revision}
+                item = {'scope': dict(scope), 'settings': settings, 'root': path, 'revision': revision,
+                        'sync_guard': threading.RLock(), 'synced': {}}
                 item['jobs'] = BackgroundTasks(path / 'jobs', self.bridge_factory,
                     lambda task, label, ready: self.factory(item, task, label, ready),
-                    owner='os:' + identity, workers=2, pending=6, slots=self.slots)
+                    owner='os:' + identity, workers=2, pending=6, slots=self.slots,
+                    on_change=lambda task: self.sync_task_to_os(item, task))
                 self.contexts[identity] = item
             item['scope'] = dict(scope)
             item['at'] = time.monotonic()
@@ -281,6 +299,7 @@ class OSCalls:
             item['scope'] = dict(scope)
             call['until'] = time.monotonic() + 35
         if action == 'heartbeat':
+            self.reconcile_tasks(item)
             return {'active': True, 'working': any(x['status'] in ACTIVE for x in item['jobs'].snapshot(False))}
         if action == 'tool':
             event = body.get('event')
@@ -329,6 +348,9 @@ class OSCalls:
                     raise PermissionError('Stopping speech does not cancel a business task')
                 if event['toolName'] == 'native_leo' and is_correction(text):
                     raise PermissionError('Confirm the revised task before dispatching new work')
+                if event['toolName'] == 'native_leo' and is_casual_greeting_intent(text):
+                    return {'type': 'client_tool.result', 'callId': event.get('callId'), 'isError': True,
+                        'result': {'status': 'conversation_only', 'message': 'This is a greeting, not a task. Answer conversationally; no work was started.'}}
             # Acceptance and backup snapshots share this guard. Once accepted,
             # even queued work makes the export gate busy until it settles.
             with self.guard:
@@ -336,12 +358,7 @@ class OSCalls:
                     lambda _: call['until'] > time.monotonic() and call_id in self.calls)
             if isinstance(value, dict) and value.get('result', {}).get('task_id'):
                 tid = value['result']['task_id']
-                if event['toolName'] == 'cancel_task':
-                    self.sync_task_to_os(item, tid, status='cancelled', action='update')
-                elif event['toolName'] == 'native_leo':
-                    lbl = event.get('params', {}).get('label') or 'Business task'
-                    req = event.get('params', {}).get('request') or text
-                    self.sync_task_to_os(item, tid, 'Call task: ' + lbl[:130], req, 'queued', 'create')
+                self.sync_task_to_os(item, tid)
             return value
         if action == 'notice':
             # Issuing is not proof of speech. The client acknowledges only after playback.

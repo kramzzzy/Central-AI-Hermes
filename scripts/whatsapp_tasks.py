@@ -13,7 +13,7 @@ TERMINAL = {'complete', 'approval_required', 'interrupted', 'unavailable'}
 
 class BackgroundTasks:
     def __init__(self, data, bridge_factory, native_factory, owner=None,
-                 workers=3, pending=8, slots=None, callbacks=False):
+                 workers=3, pending=8, slots=None, callbacks=False, on_change=None):
         self.path = Path(data) / 'background-tasks.json'
         from whatsapp_routing import routing
         if not owner:
@@ -24,6 +24,7 @@ class BackgroundTasks:
         self.slots = slots or threading.BoundedSemaphore(workers)
         self.jobs, self.packets, self.requests, self.controls = {}, {}, {}, {}
         self.closed = False
+        self.on_change = on_change
         from whatsapp_routing import routing
         self.callback_target = owner.partition(':')[2] if owner in {'whatsapp:'+c['number'] for c in routing()['contacts'] if c['calls']} else None
         self.callbacks = callbacks and self.callback_target is not None
@@ -53,6 +54,13 @@ class BackgroundTasks:
             'packets': self.packets, 'requests': self.requests}), encoding='utf-8')
         temporary.chmod(0o600)
         temporary.replace(self.path)
+
+    def changed(self, task_id):
+        if self.on_change:
+            try:
+                self.on_change(task_id)
+            except Exception:
+                print('voice_task_sync_failed', flush=True)
 
     def view(self, job, result=True):
         value = {key: job[key] for key in ('task_id', 'label', 'status')}
@@ -183,6 +191,7 @@ class BackgroundTasks:
                 job = self.jobs[task_id]
                 job['status'] = 'starting'
                 self.save()
+            self.changed(task_id)
             def session_ready(session_id):
                 with self.lock:
                     job['native_session'] = session_id
@@ -194,6 +203,7 @@ class BackgroundTasks:
                 if not control['cancel'].is_set():
                     job['status'] = 'running'
                 self.save()
+            self.changed(task_id)
             result = bridge.execute({'toolName': 'native_leo', 'callId': task_id,
                 'expectsResponse': True, 'params': {'request': job['request']}})['result']
             if result.get('status') not in TERMINAL:
@@ -202,6 +212,11 @@ class BackgroundTasks:
         except Exception:
             pass  # Never log request, profile credentials or raw provider failures.
         finally:
+            # Cleanup and completion observers must see the actual persisted result.
+            with self.lock:
+                job = self.jobs[task_id]
+                job.update(status=result['status'], result=result, finished=time.time(), announced=False)
+                self.save()
             if close:
                 try:
                     close()
@@ -209,10 +224,7 @@ class BackgroundTasks:
                     pass
             if acquired:
                 self.slots.release()
-            with self.lock:
-                job = self.jobs[task_id]
-                job.update(status=result['status'], result=result, finished=time.time(), announced=False)
-                self.save()
+            self.changed(task_id)
 
     def notice(self, now, last_progress, since=None):
         """Called only in a conversational gap. Read state at delivery, not timer creation."""
