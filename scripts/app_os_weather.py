@@ -24,12 +24,12 @@ def read_weather(arguments):
             raise ValueError('Configure a valid App OS origin')
         request = urllib.request.Request(base + '/api/weather?' + urlencode({'location': location.strip(), 'unit': unit}))
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-        with opener.open(request, timeout=5) as response:
+        with opener.open(request, timeout=18) as response:
             payload = response.read(32769)
         if len(payload) > 32768:
             raise ValueError('Weather response too large')
         result = json.loads(payload)
-        if not isinstance(result, dict) or not isinstance(result.get('data'), dict) or not isinstance(result.get('live'), bool) or result.get('unit') != unit:
+        if not isinstance(result, dict) or not isinstance(result.get('data'), dict) or result.get('live') is not True or result.get('kind') != 'forecast' or result.get('unit') != unit:
             raise ValueError('Invalid weather response')
         return result
     except (OSError, ValueError, TypeError):

@@ -183,10 +183,10 @@ TOOLS = {
         "handler": get_live_weather,
         "check_fn": None,
         "emoji": "☀️",
-        "description": "Read the shared App OS weather widget data and its live/sample status.",
+        "description": "Read the shared App OS MET Norway forecast and provider timestamps.",
         "schema": {
             "name": "mcp__michael_os__get_live_weather",
-            "description": "Read the same weather, hourly/daily forecast and solar data shown by the App OS widget. Use the visible widget city/unit when the caller refers to it. Respect live=false: sample data is not current weather.",
+            "description": "Read the same MET Norway weather forecast shown by the App OS widget. Use the visible widget city/unit. Respect updated_at/valid_at: this is model output, not station observations. Null solar/AQI values are unavailable; never invent readings.",
             "parameters": {
                 "type": "object",
                 "properties": {
