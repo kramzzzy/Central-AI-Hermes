@@ -175,9 +175,9 @@ class PhoneTaskChat(PhoneChat):
         with self.connect_guard:
             self.start()
             if not self.sid:
-                session = self.rpc('session.create', {'profile': self.settings['HERMES_PROFILE'],
+                session = self.create_session({'profile': self.settings['HERMES_PROFILE'],
                     'title': ('WhatsApp call — ' if self.conversation else 'WhatsApp task — ') + self.label, 'source': 'whatsapp',
-                    'follow_profile_config': True}, timeout=60)
+                    'follow_profile_config': True}, voice=self.conversation)
                 self.sid = session['session_id']
                 self.stored = session.get('stored_session_id') or session.get('session_key') or self.sid
                 self.info = session.get('info', {})

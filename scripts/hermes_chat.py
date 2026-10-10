@@ -40,6 +40,7 @@ class NativeChat:
         self.voice_review = False
         self.voice_restore = None
         self.voice_model_restore = None
+        self.voice_model_session = None
         self.connect_guard = threading.Lock()
         self.sid = None
         self.stored = None
@@ -63,6 +64,7 @@ class NativeChat:
             self.sid = None
             self.stored = None
             self.info = {}
+            self.voice_model_session = None
             self.events.clear()
             self.requests.clear()
             self.epoch = str(uuid4())
@@ -192,6 +194,20 @@ class NativeChat:
     def scoped(self, **extra):
         profile = getattr(self, 'active_profile', None) or self.settings['HERMES_PROFILE']
         return {'session_id': self.sid, 'profile': profile, **extra}
+
+    def create_session(self, params, voice=False):
+        model = self.settings.get('HERMES_VOICE_MODEL', '').strip() if voice else ''
+        if model:
+            provider = (self.settings.get('HERMES_VOICE_PROVIDER', '').strip()
+                        or self.settings.get('HERMES_CHAT_PROVIDER', '').strip() or 'openrouter')
+            if not re.fullmatch(r'[\w][\w./:@+-]*', model) or not re.fullmatch(r'[\w][\w-]*', provider):
+                raise RuntimeError('The configured voice model or provider is invalid.')
+            # Profile-following sessions discard draft overrides on their first
+            # prompt. A dedicated call pins its model without changing the profile.
+            params = dict(params, model=model, provider=provider, follow_profile_config=False)
+        session = self.rpc('session.create', params, timeout=60)
+        self.voice_model_session = session['session_id'] if model else None
+        return session
 
     def resume(self, profile, session_id):
         params = {'profile': profile, 'session_id': session_id, 'eager_build': True, 'inline_images': False}
@@ -509,6 +525,8 @@ class NativeChat:
         return effort, saved
 
     def prepare_voice_model(self, live):
+        if self.voice_model_session == self.sid and self.sid:
+            return  # This dedicated call already pinned its model at creation.
         model = self.settings.get('HERMES_VOICE_MODEL', '').strip()
         provider = (self.settings.get('HERMES_VOICE_PROVIDER', '').strip()
                     or self.settings.get('HERMES_CHAT_PROVIDER', '').strip()
@@ -517,35 +535,30 @@ class NativeChat:
         if not model:
             return
         if not re.fullmatch(r'[\w][\w./:@+-]*', model) or not re.fullmatch(r'[\w][\w-]*', provider):
-            print(f"[prepare_voice_model] Invalid voice model format ({model}, {provider}), using live chat model.")
-            return
+            raise RuntimeError('The configured voice model or provider is invalid.')
         if live.get('model') == model and live.get('provider') == provider:
             return
-        options = {'effort': 'low'}
+        previous_model, previous_provider = live.get('model', ''), live.get('provider', '')
+        for value, pattern in [(previous_model, r'[\w][\w./:@+-]*'), (previous_provider, r'[\w][\w-]*')]:
+            if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                raise RuntimeError('The native call model could not be resolved. Reconnect before speaking.')
         try:
-            options = self.model_options()
-        except Exception as e:
-            print(f"[prepare_voice_model] Options check skipped: {e}")
-        effort = options.get('effort') or 'low'
+            effort = self.rpc('config.get', self.scoped(key='reasoning')).get('value') or 'low'
+        except Exception:
+            effort = 'low'
         if effort not in {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'}:
             effort = 'low'
-        for value, pattern in [(live.get('model', ''), r'[\w][\w./:@+-]*'), (live.get('provider', ''), r'[\w][\w-]*')]:
-            if not re.fullmatch(pattern, value):
-                print(f"[prepare_voice_model] Live model/provider invalid format ({value}), staying with live model.")
-                return
         saved = {'profile': self.settings['HERMES_PROFILE'], 'session': self.stored,
-                 'model': live['model'], 'provider': live['provider'], 'effort': effort,
+                 'model': previous_model, 'provider': previous_provider, 'effort': effort,
                  'voice_model': model, 'voice_provider': provider}
         try:
             result = self.rpc('config.set', self.scoped(key='model',
                 value=f'{model} --provider {provider} --reasoning {effort} --session', scope='session',
                 confirm_expensive_model=True))
             if result.get('confirm_required'):
-                print(f"[prepare_voice_model] Confirmation required to switch voice model: {result.get('confirm_message')}")
-                return
+                raise RuntimeError('Voice model selection requires confirmation.')
             if result.get('value') != model:
-                print(f"[prepare_voice_model] Voice model switch returned {result.get('value')}, continuing with live model.")
-                return
+                raise RuntimeError('The native voice model selection was not acknowledged.')
             path = self.root / '.runtime' / 'native-voice-model.json'
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_suffix('.tmp')
@@ -553,10 +566,7 @@ class NativeChat:
             temporary.replace(path)
             self.voice_model_restore = saved
         except Exception as e:
-            print(f"[prepare_voice_model] Could not switch to voice model {model}: {e}. Staying with live model.")
-            self.voice_model_restore = None
-            (self.root / '.runtime' / 'native-voice-model.json').unlink(missing_ok=True)
-            return
+            raise RuntimeError('Could not prepare the native voice model; the call was not started.') from e
 
     def restore_voice_model(self, recover=False):
         path = self.root / '.runtime' / 'native-voice-model.json'

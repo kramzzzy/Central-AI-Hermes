@@ -48,9 +48,9 @@ class CallTaskChat(NativeChat):
         with self.connect_guard:
             self.start()
             if not self.sid:
-                value = self.rpc('session.create', {'profile': self.settings['HERMES_PROFILE'],
+                value = self.create_session({'profile': self.settings['HERMES_PROFILE'],
                     'title': ('Voice call — ' if self.conversation else 'Call task — ') + self.label[:80], 'source': 'desktop',
-                    'follow_profile_config': True}, timeout=60)
+                    'follow_profile_config': True}, voice=self.conversation)
                 self.sid = value['session_id']
                 self.stored = value.get('stored_session_id') or value.get('session_key') or self.sid
                 self.ready(self.stored)
