@@ -670,6 +670,9 @@ class NativeChat:
             return result
         if action == 'voice_submit':
             text = body.get('text', '').strip()
+            voice_context = body.get('voice_context', '')
+            if not isinstance(voice_context, str) or len(voice_context) > 6000:
+                raise RuntimeError('Invalid widget context.')
             if not text or len(text) > 12000 or text.startswith('/'):
                 raise RuntimeError('Speak a request. Run slash commands in text chat.')
             live = self.rpc('session.activate', self.scoped(omit_messages=True)).get('info', {})
@@ -688,7 +691,7 @@ class NativeChat:
                 if not self.restore_voice_effort():
                     raise RuntimeError('The previous voice reply is still settling.')
                 effort, restore = self.prepare_voice_effort(live)
-                self.rpc('prompt.submit', self.scoped(text=text, surface='voice-live'))
+                self.rpc('prompt.submit', self.scoped(text=text, surface='voice-live', voice_context=voice_context))
                 return {'turn_id': turn, 'cursor': cursor, 'epoch': self.epoch, 'effort': effort}
             except Exception:
                 if self.voice_restore:

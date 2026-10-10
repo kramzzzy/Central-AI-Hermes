@@ -183,10 +183,10 @@ TOOLS = {
         "handler": get_live_weather,
         "check_fn": None,
         "emoji": "☀️",
-        "description": "Retrieve instant live weather, climate metrics, and solar yield data.",
+        "description": "Read the shared App OS weather widget data and its live/sample status.",
         "schema": {
             "name": "mcp__michael_os__get_live_weather",
-            "description": "Retrieve instant live weather, climate metrics, and solar yield data without needing external web searches.",
+            "description": "Read the same weather, hourly/daily forecast and solar data shown by the App OS widget. Use the visible widget city/unit when the caller refers to it. Respect live=false: sample data is not current weather.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -18,8 +18,11 @@ class OSStreamVoice:
         self.slots = threading.BoundedSemaphore(2)
 
     def handle(self, handler, body):
-        if not isinstance(body, dict) or set(body) - {'action', 'call_id', 'scope', 'prompt', 'display_name', 'turn_id', 'text', 'voice', 'voice_id'}:
+        if not isinstance(body, dict) or set(body) - {'action', 'call_id', 'scope', 'prompt', 'display_name', 'turn_id', 'text', 'voice', 'voice_id', 'voice_context'}:
             raise ValueError('Invalid voice request')
+        voice_context = body.get('voice_context', '')
+        if not isinstance(voice_context, str) or len(voice_context) > 6000:
+            raise ValueError('Invalid widget context')
         call = str(UUID(body['call_id']))
         scope, action = body['scope'], body['action']
         identity = self.calls.identity(scope)
@@ -137,7 +140,8 @@ class OSStreamVoice:
                 if value is None:
                     text('Speaker audio mixed with your words. Please repeat your request; no new work was started.')
                 elif value.strip():
-                    item['conversation'].reply(value, text, control, notice=bool(notice), on_event=emit)
+                    item['conversation'].reply(value, text, control, notice=bool(notice), on_event=emit,
+                                               voice_context=voice_context)
             try:
                 speech.finish()
             except Exception:

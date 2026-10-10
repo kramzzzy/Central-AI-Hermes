@@ -35,7 +35,7 @@ class NativeVoiceConversation:
                 self.released = True
                 self.release()
 
-    def reply(self, text, speak, control, notice=False, on_event=None):
+    def reply(self, text, speak, control, notice=False, on_event=None, voice_context=''):
         control.check()
         if self.closed.is_set() or not self.admitted():
             raise RuntimeError('Native call ended')
@@ -61,7 +61,8 @@ class NativeVoiceConversation:
             if self.closed.is_set() or not self.admitted():
                 raise RuntimeError('Native call ended')
             submitted = True  # Even a failed receipt can have an unknown outcome.
-            receipt = self.dispatch('voice_submit', self.call, text=text, turn_id=turn)
+            receipt = self.dispatch('voice_submit', self.call, text=text, turn_id=turn,
+                                    voice_context=voice_context)
             if not isinstance(receipt, dict) or 'cursor' not in receipt or 'epoch' not in receipt:
                 raise RuntimeError('Native submission was not acknowledged')
             cursor, reply, sent, complete = receipt['cursor'], '', '', False

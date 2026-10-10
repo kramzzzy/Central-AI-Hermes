@@ -8,61 +8,6 @@ from pathlib import Path
 
 SECTIONS = {"status", "overview", "tasks", "knowledge", "agents", "runs", "activity", "members", "calendar"}
 
-WEATHER_PRESETS = {
-    'brisbane': {
-        'location': 'Brisbane, QLD',
-        'condition': 'Mostly Sunny',
-        'temperature': 24,
-        'temperature_f': 75,
-        'high': 27,
-        'low': 18,
-        'humidity': 58,
-        'wind_speed': 16,
-        'wind_direction': 'ENE',
-        'uv_index': 7,
-        'uv_description': 'High',
-        'rain_probability': 10,
-        'solar_irradiance_w_m2': 840,
-        'peak_sun_hours_today': 5.8,
-        'forecast_summary': 'Clear skies with ideal conditions for maximum solar PV generation throughout the afternoon.'
-    },
-    'sydney': {
-        'location': 'Sydney, NSW',
-        'condition': 'Partly Cloudy',
-        'temperature': 21,
-        'temperature_f': 70,
-        'high': 23,
-        'low': 15,
-        'humidity': 64,
-        'wind_speed': 20,
-        'wind_direction': 'NE',
-        'uv_index': 5,
-        'uv_description': 'Moderate',
-        'rain_probability': 25,
-        'solar_irradiance_w_m2': 680,
-        'peak_sun_hours_today': 4.9,
-        'forecast_summary': 'Intermittent cloud cover with solid solar harvesting windows.'
-    },
-    'melbourne': {
-        'location': 'Melbourne, VIC',
-        'condition': 'Overcast',
-        'temperature': 17,
-        'temperature_f': 63,
-        'high': 19,
-        'low': 12,
-        'humidity': 72,
-        'wind_speed': 24,
-        'wind_direction': 'SSW',
-        'uv_index': 3,
-        'uv_description': 'Moderate',
-        'rain_probability': 40,
-        'solar_irradiance_w_m2': 420,
-        'peak_sun_hours_today': 3.2,
-        'forecast_summary': 'Cloud cover dampening peak generation; battery reserves recommended.'
-    }
-}
-
-
 def validate(arguments):
     if not isinstance(arguments, dict) or set(arguments) - {"section", "search", "id", "offset", "limit"}:
         raise ValueError("Unsupported workspace arguments")
@@ -270,21 +215,8 @@ def navigate_browser(arguments, **kwargs):
 
 
 def get_live_weather(arguments, **kwargs):
-    location = str(arguments.get('location', 'brisbane')).lower().strip()
-    unit = str(arguments.get('unit', 'C')).upper()
-    data = None
-    for k, v in WEATHER_PRESETS.items():
-        if k in location or location in k:
-            data = v
-            break
-    if not data:
-        data = WEATHER_PRESETS['brisbane']
-    res = dict(data)
-    if unit == 'F':
-        res['display_temp'] = f"{res['temperature_f']}°F"
-    else:
-        res['display_temp'] = f"{res['temperature']}°C"
-    return json.dumps(res)
+    from app_os_weather import read_weather
+    return json.dumps(read_weather(arguments))
 
 
 def end_call(arguments=None, **kwargs):
