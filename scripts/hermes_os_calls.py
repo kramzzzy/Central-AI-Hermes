@@ -261,7 +261,8 @@ class OSCalls:
                 if scope.get('assistant'):
                     settings, _ = self.team.provision(scope['team'], context_name(scope['team']))
                     settings['HERMES_VOICE_MODEL'] = ''
-                path = self.root / '.runtime' / 'os-call-jobs' / identity
+                storage = Path(self.settings.get('HERMES_PROFILE_ROOT') or self.root / '.runtime')
+                path = storage / 'os-call-jobs' / identity
                 path.mkdir(mode=0o700, parents=True, exist_ok=True)
                 item = {'scope': dict(scope), 'settings': settings, 'root': path, 'revision': revision,
                         'sync_guard': threading.RLock(), 'synced': {}}
