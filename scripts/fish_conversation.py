@@ -187,7 +187,7 @@ def filter_playback_input(text, replies):
             if not any(f' {phrase} ' in f' {reply} ' for reply in spoken):
                 continue
             rest = (text[:fragment[0][1]] if suffix else text[fragment[-1][2]:]).strip(' \t\r\n,.:;!?')
-            if is_casual_greeting_intent(rest) or (not rest and (length >= 4 or phrase in spoken)):
+            if is_casual_greeting_intent(rest) or not rest:
                 return rest
             if length >= 6:
                 return None
