@@ -28,7 +28,7 @@ import msgpack
 from websockets.sync.client import connect as connect_speech
 sys.path.insert(0, '/opt/setup')
 from whatsapp_audio import start_audio_server
-from whatsapp_callers import resolve_caller, provision_business_phone
+from whatsapp_callers import resolve_caller, provision_business_phone, provision_caller_phone
 from whatsapp_routing import routing, caller_data
 from whatsapp_speech import phone_speech, PREFERRED_LOCALE, FALLBACK_LOCALE
 
@@ -203,12 +203,16 @@ class PhoneTaskChat(PhoneChat):
         return super().rpc(method, params, timeout)
 
 
-def task_native(task_id, label, on_session, member=None, conversation=False):
-    member = member or resolve_caller(OWNER)
+def private_phone_member(member):
     if member['number'] == re.sub(r'\D', '', BUSINESS) and business_chat:
         member = {**member, 'profile': business_chat.settings['HERMES_PROFILE']}
     elif member['number'] != OWNER_MEMBER['number'] and member['profile'] == OWNER_MEMBER['profile']:
-        raise PermissionError('A separate native profile is required for this caller')
+        member = {**member, 'profile': provision_caller_phone('/opt/data', member['number'])}
+    return member
+
+
+def task_native(task_id, label, on_session, member=None, conversation=False):
+    member = private_phone_member(member or resolve_caller(OWNER))
     actor = 'whatsapp:' + member['number']
     worker = PhoneTaskChat(task_id, label, on_session, member, conversation=conversation)
     try:
@@ -244,10 +248,7 @@ def native_conversation(call_id, member):
     configured = resolve_caller(member['number'])
     if not configured or not configured.get('calls') or configured['profile'] != member['profile']:
         raise PermissionError('Caller has no authorized native profile')
-    if configured['number'] == re.sub(r'\D', '', BUSINESS) and business_chat:
-        configured = {**configured, 'profile': business_chat.settings['HERMES_PROFILE']}
-    elif configured['number'] != OWNER_MEMBER['number'] and configured['profile'] == OWNER_MEMBER['profile']:
-        raise PermissionError('A separate native profile is required for this caller')
+    configured = private_phone_member(configured)
     dispatch, close = task_native(call_id, 'WhatsApp', lambda _: None, configured, conversation=True)
     return NativeVoiceConversation(dispatch, close, call_id, admitted=lambda: allowed_audio_call(call_id))
 
