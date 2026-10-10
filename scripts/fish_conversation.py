@@ -139,7 +139,7 @@ def is_goodbye_intent(text, assistant_name='Leo'):
 def is_casual_greeting_intent(text):
     if not text:
         return False
-    trimmed = re.sub(r"[^\w\s']", ' ', text.lower()).strip()
+    trimmed = re.sub(r"[^\w\s']", ' ', text.lower().replace('’', "'")).strip()
     trimmed = re.sub(r'\s+', ' ', trimmed)
     trimmed = re.sub(r'[.!?]+$', '', trimmed).strip()
     patterns = [
@@ -154,6 +154,48 @@ def is_casual_greeting_intent(text):
         if re.search(p, trimmed, re.I):
             return True
     return False
+
+def filter_playback_input(text, replies):
+    """Return clean caller text, or None when playback makes an action ambiguous."""
+    contractions = {
+        "i'm": 'i am', 'im': 'i am', "you're": 'you are', 'youre': 'you are',
+        "we're": 'we are', "they're": 'they are', 'theyre': 'they are',
+        "it's": 'it is', 'its': 'it is', "that's": 'that is', 'thats': 'that is',
+        "what's": 'what is', 'whats': 'what is', "how's": 'how is', 'hows': 'how is',
+        "there's": 'there is', 'theres': 'there is', "here's": 'here is', 'heres': 'here is',
+        "don't": 'do not', 'dont': 'do not', "didn't": 'did not', 'didnt': 'did not',
+        "can't": 'cannot', 'cant': 'cannot', "won't": 'will not', 'wont': 'will not',
+        "let's": 'let us', 'lets': 'let us', "i've": 'i have', 'ive': 'i have',
+        "you've": 'you have', 'youve': 'you have', "i'll": 'i will', 'ill': 'i will',
+        "you'll": 'you will', 'youll': 'you will',
+    }
+    def words(value):
+        return re.finditer(r"[^\W_]+(?:['’][^\W_]+)*", value, re.UNICODE)
+    def normalized(value):
+        normalized_words = (m[0].lower().replace('’', "'") for m in words(value))
+        return ' '.join(contractions.get(word, word) for word in normalized_words).replace("'", '')
+    spoken = [normalized(reply) for reply in replies if reply]
+    heard = normalized(text)
+    if len(text.split()) >= 4 and heard in spoken:
+        return ''
+    tokens = [(word, m.start(), m.end()) for m in words(text)
+              for word in normalized(m[0]).split()]
+    for length in range(min(len(tokens), 64), 5, -1):
+        for suffix in (False, True):
+            fragment = tokens[-length:] if suffix else tokens[:length]
+            phrase = ' '.join(token[0] for token in fragment)
+            if not any(f' {phrase} ' in f' {reply} ' for reply in spoken):
+                continue
+            rest = (text[:fragment[0][1]] if suffix else text[fragment[-1][2]:]).strip(' \t\r\n,.:;!?')
+            if not rest or is_casual_greeting_intent(rest):
+                return rest
+            return None
+    fragments = {tuple(reply.split()[i:i+6]) for reply in spoken
+                 for i in range(len(reply.split())-5)}
+    if any(tuple(token[0] for token in tokens[i:i+6]) in fragments
+           for i in range(1, len(tokens)-6)):
+        return None
+    return text
 
 def is_correction(text):
     if re.match(r'^(no problem|no worries|not a problem)\b', text.strip(), re.I):

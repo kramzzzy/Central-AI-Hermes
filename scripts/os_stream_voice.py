@@ -7,7 +7,7 @@ import time
 from uuid import UUID
 
 from hermes_voice import call_greeting
-from fish_conversation import is_casual_greeting_intent
+from fish_conversation import filter_playback_input, is_casual_greeting_intent
 from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, fish_rest_tts
 
 
@@ -66,7 +66,8 @@ class OSStreamVoice:
                                               'event': event, 'spoken_request': text})
                 self.contexts[call] = {'identity': identity, 'scope': dict(scope), 'config': config,
                     'conversation': Conversation(config, prompt, tool), 'control': None, 'turn': None,
-                    'until': time.monotonic()+180, 'greeting': call_greeting(body.get('display_name', ''))}
+                    'until': time.monotonic()+180, 'greeting': call_greeting(body.get('display_name', '')),
+                    'playback': []}
             return handler.reply(200, {'started': True})
         with self.guard:
             if not item: raise PermissionError('Voice call is inactive')
@@ -85,6 +86,8 @@ class OSStreamVoice:
             if turn_voice_id:
                 item['config']['FISH_VOICE_ID'] = turn_voice_id
             turn = str(UUID(body['turn_id']))
+            prior_playback = [entry['text'] for entry in item['playback']
+                              if time.monotonic() - entry['at'] < 30]
             if item['control']: item['control'].cancel()
             control = TurnControl(lambda: self.contexts.get(call) is item and item['until'] > time.monotonic())
             item['control'], item['turn'] = control, turn
@@ -92,7 +95,7 @@ class OSStreamVoice:
             with self.guard: item['control'] = None
             raise RuntimeError('Voice speech is busy')
         output_guard = threading.RLock()
-        started, closed = False, False
+        started, closed, reply = False, False, ''
         def emit(frame):
             nonlocal started
             control.check()
@@ -107,6 +110,14 @@ class OSStreamVoice:
                     handler.end_headers(); handler.close_connection = True; started = True
                 data = (json.dumps(dict(frame, turn_id=turn))+'\n').encode()
                 handler.wfile.write(f'{len(data):x}\r\n'.encode()+data+b'\r\n'); handler.wfile.flush()
+                if frame.get('type') == 'audio' and reply:
+                    with self.guard:
+                        entry = next((x for x in item['playback'] if x['turn'] == turn), None)
+                        if entry:
+                            entry.update(text=reply, at=time.monotonic())
+                        else:
+                            item['playback'] = [*item['playback'][-7:],
+                                                {'turn': turn, 'text': reply, 'at': time.monotonic()}]
         speech = None
         try:
             emit({'type': 'accepted'})
@@ -130,8 +141,15 @@ class OSStreamVoice:
                     import traceback; traceback.print_exc()
             else:
                 value = json.dumps(notice['notice'], ensure_ascii=False)[:12000] if notice else body.get('text')
-                item['conversation'].reply(value, text, control, notice=bool(notice),
-                                           allow_tools=not is_casual_greeting_intent(value))
+                if not notice:
+                    if not isinstance(value, str) or not 0 < len(value.strip()) <= 12000:
+                        raise ValueError('Invalid confirmed speech')
+                    value = filter_playback_input(value, prior_playback)
+                if value is None:
+                    text('Speaker audio mixed with your words. Please repeat your request; no new work was started.')
+                elif value.strip():
+                    item['conversation'].reply(value, text, control, notice=bool(notice),
+                                               allow_tools=not is_casual_greeting_intent(value))
             try:
                 speech.finish()
             except Exception:

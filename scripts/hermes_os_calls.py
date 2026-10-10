@@ -308,6 +308,11 @@ class OSCalls:
             if tool_name not in {'native_leo', 'task_status', 'cancel_task', 'send_whatsapp_message', 'call_whatsapp_contact'}:
                 raise ValueError('Unsupported voice tool')
             text = body.get('spoken_request', '')
+            if not isinstance(text, str) or not 0 < len(text.strip()) <= 12000:
+                raise PermissionError('A confirmed caller request is required')
+            if is_casual_greeting_intent(text):
+                return {'type': 'client_tool.result', 'callId': event.get('callId'), 'isError': True,
+                    'result': {'status': 'conversation_only', 'message': 'This is a greeting, not a task. Answer conversationally; no work was started.'}}
             if tool_name == 'send_whatsapp_message':
                 params = event.get('params') or {}
                 recipient = str(params.get('recipient') or '').strip()
@@ -342,16 +347,11 @@ class OSCalls:
                         return {'type': 'client_tool.result', 'callId': event.get('callId'), 'result': {'status': 'dialing', 'recipient': recipient, 'message': res_msg}}
                 except Exception as exc:
                     return {'type': 'client_tool.result', 'callId': event.get('callId'), 'isError': True, 'result': {'status': 'failed', 'error': f"Failed to place call: {str(exc)}"}}
-            if not isinstance(text, str) or not 0 < len(text.strip()) <= 12000:
-                raise PermissionError('A confirmed caller request is required')
             if event['toolName'] in {'native_leo', 'cancel_task'}:
                 if event['toolName'] == 'cancel_task' and not is_task_cancellation(text):
                     raise PermissionError('Stopping speech does not cancel a business task')
                 if event['toolName'] == 'native_leo' and is_correction(text):
                     raise PermissionError('Confirm the revised task before dispatching new work')
-                if event['toolName'] == 'native_leo' and is_casual_greeting_intent(text):
-                    return {'type': 'client_tool.result', 'callId': event.get('callId'), 'isError': True,
-                        'result': {'status': 'conversation_only', 'message': 'This is a greeting, not a task. Answer conversationally; no work was started.'}}
             # Acceptance and backup snapshots share this guard. Once accepted,
             # even queued work makes the export gate busy until it settles.
             with self.guard:
