@@ -43,8 +43,9 @@ class MemoryControls:
         if not isinstance(user,str) or not 0 < len(user) <= 200:
             raise MemoryError('Invalid member identity.')
         assistant = body.get('assistant')
-        if assistant == 'leo':
+        if assistant in ('primary', 'assistant', 'leo'):
             # Exact immutable owner authorization is enforced in the OS API.
+            assistant = 'primary'
             name = self.settings['HERMES_PROFILE']
             chat = self.chat
             item = None
@@ -119,7 +120,7 @@ class MemoryControls:
         return [{**{k:row.get(k) for k in keys},'revision':revision(row)} for row in data.get('items',[])]
 
     def handle(self,body):
-        if not isinstance(body,dict) or set(body)-{'action','org','user','assistant','offset','q','id','text','revision','retention_days','confirm'}:
+        if not isinstance(body,dict) or set(body)-{'action','org','user','assistant','offset','limit','q','id','text','revision','retention_days','confirm'}:
             raise MemoryError('Unsupported memory arguments.')
         action=body.get('action')
         if action not in {'list','documents','source','export','correct','forget','delete_source','clear','retention'}:
@@ -132,13 +133,16 @@ class MemoryControls:
                     offset=body.get('offset',0)
                     if type(offset) is not int or not 0<=offset<=100000:
                         raise MemoryError('Choose a valid page.')
+                    limit=body.get('limit',50)
+                    if type(limit) is not int or not 1<=limit<=50 or (action=='export' and limit!=50):
+                        raise MemoryError('Choose a valid page size.')
                     q=body.get('q','')
                     if not isinstance(q,str) or len(q)>200:raise MemoryError('Search text is too long.')
                     source=action=='documents'
                     path='/documents' if source else '/memories/list'
-                    result=self.call(target,'GET',path+'?'+urlencode({'limit':50,'offset':offset,'q':q}))
+                    result=self.call(target,'GET',path+'?'+urlencode({'limit':limit,'offset':offset,'q':q}))
                     items=[{k:r.get(k) for k in ('id','created_at','updated_at','memory_unit_count','text_length')} for r in result.get('items',[])] if source else self.facts(result)
-                    data={'items':items,'total':result.get('total',0),'offset':offset,'limit':50,'policy':self.policy(target),
+                    data={'items':items,'total':result.get('total',0),'offset':offset,'limit':limit,'policy':self.policy(target),
                         'scope':'This assistant’s private long-term memory. Chat histories, attachments and backups are separate.'}
                     if action=='export':data.update(exported_at=datetime.now(timezone.utc).isoformat(),partial=offset+len(items)<result.get('total',0))
                     return data
