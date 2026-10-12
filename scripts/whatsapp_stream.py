@@ -236,6 +236,8 @@ class StreamPhoneCall:
             if prepared:_,speech,framer,output=prepared
             else:speech=FreeSpeech(self.service.config,output,control,rate=16000)
             first=None
+            hermes_started=None
+            timing={}
             def speak(value):
                 nonlocal first,stage
                 if first is None:self.spoken_text=''
@@ -270,7 +272,8 @@ class StreamPhoneCall:
                                     control.check()
                             return cloud.recognize(pcm,control,confirmation_source=source)
                         finally:
-                            self.service.metrics['last_confirmation_wait_ms']=round((time.monotonic()-began_confirmation)*1000)
+                            timing['verification_ms']=round((time.monotonic()-began_confirmation)*1000)
+                            self.service.metrics['last_confirmation_wait_ms']=timing['verification_ms']
                     if streaming and getattr(streaming,'remote',False):
                         text,quality=streaming.finish(control)
                         if quality.get('fallback_allowed') and cloud:
@@ -299,6 +302,7 @@ class StreamPhoneCall:
                         if streaming and quality['decision']=='clarify':text,quality=self.service.recognize(pcm)
                     control.check()
                     self.service.metrics['last_asr_ms']=round((time.monotonic()-began)*1000)
+                    timing['transcription_ms']=self.service.metrics['last_asr_ms']
                     self.service.metrics['last_recognition']=quality
                     echo_text=audio.get('echo_text','') if isinstance(audio,dict) else ''
                     normalize=lambda value:' '.join(re.sub(r'[^\w\s]','',value.casefold()).split())
@@ -344,6 +348,7 @@ class StreamPhoneCall:
                             if pending_input:pending_input['committed']=True
                         self.service.metrics['user_turns']=self.service.metrics.get('user_turns',0)+1
                         stage='hermes'
+                        hermes_started=time.monotonic()
                         try:
                             self.conversation.reply(text,speak,control)
                         finally:
@@ -359,6 +364,16 @@ class StreamPhoneCall:
                 self.service.metrics['last_reply_first_audio_ms']=round(((speech.first_audio or began)-began)*1000)
                 return 'complete'
             finally:
+                if audio is not None:
+                    end=audio.get('speech_ended') if isinstance(audio,dict) else None
+                    timing.update(
+                        endpoint_ms=round((began-end)*1000) if end is not None else None,
+                        hermes_first_text_ms=round((first-hermes_started)*1000) if first is not None and hermes_started is not None else None,
+                        speech_first_audio_ms=round((speech.first_audio-first)*1000) if speech.first_audio is not None and first is not None else None,
+                        total_first_audio_ms=round((speech.first_audio-end)*1000) if speech.first_audio is not None and end is not None else None,
+                        stage=stage, cancelled=control.cancelled.is_set())
+                    self.service.metrics['last_turn_timing']=timing
+                    print(json.dumps({'phone_voice_timing':timing}),flush=True)
                 if pending_input:
                     self.close_asr(pending_input.get('stream'))
                     self.close_asr(pending_input.get('prepared_asr'))

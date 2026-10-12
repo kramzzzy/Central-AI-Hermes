@@ -716,7 +716,10 @@ class NativeChat:
                 self.actor, self.lease = actor, time.monotonic() + 30
                 self.bind_workspace(body, renew=True)
             # Refresh settled state and pending approvals without reloading conversation history.
-            if time.monotonic() - self.voice_probe_at > 1:
+            # Deliver ready text immediately; status RPCs must not hold up TTS.
+            # Idle/terminal/tool batches still refresh approvals and completion.
+            text_only = bool(events) and all(e.get('type') == 'message.delta' for e in events)
+            if not text_only and time.monotonic() - self.voice_probe_at > 1:
                 self.voice_probe_at = time.monotonic()
                 live = self.rpc('session.activate', self.scoped(omit_messages=True)).get('info', {})
                 approvals = self.rpc('approval.pending', self.scoped()).get('approvals', [])
