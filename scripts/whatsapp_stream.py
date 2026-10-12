@@ -115,6 +115,7 @@ class StreamPhoneCall:
         if self.pending_input:
             self.close_asr(self.pending_input.get('stream'))
             self.close_asr(self.pending_input.get('prepared_asr'))
+            self.close_asr(self.pending_input.get('confirmation_asr'))
         self.pending_input = None
         self.playback_until = 0.
         while not self.output.empty(): self.output.get_nowait()
@@ -156,18 +157,25 @@ class StreamPhoneCall:
     def discard_early_asr(self):
         if self.early_asr:
             self.close_asr(self.early_asr['recognizer'])
+            self.close_asr(self.early_asr.get('confirmation'))
             self.early_asr=None
 
     def prepare_recognition(self):
         cloud=getattr(self.service,'cloud_asr',None)
-        if self.early_asr or getattr(self.asr,'remote',False) or not hasattr(cloud,'prepare'):return
+        if self.early_asr or not hasattr(cloud,'prepare'):return
         generation=self.generation
         control=TurnControl(lambda:not self.closed and self.generation==generation
                             and self.service.allowed(self.call))
         pcm=bytes(self.capture)
-        recognizer=cloud.prepare(pcm,control)
-        if recognizer:
-            self.early_asr={'recognizer':recognizer,'version':self.capture_version,'pcm':pcm}
+        remote=getattr(self.asr,'remote',False)
+        source=self.asr.recognizer.source if remote else cloud.primary
+        recognizer=None if remote else cloud.prepare(pcm,control)
+        # Independent verification runs alongside ASR, during the existing
+        # silence window. Neither result can dispatch work before turn end.
+        confirmation=cloud.prepare(pcm,control,confirmation_source=source)
+        if recognizer or confirmation:
+            self.early_asr={'recognizer':recognizer,'confirmation':confirmation,
+                            'confirmation_source':source,'version':self.capture_version,'pcm':pcm}
             self.service.metrics['early_recognitions_started']=self.service.metrics.get('early_recognitions_started',0)+1
 
     async def start(self):
@@ -206,6 +214,7 @@ class StreamPhoneCall:
         pending_input=({'pcm':audio['pcm'] if isinstance(audio,dict) else audio,
                         'stream':audio.get('stream') if isinstance(audio,dict) else None,
                         'prepared_asr':audio.get('prepared_asr') if isinstance(audio,dict) else None,
+                        'confirmation_asr':audio.get('confirmation_asr') if isinstance(audio,dict) else None,
                         'control':control,'generation':generation,'committed':False} if audio is not None else None)
         self.pending_input=pending_input
         self.change_state('thinking')
@@ -244,12 +253,30 @@ class StreamPhoneCall:
                     pcm=audio['pcm'] if isinstance(audio,dict) else audio
                     streaming=audio.get('stream') if isinstance(audio,dict) else None
                     cloud=getattr(self.service,'cloud_asr',None)
+                    confirmation_asr=audio.get('confirmation_asr') if isinstance(audio,dict) else None
+                    confirmation_source=audio.get('confirmation_source') if isinstance(audio,dict) else None
+                    if confirmation_asr:control.track(confirmation_asr)
+                    def confirm(source):
+                        began_confirmation=time.monotonic()
+                        try:
+                            if confirmation_asr and source==confirmation_source:
+                                try:
+                                    result=confirmation_asr.finish(control)
+                                    # A failed-over first pass must never confirm itself.
+                                    if result[1].get('source')!=source:
+                                        self.service.metrics['parallel_confirmations_used']=self.service.metrics.get('parallel_confirmations_used',0)+1
+                                        return result
+                                except Exception:
+                                    control.check()
+                            return cloud.recognize(pcm,control,confirmation_source=source)
+                        finally:
+                            self.service.metrics['last_confirmation_wait_ms']=round((time.monotonic()-began_confirmation)*1000)
                     if streaming and getattr(streaming,'remote',False):
                         text,quality=streaming.finish(control)
                         if quality.get('fallback_allowed') and cloud:
                             text,quality=cloud.recognize(pcm,control)
                         elif text and cloud and re.match(r'^(?:(?:okay|ok|alright)\W+)?(?:good\s*bye|bye|thanks? for watching|please subscribe)\b',text,re.I):
-                            verified,confirmation=cloud.recognize(pcm,control,confirmation_source=quality['source'])
+                            verified,confirmation=confirm(quality['source'])
                             normal=lambda value:re.sub(r'[^\w\s]','',value.casefold()).split()
                             if confirmation['decision']!='accepted' or normal(verified)!=normal(text):
                                 text='';quality.update(decision='silence',rejected_unconfirmed_farewell=True)
@@ -303,8 +330,7 @@ class StreamPhoneCall:
                             # With direct native tools, confirmation belongs at
                             # the input boundary, not only at a delegation tool.
                             if cloud:
-                                verified, confirmation = cloud.recognize(pcm,control,
-                                    confirmation_source=quality.get('source'))
+                                verified, confirmation = confirm(quality.get('source'))
                             else:
                                 verified, confirmation = self.service.recognize(pcm)
                             verified = filter_playback_input(verified, [echo_text] if echo_text else [])
@@ -336,6 +362,7 @@ class StreamPhoneCall:
                 if pending_input:
                     self.close_asr(pending_input.get('stream'))
                     self.close_asr(pending_input.get('prepared_asr'))
+                    self.close_asr(pending_input.get('confirmation_asr'))
                 control.cancel()
                 if speculative:speculative.cancel()
         try:
@@ -470,7 +497,11 @@ class StreamPhoneCall:
                     early=self.early_asr;self.early_asr=None
                     if early['version']==self.capture_version and audio['pcm'].startswith(early['pcm']):
                         audio['prepared_asr']=early['recognizer']
-                    else:self.close_asr(early['recognizer'])
+                        audio['confirmation_asr']=early.get('confirmation')
+                        audio['confirmation_source']=early.get('confirmation_source')
+                    else:
+                        self.close_asr(early['recognizer'])
+                        self.close_asr(early.get('confirmation'))
                 self.capture_echo_text=''
                 self.capture.clear();self.voiced=0
                 self.silence_frames=0
@@ -507,6 +538,7 @@ class StreamPhoneCall:
         if self.pending_input:
             self.close_asr(self.pending_input.get('stream'))
             self.close_asr(self.pending_input.get('prepared_asr'))
+            self.close_asr(self.pending_input.get('confirmation_asr'))
         self.pending_input=None
         if self.control:self.control.cancel()
         if self.conversation:
