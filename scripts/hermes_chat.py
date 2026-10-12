@@ -708,7 +708,7 @@ class NativeChat:
                     raise RuntimeError('The voice turn was interrupted or Hermes reconnected.')
                 if self.events and cursor < self.events[0]['seq'] - 1:
                     raise RuntimeError('Voice events were missed. Start a new call.')
-                self.event_ready.wait_for(lambda: self.sequence > cursor or self.voice_turn != turn, timeout=2)
+                self.event_ready.wait_for(lambda: self.sequence > cursor or self.voice_turn != turn, timeout=.2)
                 if self.voice_turn != turn:
                     raise RuntimeError('The voice turn was interrupted.')
                 events = [e for e in self.events if e['seq'] > cursor and e.get('voice_turn') == turn]

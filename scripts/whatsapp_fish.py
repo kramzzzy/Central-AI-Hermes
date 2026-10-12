@@ -968,6 +968,7 @@ class FishService:
         session.connected = True
         if hasattr(session,'transport_ready'):session.transport_ready()
         async def send():
+            next_audio_at = 0.
             await connection.send(session.state_event())
             while not session.closed and self.allowed(session.call):
                 if self.state_changed.is_set():
@@ -977,11 +978,14 @@ class FishService:
                     packet = await asyncio.wait_for(session.output.get(), timeout=.015)
                 except asyncio.TimeoutError:
                     continue
+                # Keep stop/state messages ahead of playback, not behind a TCP audio backlog.
+                await asyncio.sleep(max(0., next_audio_at - time.monotonic()))
                 if self.state_changed.is_set():
                     self.state_changed.clear()
                     await connection.send(session.state_event())
                 if struct.unpack('>Q', packet[:8])[0] == session.generation:
                     await connection.send(packet)
+                    next_audio_at = time.monotonic() + .06
         sender = asyncio.create_task(send())
         try:
             async for frame in connection:

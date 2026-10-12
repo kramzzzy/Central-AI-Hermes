@@ -73,6 +73,7 @@ class NativeVoiceConversation:
                     raise RuntimeError('Native call lease expired')
                 state = self.dispatch('voice_events', self.call, turn_id=turn,
                                       epoch=receipt['epoch'], cursor=cursor)
+                control.check()
                 cursor = state['cursor']
                 for event in state.get('events', []):
                     kind, payload = event.get('type'), event.get('payload') or {}
