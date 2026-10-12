@@ -303,6 +303,8 @@ class StreamPhoneCall:
                     control.check()
                     self.service.metrics['last_asr_ms']=round((time.monotonic()-began)*1000)
                     timing['transcription_ms']=self.service.metrics['last_asr_ms']
+                    timing['recognition_source']=quality.get('source','local')
+                    timing['recognition_decision']=quality.get('decision')
                     self.service.metrics['last_recognition']=quality
                     echo_text=audio.get('echo_text','') if isinstance(audio,dict) else ''
                     normalize=lambda value:' '.join(re.sub(r'[^\w\s]','',value.casefold()).split())
@@ -340,6 +342,7 @@ class StreamPhoneCall:
                             verified = filter_playback_input(verified, [echo_text] if echo_text else [])
                             if (confirmation.get('decision') != 'accepted' or not verified
                                     or confirmed_text_key(verified) != confirmed_text_key(text)):
+                                timing['recognition_rejection']='independent_transcripts_disagree'
                                 speak("I didn't catch that consistently. Please repeat your request; no new work was started.")
                                 speech.finish(); output(b'', final=True)
                                 return 'complete'
