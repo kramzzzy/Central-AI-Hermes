@@ -170,8 +170,8 @@ class StreamPhoneCall:
         remote=getattr(self.asr,'remote',False)
         source=self.asr.recognizer.source if remote else cloud.primary
         recognizer=None if remote else cloud.prepare(pcm,control)
-        # Independent verification runs alongside ASR, during the existing
-        # silence window. Neither result can dispatch work before turn end.
+        # Start both checks only after endpoint detection. Mid-sentence pauses
+        # must not fill the request slots with cancelled provider uploads.
         confirmation=cloud.prepare(pcm,control,confirmation_source=source)
         if recognizer or confirmation:
             self.early_asr={'recognizer':recognizer,'confirmation':confirmation,
@@ -492,6 +492,7 @@ class StreamPhoneCall:
             # received quiet audio, and drain queued speech before finalizing.
             if (self.capture and self.voiced>=3 and self.silence_frames>=12
                     and now-self.last_speech>=.72 and self.input.empty() and not busy):
+                self.prepare_recognition()
                 audio={'pcm':bytes(self.capture),'stream':self.asr,'echo_text':self.capture_echo_text,'speech_ended':self.last_speech};self.asr=None
                 if self.early_asr:
                     early=self.early_asr;self.early_asr=None
@@ -510,9 +511,6 @@ class StreamPhoneCall:
                     and now-self.last_speech>=.8 and self.input.empty()):
                 self.capture.clear();self.voiced=0;self.close_asr(self.asr);self.asr=None
                 self.discard_early_asr()
-            if (self.capture and self.voiced>=3 and self.silence_frames>=3
-                    and not busy and now-self.last_speech>=.14 and self.input.empty()):
-                self.prepare_recognition()
             if not busy and now>=self.playback_until and self.state not in {'listening','idle'}:
                 self.change_state('listening')
             if (self.pending_notice and not busy and not self.capture and now>=self.pending_notice['after']
