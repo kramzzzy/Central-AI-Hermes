@@ -64,6 +64,7 @@ class StreamPhoneCall:
         self.pre = deque(maxlen=4)
         self.capture = bytearray()
         self.voiced = self.speech_run = 0
+        self.silence_frames = 0
         self.last_user_activity = self.last_speech = time.monotonic()
         self.playback_until = self.last_speaking_end = 0.
         self.last_notice = self.last_progress = 0.
@@ -139,6 +140,7 @@ class StreamPhoneCall:
     def transport_lost(self):
         self.flush()
         self.capture.clear();self.pre.clear();self.voiced=self.speech_run=0
+        self.silence_frames=0
         self.capture_echo_text=''
         self.capture_rejected=False
         self.close_asr(self.asr);self.asr=None
@@ -408,6 +410,7 @@ class StreamPhoneCall:
                 continue
             self.received_input=True
             speaking,pcm=bool(filtered[0]),filtered[1:]
+            self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
             if self.capture_rejected:
                 if speaking:self.last_speech=time.monotonic()
@@ -452,13 +455,16 @@ class StreamPhoneCall:
             now=time.monotonic()
             busy=self.worker and not self.worker.done()
             if self.capture_rejected:
-                if now-self.last_speech>=.38:self.capture_rejected=False
+                if self.silence_frames>=12 and now-self.last_speech>=.72:self.capture_rejected=False
                 continue
             if self.greeting_pending:
                 if self.connected and self.received_input and not busy:
                     self.greeting_pending=False;self.start_reply(greeting=True)
                 continue
-            if self.capture and self.voiced>=3 and now-self.last_speech>=.38 and not busy:
+            # A network/decoder stall is not caller silence. Require 720ms of
+            # received quiet audio, and drain queued speech before finalizing.
+            if (self.capture and self.voiced>=3 and self.silence_frames>=12
+                    and now-self.last_speech>=.72 and self.input.empty() and not busy):
                 audio={'pcm':bytes(self.capture),'stream':self.asr,'echo_text':self.capture_echo_text,'speech_ended':self.last_speech};self.asr=None
                 if self.early_asr:
                     early=self.early_asr;self.early_asr=None
@@ -467,11 +473,14 @@ class StreamPhoneCall:
                     else:self.close_asr(early['recognizer'])
                 self.capture_echo_text=''
                 self.capture.clear();self.voiced=0
+                self.silence_frames=0
                 self.start_reply(audio=audio);continue
-            if self.capture and self.voiced<3 and now-self.last_speech>=.8:
+            if (self.capture and self.voiced<3 and self.silence_frames>=14
+                    and now-self.last_speech>=.8 and self.input.empty()):
                 self.capture.clear();self.voiced=0;self.close_asr(self.asr);self.asr=None
                 self.discard_early_asr()
-            if self.capture and self.voiced>=3 and not busy and now-self.last_speech>=.14:
+            if (self.capture and self.voiced>=3 and self.silence_frames>=3
+                    and not busy and now-self.last_speech>=.14 and self.input.empty()):
                 self.prepare_recognition()
             if not busy and now>=self.playback_until and self.state not in {'listening','idle'}:
                 self.change_state('listening')
