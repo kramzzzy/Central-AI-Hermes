@@ -74,7 +74,8 @@ def read_bank(home, include_memories=False):
     cfg = memory_config(cfg)
     bank = cfg.get('bank_id', '')
     result = {'available': False, 'bank': bank, 'background_recall': not cfg.get('recall_sync', True)}
-    if cfg.get('mode') != 'local_external' or cfg.get('api_url') != 'http://hindsight:8888' or bank != 'michael-os-leo':
+    if cfg.get('mode') != 'local_external' or cfg.get('api_url') != 'http://hindsight:8888' or bank != 'michael-os-' + home.name:
+        result['error'] = 'Memory configuration does not match this profile; existing banks are preserved for administrator review.'
         return result
     token = cfg.get('api_key', '')
     def get(path):

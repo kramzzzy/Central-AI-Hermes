@@ -260,7 +260,7 @@ class OSCalls:
                     raise PermissionError('Call belongs to another member')
                 return {'started': True}
             item = self.contexts.get(identity)
-            revision = hashlib.sha256(json.dumps((scope.get('team') or {}).get('definition'), sort_keys=True).encode()).hexdigest()
+            revision = self.team.revision(scope['team']) if scope.get('assistant') else hashlib.sha256(json.dumps(None).encode()).hexdigest()
             if item and item['revision'] != revision:
                 if any(x['status'] in ACTIVE for x in item['jobs'].snapshot(False)):
                     raise RuntimeError('Finish current work before changing this assistant')

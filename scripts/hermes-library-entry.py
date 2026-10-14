@@ -65,7 +65,8 @@ with contextlib.redirect_stdout(sys.stderr):
             desc = description or f"Skill for {name}."
             if len(desc) > 60:
                 desc = desc[:57].rstrip() + "..."
-            frontmatter = f"---\nname: {name}\ndescription: {desc}\n---\n\n"
+            import yaml
+            frontmatter = '---\n' + yaml.safe_dump({'name': name, 'description': desc}, sort_keys=False, allow_unicode=True) + '---\n\n'
             content = frontmatter + content
         raw_res = skill_manage(action='create', name=name, content=content, category=category)
         res_data = json.loads(raw_res) if isinstance(raw_res, str) else raw_res

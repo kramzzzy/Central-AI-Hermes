@@ -59,6 +59,7 @@ services:
       HOME: /opt/data
     volumes:
       - hermes-profiles:/opt/data
+      - hermes-state:/opt/os-adapter/.runtime
       - phone-state:/data
     networks:
       hermes-net:
@@ -89,7 +90,8 @@ services:
       HINDSIGHT_API_RERANKER_PROVIDER: rrf
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
-      - hindsight-data:/var/lib/hindsight
+      # Existing installations: migrate the live database before redeploying (deploy/README.md).
+      - hindsight-data:/home/hindsight/.pg0
     networks:
       - hermes-net
 
@@ -252,6 +254,7 @@ services:
 # ------------------------------------------------------------------------------
 volumes:
   hermes-profiles:
+  hermes-state:
   hindsight-data:
   phone-state:
   customer-phone-state:

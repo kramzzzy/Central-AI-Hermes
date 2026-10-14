@@ -647,8 +647,11 @@ class Handler(BaseHTTPRequestHandler):
      return self.reply(409,{'error':'The connected profile changed. Refresh before continuing.'})
     if not library_lock.acquire(blocking=False):
      return self.reply(429,{'error':'Hermes is reading another resource. Please retry shortly.'})
-    try:return self.reply(200,read_library(settings,ROOT,body))
+    try:result=read_library(settings,ROOT,body)
     finally:library_lock.release()
+    if body.get('action') in {'skill_create','skill_edit','skill_delete'} and result.get('success'):
+     with catalog_lock:catalog_cache.update(at=0,data=None)
+    return self.reply(200,result)
    except Exception as exc:
     msg=str(exc)
     return self.reply(400 if any(w in msg for w in ['already exists', 'cannot be deleted', 'Frontmatter', 'YAML', 'Invalid skill']) else 503,{'error':msg[:500] if msg else 'Hermes could not process this resource. Refresh and try again.'})

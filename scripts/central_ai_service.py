@@ -85,7 +85,7 @@ def install_memory(home):
         if not hindsight_cfg.is_file():
             h_data = {
                 "mode": "local_external",
-                "bank_id": "michael-os-leo",
+                "bank_id": "michael-os-" + home.name,
                 "recall_budget": "mid",
                 "timeout": 120
             }
