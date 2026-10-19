@@ -23,7 +23,8 @@ async def run_route(route):
     if home.name != member['profile']:
         raise RuntimeError(f"Text profile binding mismatch: expected {member['profile']}, got {home.name}")
     try:
-        from hermes_os import configure_profile
+        from hermes_os import configure_profile, install_process_token
+        install_process_token()
         configure_profile(home, plugin=True, allow_enable=True)
     except Exception as e:
         logging.error('configure_profile failed in text engine: %s', e)

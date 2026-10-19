@@ -18,6 +18,11 @@ def profile_environment(settings, inherited=None):
     managed = managed_environment(env)
     # Ordinary shell credentials never bleed into profiles. Only the explicitly
     # managed backend's provider allowlist may be shared between private actors.
+    preserved = {
+        k: env[k]
+        for k in ('HERMES_API_KEY', 'APP_OS_URL', 'MICHAEL_OS_URL', 'HERMES_PORT')
+        if env.get(k)
+    }
     for key in list(env):
         if key.endswith(('_API_KEY', '_AUTH_TOKEN', '_ACCESS_TOKEN')) or key in {
             'PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'ORBIT_HERMES_MODEL',
@@ -25,6 +30,7 @@ def profile_environment(settings, inherited=None):
         }:
             env.pop(key, None)
     env.update(managed)
+    env.update(preserved)
     env.update(HERMES_HOME=str(home), HERMES_REPO=settings['HERMES_REPO'],
                ORBIT_HERMES_PROFILE=name, PYTHONIOENCODING='utf-8', PYTHONUTF8='1')
     # A service-owned routine context cannot inherit a shell's background flag.

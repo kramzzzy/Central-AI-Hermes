@@ -14,8 +14,12 @@ MANAGED_KEYS = (
     'OPENROUTER_API_KEY', 'FISH_API_KEY', 'LAYA_API_KEY',
     'HINDSIGHT_API_KEY', 'LAYA_URL', 'HINDSIGHT_API_URL',
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
+    'HERMES_API_KEY', 'APP_OS_URL', 'MICHAEL_OS_URL',
 )
-OPTIONAL_KEYS = {'FISH_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'}
+OPTIONAL_KEYS = {
+    'FISH_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
+    'HERMES_API_KEY', 'APP_OS_URL', 'MICHAEL_OS_URL',
+}
 
 
 def managed_environment(environment=None):
@@ -29,7 +33,7 @@ def managed_environment(environment=None):
         raise RuntimeError('Invalid Central AI integration setting')
     # Empty new provider slots preserve credentials owned by native profiles.
     return {key:value for key,value in values.items()
-            if value or key not in {'OPENAI_API_KEY','ANTHROPIC_API_KEY','GEMINI_API_KEY'}}
+            if value or key not in {'OPENAI_API_KEY','ANTHROPIC_API_KEY','GEMINI_API_KEY','HERMES_API_KEY','APP_OS_URL','MICHAEL_OS_URL'}}
 
 
 def integration_config(config, environment=None):

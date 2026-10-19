@@ -322,7 +322,7 @@ class OSCalls:
         if action == 'tool':
             event = body.get('event')
             tool_name = event.get('toolName') if isinstance(event, dict) else ''
-            if tool_name not in {'native_leo', 'task_status', 'cancel_task', 'send_whatsapp_message', 'call_whatsapp_contact'}:
+            if tool_name not in {'native_leo', 'task_status', 'cancel_task', 'task_callback', 'send_whatsapp_message', 'send_message', 'call_whatsapp_contact', 'call_contact', 'add_knowledge', 'search_knowledge', 'get_knowledge', 'get_workspace_overview', 'get_live_weather', 'control_widget', 'end_call'}:
                 raise ValueError('Unsupported voice tool')
             text = body.get('spoken_request', '')
             if not isinstance(text, str) or not 0 < len(text.strip()) <= 12000:

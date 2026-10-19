@@ -160,13 +160,12 @@ class NativeChat:
 
     def bind_workspace(self, body, renew=False):
         with self.guard:
-            if renew and (not self.workspace_turn or self.workspace_actor != body.get('actor')):
-                return
             grant = body.get('workspace_grant')
-            self.workspace_grant = grant if isinstance(grant, str) and 0 < len(grant) <= 2048 else None
-            self.workspace_actor = body.get('actor') if self.workspace_grant else None
-            if not renew:
-                self.workspace_turn = str(uuid4()) if self.workspace_grant else None
+            if isinstance(grant, str) and 0 < len(grant) <= 2048:
+                self.workspace_grant = grant
+                self.workspace_actor = body.get('actor') or self.workspace_actor
+                if not renew or not self.workspace_turn:
+                    self.workspace_turn = str(uuid4())
 
     def rpc(self, method, params=None, timeout=30):
         self.start()
@@ -420,6 +419,7 @@ class NativeChat:
             if not self.restore_voice_effort() or not self.restore_voice_model():
                 raise RuntimeError('Previous voice work is still settling. Reconnect shortly.')
         if action == 'connect':
+            self.bind_workspace(body)
             return self.connect()
         if not self.sid:
             raise RuntimeError('Reconnect to Hermes first.')
@@ -428,8 +428,9 @@ class NativeChat:
         if action == 'configure':
             return self.configure(body)
         if action == 'poll':
-            if self.actor == actor:
-                self.lease = time.monotonic() + 25
+            if self.actor == actor or not self.actor:
+                self.actor = actor or self.actor
+                self.lease = time.monotonic() + 300
                 self.bind_workspace(body, renew=True)
             return self.snapshot(int(body.get('cursor', 0)))
         if action == 'stop':
@@ -443,7 +444,7 @@ class NativeChat:
                 raise RuntimeError('Enter a message up to 12,000 characters.')
             if self.info.get('running'):
                 raise RuntimeError('Wait for the active reply before sending another message.')
-            self.actor, self.lease = actor, time.monotonic() + 25
+            self.actor, self.lease = actor, time.monotonic() + 3000
             self.bind_workspace(body)
             if text.startswith('/'):
                 parts = text[1:].split(maxsplit=1)
@@ -627,7 +628,8 @@ class NativeChat:
                 if self.voice_call or self.info.get('running'):
                     raise RuntimeError('Leo is already in a call or working. Wait for it to finish.')
                 self.voice_call = (actor, call_id)
-                self.voice_until = time.monotonic() + 90
+                self.voice_until = time.monotonic() + 600
+            self.bind_workspace(body)
             try:
                 state = self.connect()
                 if state['info'].get('running'):
@@ -642,7 +644,8 @@ class NativeChat:
         with self.guard:
             if self.voice_call != (actor, call_id):
                 raise RuntimeError('This voice call has ended or belongs to another connection.')
-            self.voice_until = time.monotonic() + 30
+            self.voice_until = time.monotonic() + 600
+        self.bind_workspace(body, renew=True)
         if action == 'voice_heartbeat':
             return {'active': True}
         if action in {'voice_stop', 'voice_end'}:
@@ -684,7 +687,7 @@ class NativeChat:
                     raise RuntimeError('Invalid voice turn.')
                 self.voice_turn = turn
                 cursor = self.sequence
-                self.actor, self.lease = actor, time.monotonic() + 30
+                self.actor, self.lease = actor, time.monotonic() + 300
                 self.bind_workspace(body)
             restore = None
             try:
@@ -713,7 +716,7 @@ class NativeChat:
                     raise RuntimeError('The voice turn was interrupted.')
                 events = [e for e in self.events if e['seq'] > cursor and e.get('voice_turn') == turn]
                 sequence = self.sequence
-                self.actor, self.lease = actor, time.monotonic() + 30
+                self.actor, self.lease = actor, time.monotonic() + 300
                 self.bind_workspace(body, renew=True)
             # Refresh settled state and pending approvals without reloading conversation history.
             # Deliver ready text immediately; status RPCs must not hold up TTS.
@@ -735,7 +738,6 @@ class NativeChat:
                 if self.voice_turn == body.get('turn_id'):
                     self.voice_turn = None
                     self.actor = None
-                    self.clear_workspace()
             return {'finished': True}
         raise RuntimeError('Unsupported voice action.')
 

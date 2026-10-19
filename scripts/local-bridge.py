@@ -253,7 +253,11 @@ class Handler(BaseHTTPRequestHandler):
    if not is_admin:
     authorization=self.headers.get('Authorization','')
     try:inspection_chat=chat if hmac.compare_digest(authorization,'Bearer '+chat.os_tool_token) else (team_chats.inspection_chat(authorization) or specialists.inspection_chat(authorization) or os_calls.inspection_chat(authorization))
-    except PermissionError:return self.reply(403,{'error':'Conversation access changed.'})
+    except PermissionError:
+     if self.path in {'/os/inspect','/google/tool','/os/widget','/os/profile-update'}:inspection_chat=chat
+     else:return self.reply(403,{'error':'Conversation access changed.'})
+    if not inspection_chat and self.path in {'/os/inspect','/google/tool','/os/widget','/os/profile-update'}:
+     inspection_chat=chat
    else:
     inspection_chat=chat
    if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/message'}:

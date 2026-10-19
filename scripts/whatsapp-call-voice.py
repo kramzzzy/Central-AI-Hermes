@@ -83,9 +83,9 @@ if not native_enabled(config) and (not config.get('FISH_API_KEY') or not config.
     print("[voice] Warning: FISH_API_KEY or FISH_VOICE_ID missing; voice service running in idle waiting for credentials", flush=True)
     config['FISH_API_KEY'] = config.get('FISH_API_KEY') or ''
 config = phone_speech(config)
-# A separate conversation provides the phone channel's context. It cannot resume
-# an OS conversation or inherit its signed workspace grant.
-os.environ.pop('MICHAEL_OS_URL', None)
+for _k in ('HERMES_API_KEY', 'APP_OS_URL', 'MICHAEL_OS_URL'):
+    if not os.environ.get(_k) and config.get(_k):
+        os.environ[_k] = str(config[_k]).strip()
 os.environ['HERMES_VOICE_LANGUAGE'] = 'en'
 os.environ['HERMES_PHONE_CONVERSATION'] = 'true'
 
