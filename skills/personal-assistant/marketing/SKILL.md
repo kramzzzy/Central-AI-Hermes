@@ -31,8 +31,10 @@ Never repeat the same angle or visual hero device across a series. Rotate throug
    - *Hero Visual*: Low-angle cinematic pose beside a matte-black wall-mounted Home Solar Battery with glowing emerald LED strip, holding a smartphone showing `100% Stored Solar — Night Backup Active`.
 4. **Day / Angle 4 — N-Type Monocrystalline Hardware Engineering (`440W PRO`)**:
    - *Hero Visual*: Low-angle commercial hero shot with an all-black N-Type monocrystalline solar module and handheld irradiance analyzer showing `+24.8% Cell Efficiency`.
-5. **Day / Angle 5 — Live Tariff AI & Bill Elimination (`ZERO BILL`)**:
+5. **Day / Angle 5 — Live Tariff Control & Bill Elimination (`ZERO BILL`)**:
    - *Hero Visual*: Flagship smartphone forced-perspective hero shot showing live `$0.00 Grid Import · $2,140 Annual Savings` UI with futuristic callout lines and frosted glass spec panel.
+
+> **Important**: Never put `"AI"` or `"Solar AI"` in poster callouts, glass panels, or headlines—focus strictly on real solar hardware, kW/kWh performance, and homeowner bill savings.
 
 ## Mandatory Format for Campaign Files & Drafts
 

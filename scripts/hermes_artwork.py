@@ -257,20 +257,16 @@ def generate_marketing_image(body):
     raw_prompt = raw_prompt[:2600]
     seed_val = int(body.get('seed') or int(hashlib.md5(raw_prompt.encode('utf-8')).hexdigest()[:6], 16))
 
-    if 'forced perspective' in raw_prompt.lower() or 'glassmorphism' in raw_prompt.lower() or 'futuristic ui' in raw_prompt.lower():
+    if 'strictly no baked-in text' in raw_prompt.lower() or 'ultra-realistic' in raw_prompt.lower():
         photorealistic_prompt = raw_prompt
     else:
         photorealistic_prompt = (
-            'Ultra-realistic premium flagship clean-energy commercial advertisement poster, '
-            'featuring a confident Australian subject in a dynamic low-angle cinematic hero pose '
-            'holding a sleek smart solar energy device toward the camera with strong forced perspective, '
-            'hardware dominating the right foreground. '
+            'Ultra-realistic flagship commercial product & architectural photography for Your Choice Solar, '
             f'Scene & product details: {raw_prompt}. '
-            'Background: clean minimal architectural gradient with subtle blurred large-scale depth typography. '
-            'Lighting: soft studio and golden-hour rim lighting, smooth skin illumination, controlled metallic highlights, '
-            'glossy glass reflections, minimal shadows, premium flagship product photography style. '
-            'Style: high-end flagship commercial advertisement, futuristic, minimal, elegant. '
-            'Quality: 8K, ultra-detailed, sharp focus, HDR, cinematic commercial photography, realistic textures.'
+            'Lighting: soft studio and natural Australian golden-hour rim lighting, controlled metallic highlights, '
+            'glossy glass reflections, minimal shadows, premium flagship product photography style, vertical 4:5 poster composition. '
+            'Quality: 8K, ultra-detailed, sharp focus, HDR, cinematic commercial photography, realistic textures. '
+            'Strictly no baked-in text, no words, no watermarks, no logos inside the raw photo.'
         )
 
     openrouter_key = os.environ.get('OPENROUTER_API_KEY', '').strip()
