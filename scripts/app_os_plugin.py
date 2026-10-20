@@ -114,11 +114,12 @@ def install_files(home, config, allow_enable=False):
     for ts in ["browser", "web", "memory", "todo", "skills", "michael_os", "laya"]:
         if ts not in toolsets:
             toolsets.append(ts)
-    ws_toolsets = platforms.setdefault("whatsapp", [])
-    if isinstance(ws_toolsets, list):
-        for ts in ["browser", "web", "memory", "todo", "skills", "michael_os", "laya"]:
-            if ts not in ws_toolsets:
-                ws_toolsets.append(ts)
+    for plat_key in ("whatsapp", "central_whatsapp", "gateway"):
+        ws_toolsets = platforms.setdefault(plat_key, [])
+        if isinstance(ws_toolsets, list):
+            for ts in ["browser", "web", "memory", "todo", "skills", "michael_os", "laya"]:
+                if ts not in ws_toolsets:
+                    ws_toolsets.append(ts)
     browser_cfg = config.setdefault("browser", {})
     if isinstance(browser_cfg, dict):
         browser_cfg["backend"] = "off"

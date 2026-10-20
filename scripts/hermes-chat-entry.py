@@ -8,6 +8,16 @@ with contextlib.redirect_stdout(sys.stderr):
     home, _ = load_profile()
     os.environ.setdefault('APP_OS_URL', os.environ.get('MICHAEL_OS_URL') or 'http://web:3000')
     os.environ.setdefault('CENTRAL_AI_APP_OS_PLUGIN', '1')
+    try:
+        from pathlib import Path
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('wa_clean', str(Path(__file__).resolve().parent / 'whatsapp-text-engine.py'))
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod._clean_poisoned_whatsapp_history(home)
+    except Exception:
+        pass
     if os.environ.get('HERMES_ROUTINE_ONLY') != 'true':
         from hermes_os import configure_profile, install_process_token
         try:

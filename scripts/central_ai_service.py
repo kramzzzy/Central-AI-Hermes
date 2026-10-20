@@ -82,15 +82,23 @@ def install_memory(home):
         hindsight_dir = home / 'hindsight'
         hindsight_dir.mkdir(parents=True, exist_ok=True)
         hindsight_cfg = hindsight_dir / 'config.json'
+        target_bank_id = "michael-os-leo" if home.name in {'leo', 'leo-whatsapp-text'} else ("michael-os-" + home.name)
         if not hindsight_cfg.is_file():
             h_data = {
                 "mode": "local_external",
-                "bank_id": "michael-os-" + home.name,
+                "bank_id": target_bank_id,
                 "recall_budget": "mid",
                 "timeout": 120
             }
             atomic_write(hindsight_cfg, json.dumps(h_data, indent=2) + '\n')
-
+        else:
+            try:
+                cur_h = json.loads(hindsight_cfg.read_text(encoding='utf-8'))
+                if isinstance(cur_h, dict) and cur_h.get("bank_id") == "michael-os-leo-whatsapp-text":
+                    cur_h["bank_id"] = "michael-os-leo"
+                    atomic_write(hindsight_cfg, json.dumps(cur_h, indent=2) + '\n')
+            except Exception:
+                pass
 
 
 def get_standalone_config():
@@ -228,6 +236,12 @@ def bootstrap(mode, config):
             try:
                 from central_ai_identity import configure_identity
                 configure_identity(home)
+            except Exception:
+                pass
+            try:
+                import subprocess
+                subprocess.run([sys.executable, '-c', 'from tools.skills_sync import sync_skills; sync_skills(quiet=True)'],
+                               env=dict(os.environ, HERMES_HOME=str(home)), cwd='/opt/hermes')
             except Exception:
                 pass
         return '/opt/setup/whatsapp-call-voice.py'

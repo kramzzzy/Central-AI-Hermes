@@ -21,7 +21,7 @@ class OSStreamVoice:
         if not isinstance(body, dict) or set(body) - {'action', 'call_id', 'scope', 'prompt', 'display_name', 'turn_id', 'text', 'voice', 'voice_id', 'voice_context'}:
             raise ValueError('Invalid voice request')
         voice_context = body.get('voice_context', '')
-        if not isinstance(voice_context, str) or len(voice_context) > 6000:
+        if not isinstance(voice_context, str) or len(voice_context) > 12000:
             raise ValueError('Invalid widget context')
         call = str(UUID(body['call_id']))
         scope, action = body['scope'], body['action']
@@ -44,7 +44,7 @@ class OSStreamVoice:
         self.calls.handle({'action': 'heartbeat', 'call_id': call, 'scope': scope})
         if action == 'start':
             prompt = body.get('prompt')
-            if not isinstance(prompt, str) or not 0 < len(prompt) <= 10000: raise ValueError('Invalid voice identity')
+            if not isinstance(prompt, str) or not 0 < len(prompt) <= 28000: raise ValueError('Invalid voice identity')
             with self.guard:
                 if call in self.contexts: raise ValueError('Call already started')
                 if len(self.contexts) >= 4: raise RuntimeError('Voice calls are busy')

@@ -259,6 +259,13 @@ Do not say you are looking up flights, checking email or scheduling when that ac
 Do not start background jobs to rediscover these known missing connections.\n"""
         if callback_notice:
             self.prompt += '\nThis is the single task callback the current caller explicitly requested. After the brief greeting, announce the supplied result without starting or repeating any action. Keep listening for their follow-up. Callback task data:\n' + json.dumps(callback_notice, ensure_ascii=False)
+        try:
+            from hermes_plugins.central_ai_whatsapp.adapter import _fetch_live_box3_context
+            box3_ctx = _fetch_live_box3_context()
+            if box3_ctx:
+                self.prompt += '\n\n' + box3_ctx
+        except Exception:
+            pass
         self.room = rtc.Room()
         self.source = rtc.AudioSource(16000, 1, queue_size_ms=120)
         self.input = asyncio.Queue(maxsize=16)

@@ -137,8 +137,36 @@ class Handler(BaseHTTPRequestHandler):
   if alt and hmac.compare_digest(token, alt):
    return True
   return False
+ def _record_box3_origin(self):
+  try:
+   client_ip=(self.client_address[0] if self.client_address else '').strip()
+   port=(self.headers.get('X-App-OS-Port') or '3000').strip()
+   host_hdr=(self.headers.get('X-App-OS-Host') or '').strip()
+   url_hdr=(self.headers.get('X-App-OS-Url') or '').strip().rstrip('/')
+   urls=[]
+   if client_ip and client_ip not in {'127.0.0.1','::1'}:
+    urls.append(f"http://{client_ip}:{port}")
+   if host_hdr:
+    urls.append(host_hdr if host_hdr.startswith('http') else f"http://{host_hdr}")
+   if url_hdr and url_hdr.startswith('http'):
+    urls.append(url_hdr)
+   if not urls:
+    return
+   deduped=list(dict.fromkeys(u.rstrip('/') for u in urls if u))
+   payload=json.dumps({'url':deduped[0],'urls':deduped,'updated_at':time.time()},indent=2)
+   for p in ['/data/app_os_url.json','/opt/data/app_os_url.json','/opt/os-adapter/.runtime/app_os_url.json',str(ROOT/'.runtime'/'app_os_url.json')]:
+    try:
+     fp=Path(p);fp.parent.mkdir(parents=True,exist_ok=True);fp.write_text(payload,encoding='utf-8');os.chmod(fp,0o666)
+    except Exception:pass
+  except Exception:pass
  def do_GET(self):
   if self.path == '/ready' or (self.path == '/health' and not self.authorized()):return self.reply(200,{'status':'healthy','hermes':True})
+  if self.path=='/os/snapshot':
+   for sp in ['/data/box3_snapshot.json','/opt/data/box3_snapshot.json','/opt/os-adapter/.runtime/box3_snapshot.json',str(ROOT/'.runtime'/'box3_snapshot.json')]:
+    if os.path.exists(sp):
+     try:return self.reply(200,json.loads(Path(sp).read_text(encoding='utf-8')))
+     except Exception:pass
+   return self.reply(200,{})
   if self.path=='/os/caller/status':
    caller_data={}
    voice_data={}
@@ -157,6 +185,7 @@ class Handler(BaseHTTPRequestHandler):
     except Exception:pass
    return self.reply(200,{'caller':caller_data,'voice':voice_data,'timestamp':time.time()})
   if not self.authorized():return self.reply(401,{'error':'Unauthorized'})
+  self._record_box3_origin()
   if self.path=='/voice/status':return self.reply(200,voice.status())
   if self.path=='/voice/team/status':return self.reply(200,team_voice.status())
   if self.path=='/health':
@@ -247,8 +276,10 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(status,data)
    except ValueError:return self.reply(400,{'error':{'message':'Invalid memory request'}})
    except Exception:return self.reply(503,{'error':{'message':'Memory processor unavailable'}})
-  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/message'}:
+  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/message','/os/sync-snapshot'}:
    is_admin=self.authorized()
+   if is_admin:
+    self._record_box3_origin()
    inspection_chat=None
    if not is_admin:
     authorization=self.headers.get('Authorization','')
@@ -260,13 +291,21 @@ class Handler(BaseHTTPRequestHandler):
      inspection_chat=chat
    else:
     inspection_chat=chat
-   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/message'}:
+   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/message','/os/sync-snapshot'}:
     return self.reply(401,{'error':'Unauthorized'})
    try:
     length=int(self.headers.get('Content-Length','0'))
-    max_len=262144 if self.path in {'/os/contacts','/os/company'} else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192)
+    max_len=2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/company'} else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192))
     if not 0<length<=max_len:return self.reply(413,{'error':'Tool request too large'})
     body=json.loads(self.rfile.read(length))
+    if self.path=='/os/sync-snapshot':
+     snap_payload=json.dumps(body,ensure_ascii=False,indent=2)
+     for sp in ['/data/box3_snapshot.json','/opt/data/box3_snapshot.json','/opt/os-adapter/.runtime/box3_snapshot.json',str(ROOT/'.runtime'/'box3_snapshot.json')]:
+      try:
+       p=Path(sp);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(snap_payload,encoding='utf-8')
+       os.chmod(sp,0o666)
+      except Exception:pass
+     return self.reply(200,{'ok':True,'knowledge_count':len(body.get('knowledge',[]))})
     if self.path in {'/os/whatsapp/send','/os/message'}:
      target=str(body.get('target','')).strip() or str(body.get('recipient','')).strip() or str(body.get('phone_or_name','')).strip()
      message_text=str(body.get('message','')).strip()
@@ -472,11 +511,22 @@ class Handler(BaseHTTPRequestHandler):
     specialists.validate_tool(inspection_chat,self.path,body)
     from hermes_os import inspect_from_chat, google_from_chat
     handler=google_from_chat if self.path=='/google/tool' else inspect_from_chat
-    return self.reply(200,handler(inspection_chat,body))
+    try:
+     return self.reply(200,handler(inspection_chat,body))
+    except Exception:
+     if self.path=='/os/inspect':
+      try:
+       from hermes_plugins.central_ai_app_os.client import _load_box3_snapshot, _inspect_from_snapshot
+       snap=_load_box3_snapshot()
+       if snap:
+        return self.reply(200,json.loads(_inspect_from_snapshot(body,snap)))
+      except Exception:pass
+     raise
    except PermissionError:return self.reply(403,{'error':'Workspace access expired or was revoked.'})
    except ValueError:return self.reply(400,{'error':'Invalid inspection arguments'})
    except Exception:return self.reply(503,{'error':'Live OS inspection unavailable; no status verified.'})
   if not self.authorized():return self.reply(401,{'error':'Unauthorized'})
+  self._record_box3_origin()
   if self.path=='/artwork':
    from hermes_artwork import generate,ArtworkError
    acquired=False

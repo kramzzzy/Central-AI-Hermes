@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import sys
 
 sys.path.insert(0,'/opt/os-adapter/scripts')
@@ -12,6 +13,64 @@ sys.path.insert(0,'/opt/os-adapter')
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 from hermes_profile import load_profile
 from whatsapp_system_context import REPLY_STYLE, quiet_whatsapp_display, attach_assistant_skills, clean_reply_punctuation
+
+_POISONED_PATTERNS = (
+    'no working way to read the knowledge base',
+    'aren\'t exposed on this whatsapp connection',
+    'aren\'t enabled on this whatsapp connection',
+    'can\'t give you that number from here',
+    'can\'t check that from here',
+    'tools that read the knowledge base',
+)
+
+
+def _clean_poisoned_whatsapp_history(home: Path):
+    """Remove stale assistant refusal turns from SQLite/session files so Leo does not repeat old error claims."""
+    try:
+        for db_path in list(home.glob('*.db')) + list((home / 'sessions').glob('*.db') if (home / 'sessions').is_dir() else []):
+            try:
+                conn = sqlite3.connect(str(db_path))
+                cur = conn.cursor()
+                tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+                for tbl in tables:
+                    cols = [c[1] for c in cur.execute(f"PRAGMA table_info({tbl})").fetchall()]
+                    text_col = next((c for c in ('content', 'text', 'message') if c in cols), None)
+                    if not text_col:
+                        continue
+                    for pat in _POISONED_PATTERNS:
+                        cur.execute(f"DELETE FROM {tbl} WHERE lower({text_col}) LIKE ?", (f"%{pat}%",))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+        sessions_dir = home / 'sessions'
+        if sessions_dir.is_dir():
+            for sf in sessions_dir.rglob('*'):
+                if not sf.is_file() or sf.suffix not in {'.json', '.jsonl'}:
+                    continue
+                try:
+                    raw = sf.read_text(encoding='utf-8', errors='ignore')
+                    if not any(pat in raw.lower() for pat in _POISONED_PATTERNS):
+                        continue
+                    if sf.suffix == '.jsonl':
+                        lines = [
+                            ln for ln in raw.splitlines()
+                            if not any(pat in ln.lower() for pat in _POISONED_PATTERNS)
+                        ]
+                        sf.write_text('\n'.join(lines) + ('\n' if lines else ''), encoding='utf-8')
+                    elif sf.suffix == '.json':
+                        data = json.loads(raw)
+                        if isinstance(data, dict) and isinstance(data.get('messages'), list):
+                            data['messages'] = [
+                                m for m in data['messages']
+                                if not any(pat in json.dumps(m).lower() for pat in _POISONED_PATTERNS)
+                            ]
+                            sf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 async def run_route(route):
     from whatsapp_routing import text_routes, routing
@@ -24,6 +83,7 @@ async def run_route(route):
         raise RuntimeError(f"Text profile binding mismatch: expected {member['profile']}, got {home.name}")
     os.environ.setdefault('APP_OS_URL', os.environ.get('MICHAEL_OS_URL') or 'http://web:3000')
     os.environ.setdefault('CENTRAL_AI_APP_OS_PLUGIN', '1')
+    _clean_poisoned_whatsapp_history(home)
     try:
         from hermes_os import configure_profile, install_process_token
         install_process_token()

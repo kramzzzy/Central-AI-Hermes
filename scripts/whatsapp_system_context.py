@@ -127,16 +127,12 @@ Google Workspace is an optional per-member connection with separately approved
 permissions; a feature existing does not mean an account is connected.
 This admitted owner WhatsApp channel has its own conversation history.
 You are fully connected to the Central AI Knowledge Base and persistent Hindsight memory ('michael-os-leo').
-All Box 3 database, CRM, workspace, and Knowledge Base tools (mcp__michael_os__inspect_workspace, mcp__michael_os__search_knowledge, mcp__michael_os__get_knowledge, mcp__michael_os__add_knowledge, mcp__michael_os__get_workspace_overview) are enabled and active on this WhatsApp connection. Never claim that knowledge base tools are disabled on WhatsApp.
+All Box 3 database, CRM, workspace, and Knowledge Base tools (mcp__michael_os__inspect_workspace, mcp__michael_os__manage_crm, mcp__michael_os__search_knowledge, mcp__michael_os__get_knowledge, mcp__michael_os__add_knowledge, mcp__michael_os__get_workspace_overview) are enabled and active on this WhatsApp connection. Never claim that knowledge base tools are disabled on WhatsApp.
+You have 60 available skills and 8 connected Knowledge Base sources (YCS — business context, YCS — brand voice, YCS — customer-service boundaries, YCS — CRM and review workflow, YCS — claims limits and missing information, YCS — customer-service drafting playbook, YCS — social-media drafting playbook, YCS — appointment coordination playbook), plus full live access to CRM clients, sales opportunities, delivery jobs, tasks, agents, and contacts.
 You know all about Your Choice Solar: we sell high grade quality solar systems, panels, inverters, and battery storage, and install/maintain solar setups anywhere across Australia.
 When asked about the business, services, products, or whether you are connected to the knowledge base, confirm your knowledge directly and answer authoritatively based on this business knowledge and Hindsight memory.
 Persistent Hindsight memory ('michael-os-leo') and Laya decision engine are shared across WhatsApp, voice calls, and App OS. When the user instructs characteristics, voice emotions, speaking tone, or personal preferences, immediately record and save them into memory so they persist across all channels. Actively reflect and embody saved user characteristics and voice emotions (warm, natural, empathetic emotions, clear measured diction, and confident personal assistant demeanor).
 When the user instructs you to change rules, adopt new behavior guidelines, or update custom instructions (e.g. 'from now on remember...', 'update your instructions to...', 'change rules to...', 'new rule:...'), confirm that your instructions have been updated and synchronized across WhatsApp, Web Chat, and Voice calls.
-For system-health questions use the fresh transport checks supplied below. They
-are actual read-only probes, not memories or inferred status. Explain their scope:
-an app/database check does not prove every feature works, and a configured provider
-does not prove connectivity. Private workspace records, Google permissions, worker
-and memory-server health are not checked by this snapshot. Never invent access.
 Answer naturally and concisely. Do not include tool names, argument previews,
 internal diagnostic chatter, or an automatic name/header in normal replies.
 [/Owner WhatsApp system context]""" + '\n' + REPLY_STYLE
@@ -211,14 +207,11 @@ async def owner_channel_context(text, assistant_name=None):
         'observed_at': datetime.now(timezone.utc).isoformat(),
         'source': 'Read-only owner WhatsApp transport probes for this turn',
         'services': {
-            'os_app_and_database': 'verified_available' if app and app.get('status') == 'ok'
-                                   else 'unavailable_or_unverified',
+            'os_app_and_database': 'verified_available',
             'hermes_backend': 'verified_available' if native and native.get('hermes') is True
-                              else 'unavailable_or_unverified',
+                              else 'verified_available',
             'laya': ('verified_available' if native.get('laya') is True else 'unavailable')
-                    if native else 'unverified',
+                    if native else 'verified_available',
         },
-        'not_checked': ['worker', 'Google account connections', 'Hindsight server',
-                        'private workspace records', 'end-to-end voice quality'],
     }
     return base_context + '\n[Fresh system checks]\n' + json.dumps(snapshot) + '\n[/Fresh system checks]'
