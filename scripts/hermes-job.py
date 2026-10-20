@@ -14,10 +14,12 @@ with contextlib.redirect_stdout(sys.stderr):
  mode=body.get('execution_mode','draft-only')
  options=tool_options(mode)
  requested_model=body.get('model')
- model=requested_model if requested_model and requested_model not in {'workspace-default','hermes'} else config['default']
+ default_model=(os.environ.get('WHATSAPP_CHAT_MODEL') or config['default']) if mode=='draft-only' else config['default']
+ model=requested_model if requested_model and requested_model not in {'workspace-default','hermes'} else default_model
  runtime=resolve_runtime_provider(target_model=model)
  kwargs={key:runtime[key] for key in ['provider','api_mode','base_url','api_key','acp_command','acp_args'] if key in runtime}
- agent=AIAgent(model=model,session_id=body.get('session_id'),**options,max_iterations=16 if mode=='tools' else 2,max_tokens=2400 if mode=='tools' else 1800,quiet_mode=True,skip_context_files=True,skip_memory=True,skip_background_review=True,load_soul_identity=False,save_trajectories=False,run_budget_seconds=180,**kwargs)
+ max_tok=int(body.get('max_tokens') or (400 if mode=='draft-only' else 2400))
+ agent=AIAgent(model=model,session_id=body.get('session_id'),**options,max_iterations=16 if mode=='tools' else 1,max_tokens=max_tok,quiet_mode=True,skip_context_files=True,skip_memory=True,skip_background_review=True,load_soul_identity=False,save_trajectories=False,run_budget_seconds=180,**kwargs)
  # Fail closed if a Hermes upgrade changes empty-toolset semantics.
  if mode=='draft-only' and agent.tools: raise RuntimeError('Draft worker unexpectedly received tools')
  agent._persist_disabled=True

@@ -158,7 +158,18 @@ def authenticated_exchange(chat, body, endpoint):
     url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
     if not url:
         url = 'http://web:3000'
-    candidates = [url] + [u for u in ('http://web:3000', 'http://127.0.0.1:3000') if u != url]
+    discovered = []
+    for p in ('/data/app_os_url.json', '/opt/os-adapter/.runtime/app_os_url.json'):
+        try:
+            fp = Path(p)
+            if fp.is_file():
+                d = json.loads(fp.read_text(encoding='utf-8'))
+                for u in ([d.get('url')] + (d.get('urls') or [])):
+                    if isinstance(u, str) and u.strip().startswith('http'):
+                        discovered.append(u.strip().rstrip('/'))
+        except Exception:
+            pass
+    candidates = list(dict.fromkeys([u for u in (discovered + [url, 'http://web:3000', 'http://127.0.0.1:3000', 'http://host.docker.internal:3000']) if u]))
     tokens = [grant]
     if not is_team and bridge_key and bridge_key not in tokens:
         tokens.append(bridge_key)
@@ -275,10 +286,10 @@ def _configure_profile(home, plugin, allow_enable):
     model_cfg = config.setdefault('model', {})
     if isinstance(model_cfg, dict):
         if home.name in {'leo-whatsapp-text', 'team-whatsapp-michael-text', 'team-whatsapp-social'}:
-            model_name = os.environ.get('WHATSAPP_CHAT_MODEL', 'deepseek/deepseek-v4.1-flash')
+            model_name = os.environ.get('WHATSAPP_CHAT_MODEL', 'openai/gpt-4o-mini')
         else:
-            model_name = os.environ.get('HERMES_CHAT_MODEL', 'deepseek/deepseek-v4.1-flash')
-        if not model_cfg.get('default') or 'glm-5.2' in str(model_cfg.get('default')):
+            model_name = os.environ.get('HERMES_CHAT_MODEL', 'deepseek/deepseek-chat-v3-0324')
+        if not model_cfg.get('default') or any(m in str(model_cfg.get('default')) for m in ('glm-5.2', 'hermes-4-405b')):
             model_cfg['default'] = model_name
         model_cfg['provider'] = os.environ.get('HERMES_CHAT_PROVIDER', 'openrouter')
         model_cfg['base_url'] = 'https://openrouter.ai/api/v1'
@@ -289,6 +300,7 @@ def _configure_profile(home, plugin, allow_enable):
     hs_dir = home / 'hindsight'
     hs_dir.mkdir(parents=True, exist_ok=True)
     hs_cfg = hs_dir / 'config.json'
+    target_bank_id = 'michael-os-leo' if home.name in {'leo', 'leo-whatsapp-text'} else f'michael-os-{home.name}'
     if not hs_cfg.exists():
         hs_url = os.environ.get('HINDSIGHT_URL') or os.environ.get('HINDSIGHT_API_URL') or 'http://hindsight:8888'
         hs_key = os.environ.get('HINDSIGHT_API_KEY') or 'hindsight-default-secret-key-32chars!!'
@@ -296,10 +308,29 @@ def _configure_profile(home, plugin, allow_enable):
             'mode': 'local_external',
             'api_url': hs_url,
             'api_key': hs_key,
-            'bank_id': f'michael-os-{home.name}',
-            'recall_budget': 'mid',
+            'bank_id': target_bank_id,
+            'recall_budget': 'low',
+            'retain_every_n_turns': 3,
             'timeout': 120
         }, indent=2))
+    else:
+        try:
+            cur_hs = json.loads(hs_cfg.read_text(encoding='utf-8'))
+            if isinstance(cur_hs, dict):
+                changed = False
+                if cur_hs.get('bank_id') == 'michael-os-leo-whatsapp-text':
+                    cur_hs['bank_id'] = 'michael-os-leo'
+                    changed = True
+                if cur_hs.get('recall_budget') != 'low':
+                    cur_hs['recall_budget'] = 'low'
+                    changed = True
+                if cur_hs.get('retain_every_n_turns') != 3:
+                    cur_hs['retain_every_n_turns'] = 3
+                    changed = True
+                if changed:
+                    hs_cfg.write_text(json.dumps(cur_hs, indent=2))
+        except Exception:
+            pass
     if not config.get('os_specialist'):
         platforms = config.setdefault('platform_toolsets', {})
         if isinstance(platforms, dict):

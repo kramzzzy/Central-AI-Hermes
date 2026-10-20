@@ -36,8 +36,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       HERMES_CHAT_PROVIDER: ${HERMES_CHAT_PROVIDER:-openrouter}
-      HERMES_CHAT_MODEL: ${HERMES_CHAT_MODEL:-nousresearch/hermes-4-405b}
-      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-deepseek/deepseek-v4.1-flash}
+      HERMES_CHAT_MODEL: ${HERMES_CHAT_MODEL:-deepseek/deepseek-chat-v3-0324}
+      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-openai/gpt-4o-mini}
       HERMES_VOICE_PROVIDER: ${HERMES_VOICE_PROVIDER:-openrouter}
       HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-openai/gpt-4o-mini}
       HINDSIGHT_URL: http://hindsight:8888
@@ -81,7 +81,7 @@ services:
     environment:
       HINDSIGHT_API_LLM_PROVIDER: openai
       HINDSIGHT_API_LLM_BASE_URL: https://openrouter.ai/api/v1
-      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_MODEL:-deepseek/deepseek-chat-v3.1}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_MODEL:-openai/gpt-4o-mini}
       HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-${OPENROUTER_API_KEY:-}}
       HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
       HINDSIGHT_API_EMBEDDINGS_PROVIDER: openrouter
@@ -237,7 +237,7 @@ services:
       MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
       HINDSIGHT_URL: http://hindsight:8888
       LAYA_URL: http://laya:8000
-      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-deepseek/deepseek-v4.1-flash}
+      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-openai/gpt-4o-mini}
       HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-openai/gpt-4o-mini}
     volumes:
       - hermes-profiles:/opt/data
