@@ -3,6 +3,7 @@ version: 1.0.0
 description: App OS dashboard and authenticated workspace integration for Central AI
 provides_tools:
   - mcp__michael_os__inspect_workspace
+  - mcp__michael_os__manage_crm
   - mcp__michael_os__search_knowledge
   - mcp__michael_os__get_knowledge
   - mcp__michael_os__add_knowledge

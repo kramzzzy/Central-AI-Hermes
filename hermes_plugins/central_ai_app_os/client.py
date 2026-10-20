@@ -228,6 +228,16 @@ def get_workspace_overview(arguments=None, **kwargs):
     return inspect_workspace({"section": "overview"})
 
 
+def manage_crm(arguments, **kwargs):
+    args = dict(arguments or {})
+    raw = _call_app_os_mcp("central_ai_manage_crm", args, timeout=15)
+    if raw:
+        return raw
+    if str(args.get("action") or "list").lower() in {"list", "search"}:
+        return inspect_workspace({"section": "crm", "search": str(args.get("search") or args.get("name") or "")[:200], "limit": 20})
+    return json.dumps({"error": "CRM operation unavailable. Check Box 3 connection."})
+
+
 def update_assistant_profile(arguments, **kwargs):
     args = arguments or {}
     payload = {

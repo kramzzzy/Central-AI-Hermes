@@ -393,7 +393,7 @@ def add_knowledge(title: str = '', content: str = '', category: str = 'General')
 
 @server.tool(name='get_workspace_overview')
 def get_workspace_overview() -> dict:
-    """Read live Central AI workspace statistics: number of knowledge base entries, total tasks, and registered contacts."""
+    """Read live Central AI workspace statistics: number of knowledge base entries, total tasks, CRM clients, and registered contacts."""
     res = call_app_os_api('central_ai_get_workspace_overview', {})
     if res and 'content' in res:
         try:
@@ -401,6 +401,64 @@ def get_workspace_overview() -> dict:
         except Exception:
             pass
     return {'status': 'healthy', 'workspace': 'active'}
+
+
+@server.tool(name='manage_crm')
+def manage_crm(
+    action: str = 'list',
+    client_id: str = '',
+    name: str = '',
+    kind: str = 'residential',
+    source: str = '',
+    email: str = '',
+    phone: str = '',
+    address: str = '',
+    details: str = '',
+    stage: str = '',
+    title: str = '',
+    amount: float | None = None,
+    currency: str = 'AUD',
+    next_action: str = '',
+    due_date: str = '',
+    note: str = '',
+    target: str = 'client',
+    record_id: str = '',
+    search: str = '',
+) -> dict:
+    """Full read and write control over the Box 3 CRM (Clients, Contacts, Properties, Sales Opportunities/Deals, Delivery Jobs, and Notes).
+    action: 'list', 'get_client', 'upsert_client' (or 'create_client'/'update_client'), 'upsert_sale' (or 'update_stage'), 'upsert_job', 'add_note', or 'delete'.
+    """
+    payload = {
+        k: v for k, v in {
+            'action': action,
+            'client_id': client_id,
+            'name': name,
+            'kind': kind,
+            'source': source,
+            'email': email,
+            'phone': phone,
+            'address': address,
+            'details': details,
+            'stage': stage,
+            'title': title,
+            'amount': amount,
+            'currency': currency,
+            'next_action': next_action,
+            'due_date': due_date,
+            'note': note,
+            'target': target,
+            'record_id': record_id,
+            'search': search,
+        }.items() if v not in ('', None)
+    }
+    payload.setdefault('action', 'list')
+    res = call_app_os_api('central_ai_manage_crm', payload, timeout=15)
+    if res and 'content' in res:
+        try:
+            return json.loads(res['content'][0]['text'])
+        except Exception:
+            pass
+    return {'error': 'CRM operation unavailable. Check Box 3 connection.'}
 
 
 @server.tool(name='end_call')

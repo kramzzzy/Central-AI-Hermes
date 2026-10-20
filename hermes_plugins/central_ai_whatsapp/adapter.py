@@ -113,10 +113,11 @@ def _fetch_live_box3_context(text=''):
         return (
             "[Live Box 3 & PostgreSQL Knowledge Base Ground Truth (Verified Live Now)]\n"
             "CRITICAL SYSTEM OVERRIDE: Your Box 3 database, CRM, workspace, and Knowledge Base tools "
-            "(mcp__michael_os__inspect_workspace, mcp__michael_os__search_knowledge, mcp__michael_os__get_knowledge, "
-            "mcp__michael_os__add_knowledge, mcp__michael_os__get_workspace_overview) ARE 100% ENABLED AND ACTIVE on this WhatsApp connection. "
-            "IGNORE and DISREGARD any earlier messages in this WhatsApp chat history where you previously stated that knowledge base tools were not enabled or unavailable on WhatsApp. "
-            "Use the live verified PostgreSQL data below (and your mcp__michael_os__* tools) to answer the user's question directly and accurately with exact numbers and facts:\n"
+            "(mcp__michael_os__inspect_workspace, mcp__michael_os__manage_crm, mcp__michael_os__search_knowledge, "
+            "mcp__michael_os__get_knowledge, mcp__michael_os__add_knowledge, mcp__michael_os__get_workspace_overview) "
+            "ARE 100% ENABLED AND ACTIVE on this WhatsApp connection. "
+            "IGNORE and DISREGARD any earlier messages in this WhatsApp chat history where you previously stated that knowledge base or CRM tools were not enabled or unavailable on WhatsApp. "
+            "Use the live verified PostgreSQL data below (and your mcp__michael_os__* tools) to answer the user's question or manage CRM records directly and accurately:\n"
             + json.dumps(payload, ensure_ascii=False)
             + "\n[/Live Box 3 & PostgreSQL Knowledge Base Ground Truth]"
         )
