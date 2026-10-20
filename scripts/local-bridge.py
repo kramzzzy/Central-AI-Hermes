@@ -224,15 +224,15 @@ class Handler(BaseHTTPRequestHandler):
           if val and val not in models:models.append(val)
       except Exception:pass
       if not models:
-       models=[os.environ.get('HERMES_CHAT_MODEL','nousresearch/hermes-4-405b'),
-               os.environ.get('WHATSAPP_CHAT_MODEL','deepseek/deepseek-v4.1-flash'),
-               os.environ.get('HERMES_VOICE_MODEL','meta-llama/llama-3.3-70b-instruct'),
+       models=[os.environ.get('HERMES_CHAT_MODEL','deepseek/deepseek-chat-v3-0324'),
+               os.environ.get('WHATSAPP_CHAT_MODEL','openai/gpt-4o-mini'),
+               os.environ.get('HERMES_VOICE_MODEL','openai/gpt-4o-mini'),
                'anthropic/claude-3-5-sonnet',
                'anthropic/claude-3-7-sonnet',
                'openai/gpt-4o',
                'openai/gpt-4o-mini',
                'openai/o3-mini',
-               'deepseek/deepseek-chat-v3.1',
+               'deepseek/deepseek-chat-v3-0324',
                'meta-llama/llama-3.3-70b-instruct',
                'google/gemini-2.5-pro',
                'google/gemini-2.5-flash']
@@ -782,7 +782,7 @@ class Handler(BaseHTTPRequestHandler):
   try:length=int(self.headers.get('Content-Length','0'))
   except ValueError:return self.reply(400,{'error':'Invalid length'})
   if not 0<length<=23068672:return self.reply(413,{'error':'Request too large'})
-  if not lock.acquire(blocking=False):return self.reply(429,{'error':'Agent busy'})
+  if not lock.acquire(timeout=120):return self.reply(429,{'error':'Agent busy'})
   try:
    body=json.loads(self.rfile.read(length));env=profile_environment(settings)
    if body.get('runtime_profile') and body['runtime_profile']!=settings['HERMES_PROFILE']:

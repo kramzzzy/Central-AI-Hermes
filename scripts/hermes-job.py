@@ -14,12 +14,19 @@ with contextlib.redirect_stdout(sys.stderr):
  mode=body.get('execution_mode','draft-only')
  options=tool_options(mode)
  requested_model=body.get('model')
- default_model=(os.environ.get('WHATSAPP_CHAT_MODEL') or config['default']) if mode=='draft-only' else config['default']
- model=requested_model if requested_model and requested_model not in {'workspace-default','hermes'} else default_model
- runtime=resolve_runtime_provider(target_model=model)
+ raw_default=config.get('default') or os.environ.get('HERMES_CHAT_MODEL') or 'deepseek/deepseek-chat-v3-0324'
+ model=requested_model if requested_model and requested_model not in {'workspace-default','hermes'} else raw_default
+ if 'deepseek-v4.1-flash' in str(model) or 'glm-5.2' in str(model):
+  model='deepseek/deepseek-chat-v3-0324'
+ runtime=resolve_runtime_provider(requested=config.get('provider'),target_model=model)
  kwargs={key:runtime[key] for key in ['provider','api_mode','base_url','api_key','acp_command','acp_args'] if key in runtime}
- max_tok=int(body.get('max_tokens') or (400 if mode=='draft-only' else 2400))
- agent=AIAgent(model=model,session_id=body.get('session_id'),**options,max_iterations=16 if mode=='tools' else 1,max_tokens=max_tok,quiet_mode=True,skip_context_files=True,skip_memory=True,skip_background_review=True,load_soul_identity=False,save_trajectories=False,run_budget_seconds=180,**kwargs)
+ if not kwargs.get('api_key') and os.environ.get('OPENROUTER_API_KEY'):
+  kwargs['provider']=kwargs.get('provider') or 'openrouter'
+  kwargs['base_url']=kwargs.get('base_url') or 'https://openrouter.ai/api/v1'
+  kwargs['api_mode']=kwargs.get('api_mode') or 'chat_completions'
+  kwargs['api_key']=os.environ['OPENROUTER_API_KEY']
+ max_tok=int(body.get('max_tokens') or 4096)
+ agent=AIAgent(model=model,session_id=body.get('session_id'),**options,max_iterations=16 if mode=='tools' else 2,max_tokens=max_tok,quiet_mode=True,skip_context_files=True,skip_memory=True,skip_background_review=True,load_soul_identity=False,save_trajectories=False,run_budget_seconds=180,**kwargs)
  # Fail closed if a Hermes upgrade changes empty-toolset semantics.
  if mode=='draft-only' and agent.tools: raise RuntimeError('Draft worker unexpectedly received tools')
  agent._persist_disabled=True
@@ -31,7 +38,7 @@ with contextlib.redirect_stdout(sys.stderr):
    user_parts.extend(m['content'] if isinstance(m['content'],list) else [{'type':'text','text':m['content']}])
  prompt=user_parts if any(p.get('type')=='image_url' for p in user_parts) else '\n'.join(p['text'] for p in user_parts)
  result=agent.run_conversation(user_message=prompt,system_message=system)
- if not result.get('completed') or result.get('failed') or result.get('partial'): raise RuntimeError('Hermes turn did not complete')
- output=result.get('final_response')
+ output=(result.get('final_response') or '').strip()
+ if result.get('failed') or (not result.get('completed') and not output): raise RuntimeError('Hermes turn did not complete')
  if not output: raise RuntimeError('No final response')
 print(json.dumps({'model':model,'runtime_profile':os.environ['ORBIT_HERMES_PROFILE'],'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':output}}]}))

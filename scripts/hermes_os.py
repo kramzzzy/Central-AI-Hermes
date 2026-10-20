@@ -304,9 +304,13 @@ def _configure_profile(home, plugin, allow_enable):
     if isinstance(model_cfg, dict):
         if home.name in {'leo-whatsapp-text', 'team-whatsapp-michael-text', 'team-whatsapp-social'}:
             model_name = os.environ.get('WHATSAPP_CHAT_MODEL', 'openai/gpt-4o-mini')
+            if 'deepseek-v4.1-flash' in str(model_name):
+                model_name = 'openai/gpt-4o-mini'
         else:
             model_name = os.environ.get('HERMES_CHAT_MODEL', 'deepseek/deepseek-chat-v3-0324')
-        if not model_cfg.get('default') or any(m in str(model_cfg.get('default')) for m in ('glm-5.2', 'hermes-4-405b')):
+            if 'deepseek-v4.1-flash' in str(model_name):
+                model_name = 'deepseek/deepseek-chat-v3-0324'
+        if not model_cfg.get('default') or any(m in str(model_cfg.get('default')) for m in ('glm-5.2', 'hermes-4-405b', 'deepseek-v4.1-flash')):
             model_cfg['default'] = model_name
         model_cfg['provider'] = os.environ.get('HERMES_CHAT_PROVIDER', 'openrouter')
         model_cfg['base_url'] = 'https://openrouter.ai/api/v1'

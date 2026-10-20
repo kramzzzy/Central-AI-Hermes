@@ -60,7 +60,7 @@ def load_profile():
         # token, profile discovery override, private context, or global config change.
         source = Path(shared_auth).resolve(strict=True)
         owner_text = (name == 'leo-whatsapp-text' and bool(os.environ.get('MICHAEL_TEXT_AUTH_HOME'))
-                      and source.name == 'leo' and not os.environ.get('MICHAEL_TEAM_AUTH_HOME'))
+                      and source.name == 'leo' and not os.environ.get('MICHAEL_TEXT_AUTH_HOME') is False and not os.environ.get('MICHAEL_TEAM_AUTH_HOME'))
         if (not name.startswith('team-') and not owner_text) or source.parent != home.parent or source == home:
             raise RuntimeError('Invalid backend credential binding')
         from hermes_cli import auth
@@ -94,7 +94,10 @@ def load_profile():
     os.environ.update(managed)
     from hermes_cli.runtime_provider import _get_model_config
     config = _get_model_config()
-    if not config.get('default'):
-        config['default'] = os.environ.get('HERMES_CHAT_MODEL', 'openai/gpt-4.1-mini')
+    if not config.get('default') or any(m in str(config.get('default')) for m in ('glm-5.2', 'deepseek-v4.1-flash')):
+        fallback_model = os.environ.get('HERMES_CHAT_MODEL', 'deepseek/deepseek-chat-v3-0324')
+        if 'deepseek-v4.1-flash' in str(fallback_model) or 'glm-5.2' in str(fallback_model):
+            fallback_model = 'deepseek/deepseek-chat-v3-0324'
+        config['default'] = fallback_model
         config['provider'] = os.environ.get('HERMES_CHAT_PROVIDER', 'openrouter')
     return home, config
