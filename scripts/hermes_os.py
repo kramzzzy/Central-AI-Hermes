@@ -41,11 +41,20 @@ You have a comprehensive suite of real native and integration tools that you mus
    - For team schedules, check local calendar via inspect_workspace section=calendar and team Google calendar via operation=team_calendar_events. Personal calendar_events uses only this member's connection. Team Google writes still require this member's own Google calendar permission and human approval. Do not claim workspace events/task deadlines were automatically exported to Google.
 5. Skills Library (skills_*):
    - Use skills_list, skill_view, and skill_manage to discover and run configured organizational skills (e.g. morning-briefing, meeting-preparation, follow-up-tracker, receipts-and-expenses).
-6. Task Planning & Memory:
-   - Use todo_list for tracking multi-step plans and tasks.
-   - Use memory to store and recall long-term user facts, preferences, and context across sessions.
+6. Box 3 Tasks, Specialist Assignment & Approvals AI Automation (mcp__michael_os__manage_tasks & mcp__michael_os__create_task):
+   - You are directly connected to the Box 3 Tasks & Approvals AI automation pipeline in PostgreSQL via mcp__michael_os__manage_tasks (and mcp__michael_os__create_task).
+   - Whenever the user asks you to "make a post for social media", "create a social media post", "create a task", "assign a task to Social Media / Customer Service / Appointment Coordinator", "draft a customer follow-up task", or run any workspace task:
+     * ALWAYS invoke mcp__michael_os__manage_tasks(action='create', title=..., instruction=..., agent=..., auto_run=True) (do NOT only use internal todo_list when the user wants a workspace task or social media post created!).
+     * Responsible specialist agents in Box 3:
+       - 'Social Media' (Facebook/Instagram posts, captions, social campaigns, content calendars)
+       - 'Customer Service' (Customer support drafts, enquiry follow-ups, CRM client updates)
+       - 'Appointment Coordinator' (Site visits, solar inspections, booking/scheduling coordination)
+       - 'Sarah' or 'Leo' (General executive and business operations)
+     * When auto_run=True (the default), Box 3 automatically queues and executes the assigned agent's AI automation run in the background (using their YCS playbooks and role-scoped tools) and sends the completed draft/actions directly to the **Approvals** tab ('review' status) for human review!
+     * You can also list tasks (action='list'), trigger a run on an existing task (action='run', task_id=...), or approve/reject a reviewed task (action='approve' or 'reject', task_id=... or title=...).
+   - Use todo_list only for your own internal multi-step scratchpad, and memory to store/recall long-term user facts and preferences across sessions.
 7. Specialist Delegation (mcp__michael_os__delegate_specialists):
-   - Discover specialists with action=list, then delegate bounded sub-tasks to at most two enabled specialists.
+   - For Box 3 workspace tasks and Approvals, prefer mcp__michael_os__manage_tasks(action='create') so the task and AI run appear in the Box 3 Tasks and Approvals tabs. Use delegate_specialists only for internal Box 1 sub-queries.
 8. App OS Screen Widgets Control (mcp__michael_os__open_widget, mcp__michael_os__close_widget & mcp__michael_os__navigate_browser):
    - The user is interacting with Central AI App OS on their desktop/screen. App OS features native floating interactive widgets:
      * website (or browser): Live interactive browser & web preview window. Supports loading any website, YouTube, search engine, web app, or document.
@@ -269,7 +278,7 @@ def _configure_profile(home, plugin, allow_enable):
         from app_os_plugin import install_files
         install_files(home, config, allow_enable=allow_enable)
     all_tools = [
-        'inspect_workspace', 'manage_crm', 'google_workspace', 'delegate_specialists',
+        'inspect_workspace', 'manage_crm', 'manage_tasks', 'create_task', 'google_workspace', 'delegate_specialists',
         'open_widget', 'close_widget', 'control_widget', 'navigate_browser',
         'update_assistant_profile', 'send_whatsapp_message', 'send_message',
         'call_contact', 'call_whatsapp_contact', 'get_live_weather',

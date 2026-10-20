@@ -3,7 +3,7 @@ import json
 from urllib.parse import urlsplit
 from .client import (
     inspect_workspace, inspection_available,
-    manage_crm,
+    manage_crm, manage_tasks, create_task,
     search_knowledge, get_knowledge, add_knowledge,
     get_workspace_overview, update_assistant_profile,
     send_whatsapp_message, send_message,
@@ -70,6 +70,53 @@ TOOLS = {
                     "search": {"type": "string", "description": "Search filter when action='list'."},
                 },
                 "required": ["action"],
+            },
+        },
+    },
+    "mcp__michael_os__manage_tasks": {
+        "handler": manage_tasks,
+        "check_fn": None,
+        "emoji": "✅",
+        "description": "Create, assign, run, list, approve, reject, or delete tasks in Box 3 Tasks & Approvals.",
+        "schema": {
+            "name": "mcp__michael_os__manage_tasks",
+            "description": "Create, assign, run, list, approve, reject, or delete tasks in the Box 3 Tasks & Approvals AI automation pipeline. When action='create', assigns the responsible specialist agent ('Social Media', 'Customer Service', 'Appointment Coordinator', 'Sarah', or 'Leo'), queues the AI automation run, and sends the completed draft/actions to the Approvals tab ('review' status).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "assign", "delegate", "list", "run", "approve", "reject", "delete"],
+                        "description": "Task operation ('create' by default).",
+                    },
+                    "title": {"type": "string", "description": "Task title (e.g. 'Social media post — residential solar packages')."},
+                    "instruction": {"type": "string", "description": "Detailed task instructions or prompt for the assigned agent."},
+                    "agent": {"type": "string", "description": "Optional agent name or role ('Social Media', 'Customer Service', 'Appointment Coordinator', 'Sarah', 'Leo'). Auto-detected from task topic if omitted."},
+                    "due_date": {"type": "string", "description": "Optional due date (YYYY-MM-DD)."},
+                    "task_id": {"type": "string", "description": "Task UUID when running, approving, rejecting, or deleting."},
+                    "auto_run": {"type": "boolean", "description": "Whether to immediately queue and execute the AI automation run so the output appears in Approvals (default true)."},
+                },
+            },
+        },
+    },
+    "mcp__michael_os__create_task": {
+        "handler": create_task,
+        "check_fn": None,
+        "emoji": "✅",
+        "description": "Alias for manage_tasks(action='create'). Create a Box 3 task, assign the responsible agent, run AI automation, and send output to Approvals.",
+        "schema": {
+            "name": "mcp__michael_os__create_task",
+            "description": "Create a Box 3 workspace task, assign the responsible agent ('Social Media', 'Customer Service', 'Appointment Coordinator', 'Sarah', 'Leo'), trigger AI automation, and send output to Approvals.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Task title."},
+                    "instruction": {"type": "string", "description": "Detailed task instructions or prompt for the assigned agent."},
+                    "agent": {"type": "string", "description": "Optional agent name ('Social Media', 'Customer Service', 'Appointment Coordinator', 'Sarah', 'Leo')."},
+                    "due_date": {"type": "string", "description": "Optional due date (YYYY-MM-DD)."},
+                    "auto_run": {"type": "boolean", "description": "Immediately queue AI automation run for Approvals (default true)."},
+                },
+                "required": ["title"],
             },
         },
     },

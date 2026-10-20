@@ -445,6 +445,24 @@ def manage_crm(arguments, **kwargs):
     return json.dumps({"error": "CRM operation unavailable. Check Box 3 connection."})
 
 
+def manage_tasks(arguments, **kwargs):
+    args = dict(arguments or {})
+    args.setdefault("action", "create")
+    raw = _call_app_os_mcp("central_ai_manage_tasks", args, timeout=15)
+    if raw:
+        return raw
+    action = str(args.get("action") or "create").lower()
+    if action == "list":
+        return inspect_workspace({"section": "tasks", "search": str(args.get("title") or "")[:200], "limit": 20})
+    return json.dumps({"error": "Task management unavailable. Check Box 3 connection."})
+
+
+def create_task(arguments, **kwargs):
+    args = dict(arguments or {})
+    args["action"] = "create"
+    return manage_tasks(args, **kwargs)
+
+
 def update_assistant_profile(arguments, **kwargs):
     args = arguments or {}
     payload = {

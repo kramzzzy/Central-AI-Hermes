@@ -457,6 +457,59 @@ def manage_crm(
     return {'error': 'CRM operation unavailable. Check Box 3 connection.'}
 
 
+@server.tool(name='manage_tasks')
+def manage_tasks(
+    action: str = 'create',
+    title: str = '',
+    instruction: str = '',
+    agent: str = '',
+    due_date: str = '',
+    task_id: str = '',
+    auto_run: bool = True,
+) -> dict:
+    """Create, assign, run, list, approve, reject, or delete tasks in Box 3 Tasks & Approvals AI automation pipeline.
+    action: 'create' (or 'assign'/'delegate'), 'list', 'run', 'approve', 'reject', or 'delete'.
+    title: Task title (e.g. 'Social media post — residential solar packages').
+    instruction: Detailed task instructions or prompt for the assigned agent.
+    agent: Optional agent name ('Social Media', 'Customer Service', 'Appointment Coordinator', 'Sarah', 'Leo'). Auto-detected from topic if omitted.
+    due_date: Optional due date (YYYY-MM-DD).
+    task_id: Task UUID when running, approving, rejecting, or deleting.
+    auto_run: Immediately queue and execute the AI automation run so the output appears in Approvals (default True).
+    """
+    payload = {
+        k: v for k, v in {
+            'action': action,
+            'title': title,
+            'instruction': instruction,
+            'agent': agent,
+            'due_date': due_date,
+            'task_id': task_id,
+            'auto_run': auto_run,
+        }.items() if v not in ('', None)
+    }
+    payload.setdefault('action', 'create')
+    try:
+        raw = _plugin_client.manage_tasks(payload)
+        res = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(res, dict):
+            return res
+    except Exception:
+        pass
+    return {'error': 'Task operation unavailable. Check Box 3 connection.'}
+
+
+@server.tool(name='create_task')
+def create_task(
+    title: str = '',
+    instruction: str = '',
+    agent: str = '',
+    due_date: str = '',
+    auto_run: bool = True,
+) -> dict:
+    """Create a Box 3 workspace task, assign the responsible agent ('Social Media', 'Customer Service', 'Appointment Coordinator', 'Sarah', 'Leo'), trigger AI automation, and send output to Approvals."""
+    return manage_tasks(action='create', title=title, instruction=instruction, agent=agent, due_date=due_date, auto_run=auto_run)
+
+
 @server.tool(name='end_call')
 def end_call() -> dict:
     """End and hang up the active call session in App OS or WhatsApp."""
