@@ -22,10 +22,14 @@ async def run_route(route):
     home, _ = load_profile()
     if home.name != member['profile']:
         raise RuntimeError(f"Text profile binding mismatch: expected {member['profile']}, got {home.name}")
+    os.environ.setdefault('APP_OS_URL', os.environ.get('MICHAEL_OS_URL') or 'http://web:3000')
+    os.environ.setdefault('CENTRAL_AI_APP_OS_PLUGIN', '1')
     try:
         from hermes_os import configure_profile, install_process_token
         install_process_token()
         configure_profile(home, plugin=True, allow_enable=True)
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
     except Exception as e:
         logging.error('configure_profile failed in text engine: %s', e)
     quiet_whatsapp_display(home)

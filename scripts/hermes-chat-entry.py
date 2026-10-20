@@ -6,17 +6,22 @@ from hermes_profile import load_profile
 
 with contextlib.redirect_stdout(sys.stderr):
     home, _ = load_profile()
-    if os.environ.get('HERMES_ROUTINE_ONLY')!='true' and (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL')) and os.environ.get('MICHAEL_OS_TOOL_TOKEN_FILE'):
+    os.environ.setdefault('APP_OS_URL', os.environ.get('MICHAEL_OS_URL') or 'http://web:3000')
+    os.environ.setdefault('CENTRAL_AI_APP_OS_PLUGIN', '1')
+    if os.environ.get('HERMES_ROUTINE_ONLY') != 'true':
         from hermes_os import configure_profile, install_process_token
-        configure_profile(home)
-        install_process_token()
-        if os.environ.get('CENTRAL_AI_APP_OS_PLUGIN') == '1':
-            # Verify real native discovery before removing the legacy MCP tool.
-            from hermes_cli.plugins import discover_plugins
-            from tools.registry import registry
-            discover_plugins()
-            if registry.get_entry('mcp__michael_os__inspect_workspace') is None:
-                raise RuntimeError('App OS native plugin failed to register')
+        try:
+            configure_profile(home)
+            install_process_token()
+            if os.environ.get('CENTRAL_AI_APP_OS_PLUGIN') == '1':
+                # Verify real native discovery before removing the legacy MCP tool.
+                from hermes_cli.plugins import discover_plugins
+                from tools.registry import registry
+                discover_plugins()
+                if registry.get_entry('mcp__michael_os__inspect_workspace') is None:
+                    raise RuntimeError('App OS native plugin failed to register')
+        except Exception as exc:
+            sys.stderr.write(f"[hermes-chat-entry] configure_profile warning: {exc}\n")
     # This process serves our Fish call adapter. Fish handles speech and pacing;
     # Replace the generic delegation/final-only note with direct conversation.
     # Scope the guidance to voice turns in this process, never the profile.

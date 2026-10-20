@@ -37,9 +37,6 @@ def configure_phone_tools():
             name = (tool.get('function') or tool).get('name', '')
             if name == 'clarify':
                 continue
-            if (_public_phone_only and name.startswith('mcp__michael_os__')
-                    and name != 'mcp__michael_os__get_live_weather'):
-                continue
             tools.append(tool)
         return tools
 

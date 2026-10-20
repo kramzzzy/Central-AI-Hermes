@@ -167,7 +167,7 @@ class PhoneTaskChat(PhoneChat):
         self.conversation = conversation
         settings = {**chat.settings, 'HERMES_PROFILE': member['profile'],
             'HERMES_VOICE_MODEL': (os.environ.get('HERMES_VOICE_MODEL') or config.get('FISH_LLM_MODEL', '')) if conversation else ''}
-        if member['number'] != OWNER_MEMBER['number']:
+        if member.get('profile') != 'leo':
             settings.update(HERMES_TEAM_CONTEXT='true', HERMES_TEAM_AUTH_HOME='/opt/data/profiles/leo')
         super().__init__(settings, root)
 
@@ -204,9 +204,9 @@ class PhoneTaskChat(PhoneChat):
 
 
 def private_phone_member(member):
-    if member['number'] == re.sub(r'\D', '', BUSINESS) and business_chat:
+    if BUSINESS and member['number'] == re.sub(r'\D', '', BUSINESS) and business_chat:
         member = {**member, 'profile': business_chat.settings['HERMES_PROFILE']}
-    elif member['number'] != OWNER_MEMBER['number'] and member['profile'] == OWNER_MEMBER['profile']:
+    elif member.get('profile') != 'leo' and OWNER_MEMBER['number'] and member['number'] != OWNER_MEMBER['number'] and member['profile'] == OWNER_MEMBER['profile']:
         member = {**member, 'profile': provision_caller_phone('/opt/data', member['number'])}
     return member
 

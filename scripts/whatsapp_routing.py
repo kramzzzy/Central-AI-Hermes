@@ -9,11 +9,21 @@ DYNAMIC_FILES = [
 ]
 
 def routing():
+    import re
     for f in DYNAMIC_FILES:
         if f.is_file():
             try:
                 data = json.loads(f.read_text(encoding='utf-8'))
                 if data.get('contacts') and len(data['contacts']) > 0:
+                    if not data.get('owner'):
+                        owner_contact = next(
+                            (c for c in data['contacts'] if c.get('role') == 'owner' or c.get('route') == 'owner' or c.get('profile') == 'leo'),
+                            data['contacts'][0],
+                        )
+                        data['owner'] = re.sub(r'\D', '', str(owner_contact.get('number') or owner_contact.get('phone_number') or ''))
+                    data.setdefault('business', '')
+                    data.setdefault('group', '')
+                    data.setdefault('group_profile', 'team-whatsapp-social')
                     return data
             except Exception:
                 pass

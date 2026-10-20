@@ -292,19 +292,21 @@ def _configure_profile(home, plugin, allow_enable):
             'recall_budget': 'mid',
             'timeout': 120
         }, indent=2))
-    if plugin:
-        # The native plugin owns these stable tool identifiers. Keep Google
-        # and specialist MCP tools, with no duplicate workspace/knowledge tools.
-        native_plugin_tools = {
-            'inspect_workspace', 'search_knowledge', 'get_knowledge', 'add_knowledge',
-            'get_workspace_overview', 'update_assistant_profile', 'open_widget',
-            'close_widget', 'control_widget', 'navigate_browser',
-            'send_whatsapp_message', 'send_message', 'call_contact',
-            'call_whatsapp_contact', 'get_live_weather', 'end_call'
-        }
+    if not config.get('os_specialist'):
+        platforms = config.setdefault('platform_toolsets', {})
+        if isinstance(platforms, dict):
+            for plat_key, default_list in (('cli', ['hermes-cli']), ('whatsapp', [])):
+                t_list = platforms.setdefault(plat_key, list(default_list))
+                if isinstance(t_list, list):
+                    for ts in ('browser', 'web', 'memory', 'todo', 'skills', 'michael_os', 'laya'):
+                        if ts not in t_list:
+                            t_list.append(ts)
+    if plugin and not home.name.endswith('-whatsapp-text'):
+        # The native plugin owns this stable tool identifier. Keep Google,
+        # knowledge, and specialist MCP tools available across all runners.
         servers['michael_os']['tools']['include'] = [
             name for name in servers['michael_os']['tools']['include']
-            if name not in native_plugin_tools
+            if name != 'inspect_workspace'
         ]
 
     if config.get('os_specialist'):
