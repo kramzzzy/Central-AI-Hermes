@@ -93,18 +93,210 @@ def _generate_procedural_avatar(role_text):
     return base64.b64encode(svg.encode("utf-8")).decode("ascii")
 
 
-def _download_image_to_b64(url):
+def _download_image_to_b64(url, allow_redirects=False):
     """Fetches an image from an HTTP/HTTPS URL and converts it to base64."""
-    req = urllib.request.Request(url, headers={'User-Agent': 'Central-AI-Portrait/1.0'})
-    with urllib.request.build_opener(_NoRedirect()).open(req, timeout=30) as resp:
+    req = urllib.request.Request(url, headers={'User-Agent': 'Central-AI-VisualEngine/2.0'})
+    opener = urllib.request.build_opener() if allow_redirects else urllib.request.build_opener(_NoRedirect())
+    with opener.open(req, timeout=40) as resp:
         data = resp.read(16_000_001)
         if len(data) > 16_000_000:
             raise ValueError("Image exceeded 16MB")
+        if len(data) < 512:
+            raise ValueError("Downloaded image payload too small")
         return base64.b64encode(data).decode('ascii')
 
 
+def _extract_b64_from_data_uri(val):
+    if not isinstance(val, str):
+        return None
+    if val.startswith('data:image/') and ';base64,' in val:
+        return val.split(';base64,', 1)[1].strip()
+    if val.startswith('http://') or val.startswith('https://'):
+        return _download_image_to_b64(val, allow_redirects=True)
+    return None
+
+
+def _try_openrouter_image(prompt, openrouter_key):
+    """Tries OpenRouter multimodal chat image models first, then OpenRouter /api/v1/images models."""
+    if not openrouter_key or openrouter_key.startswith('sk-or-v1-standalone-default'):
+        return None
+
+    chat_image_models = list(dict.fromkeys(filter(None, [
+        os.environ.get('IMAGE_GENERATION_MODEL', '').strip() or None,
+        'google/gemini-2.5-flash-image-preview',
+        'google/gemini-2.5-flash-image',
+        'openai/gpt-5-image-mini',
+    ])))
+    for model in chat_image_models:
+        try:
+            payload = json.dumps({
+                'model': model,
+                'modalities': ['image', 'text'],
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': prompt,
+                    }
+                ],
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                'https://openrouter.ai/api/v1/chat/completions',
+                data=payload,
+                headers={
+                    'Authorization': f'Bearer {openrouter_key}',
+                    'Content-Type': 'application/json',
+                    'HTTP-Referer': 'https://central-ai.internal',
+                    'X-Title': 'Central AI Photorealistic Visual Studio',
+                },
+                method='POST',
+            )
+            with urllib.request.build_opener(_NoRedirect()).open(req, timeout=55) as resp:
+                resp_data = json.loads(resp.read(16_000_001))
+                choices = resp_data.get('choices') or []
+                if choices:
+                    msg = choices[0].get('message') or {}
+                    images = msg.get('images') or []
+                    for img in images:
+                        url_val = (img.get('image_url') or {}).get('url') or img.get('url') or img.get('b64_json')
+                        b64 = _extract_b64_from_data_uri(url_val)
+                        if b64:
+                            return {'b64_json': b64, 'model': model}
+                    content = msg.get('content')
+                    if isinstance(content, str) and 'data:image/' in content and ';base64,' in content:
+                        part = 'data:image/' + content.split('data:image/', 1)[1]
+                        part = part.split(')', 1)[0].split('"', 1)[0].split("'", 1)[0].strip()
+                        b64 = _extract_b64_from_data_uri(part)
+                        if b64:
+                            return {'b64_json': b64, 'model': model}
+        except Exception as e:
+            print(f"[hermes_artwork] OpenRouter chat-image {model} failed: {e}")
+            continue
+
+    images_api_models = list(dict.fromkeys(filter(None, [
+        os.environ.get('IMAGE_GENERATION_MODEL', 'black-forest-labs/flux.2-pro'),
+        'black-forest-labs/flux-1.1-pro',
+        'black-forest-labs/flux-1-schnell',
+        'bytedance-seed/seedream-4.5',
+        'recraft/recraft-v3',
+    ])))
+    for model in images_api_models:
+        try:
+            payload = json.dumps({
+                'model': model,
+                'prompt': prompt,
+                'n': 1,
+                'output_format': 'png',
+                'resolution': '1K'
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                'https://openrouter.ai/api/v1/images',
+                data=payload,
+                headers={
+                    'Authorization': f'Bearer {openrouter_key}',
+                    'Content-Type': 'application/json',
+                    'HTTP-Referer': 'https://central-ai.internal',
+                    'X-Title': 'Central AI Photorealistic Visual Studio'
+                },
+                method='POST'
+            )
+            with urllib.request.build_opener(_NoRedirect()).open(req, timeout=45) as resp:
+                resp_data = json.loads(resp.read(16_000_001))
+                img_data = (resp_data.get('data') or [{}])[0]
+                if img_data.get('b64_json'):
+                    return {'b64_json': img_data['b64_json'], 'model': model}
+                if img_data.get('url'):
+                    b64 = _download_image_to_b64(img_data['url'], allow_redirects=True)
+                    return {'b64_json': b64, 'model': model}
+        except Exception as e:
+            print(f"[hermes_artwork] OpenRouter /images {model} failed: {e}")
+            continue
+    return None
+
+
+def _try_openai_image(prompt, openai_key):
+    if not openai_key:
+        return None
+    for model in ['dall-e-3', 'dall-e-2']:
+        try:
+            payload = json.dumps({
+                'model': model,
+                'prompt': prompt[:3900],
+                'n': 1,
+                'size': '1024x1024',
+                'response_format': 'b64_json'
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                'https://api.openai.com/v1/images/generations',
+                data=payload,
+                headers={
+                    'Authorization': f'Bearer {openai_key}',
+                    'Content-Type': 'application/json'
+                },
+                method='POST'
+            )
+            with urllib.request.build_opener(_NoRedirect()).open(req, timeout=60) as resp:
+                resp_data = json.loads(resp.read(16_000_001))
+                img_data = (resp_data.get('data') or [{}])[0]
+                if img_data.get('b64_json'):
+                    return {'b64_json': img_data['b64_json'], 'model': model}
+                if img_data.get('url'):
+                    b64 = _download_image_to_b64(img_data['url'], allow_redirects=True)
+                    return {'b64_json': b64, 'model': model}
+        except Exception as e:
+            print(f"[hermes_artwork] OpenAI {model} failed: {e}")
+            continue
+    return None
+
+
+def generate_marketing_image(body):
+    """Generates a realistic commercial marketing / promotion photograph."""
+    import urllib.parse
+    raw_prompt = str(body.get('prompt') or body.get('type') or '').strip()
+    if len(raw_prompt) < 3:
+        raise ArtworkError('Supply a valid marketing visual prompt.', 400)
+    raw_prompt = raw_prompt[:1200]
+    seed_val = int(body.get('seed') or int(hashlib.md5(raw_prompt.encode('utf-8')).hexdigest()[:6], 16))
+
+    photorealistic_prompt = (
+        'Award-winning commercial lifestyle and architectural photography, shot on Canon EOS R5 with 35mm f/1.8 lens, '
+        'natural Australian golden hour sunlight, ultra-realistic textures, candid authentic real-world environment, '
+        'photorealistic, high dynamic range, crisp focus, magazine editorial quality. '
+        f'Scene description: {raw_prompt}. '
+        'Strictly no text, no words, no watermarks, no logos, no cartoons, no 3D illustration, no vector diagrams.'
+    )
+
+    openrouter_key = os.environ.get('OPENROUTER_API_KEY', '').strip()
+    openai_key = os.environ.get('OPENAI_API_KEY', '').strip()
+
+    res = _try_openrouter_image(photorealistic_prompt, openrouter_key)
+    if res:
+        return {'data': [res]}
+
+    res = _try_openai_image(photorealistic_prompt, openai_key)
+    if res:
+        return {'data': [res]}
+
+    # Photorealistic Flux fallback so marketing visuals are ALWAYS real photographs
+    try:
+        concise_scene = (
+            f"Photorealistic commercial photography, 35mm lens, natural Australian sunlight, "
+            f"{raw_prompt[:380]}, ultra realistic, no text, no watermark"
+        )
+        encoded = urllib.parse.quote(concise_scene)
+        flux_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&seed={seed_val}&model=flux&nologo=true"
+        b64 = _download_image_to_b64(flux_url, allow_redirects=True)
+        return {'data': [{'b64_json': b64, 'model': 'flux-photorealistic'}]}
+    except Exception as e:
+        print(f"[hermes_artwork] Flux photorealistic fallback failed: {e}")
+        raise ArtworkError(f'Marketing image generation failed: {e}', 502) from None
+
+
 def generate(body):
-    if not isinstance(body, dict) or not body.get('type'):
+    if not isinstance(body, dict):
+        raise ArtworkError('Supply a valid artwork request payload.', 400)
+    if body.get('mode') == 'marketing' or body.get('prompt'):
+        return generate_marketing_image(body)
+    if not body.get('type'):
         raise ArtworkError('Supply a valid character role or description.', 400)
     role = str(body['type']).strip()
     if not 2 <= len(role) <= 200:
@@ -123,76 +315,13 @@ def generate(body):
     openrouter_key = os.environ.get('OPENROUTER_API_KEY', '').strip()
     openai_key = os.environ.get('OPENAI_API_KEY', '').strip()
 
-    # 1. Try OpenRouter image generation if configured
-    if openrouter_key:
-        models_to_try = [
-            os.environ.get('IMAGE_GENERATION_MODEL', 'bytedance-seed/seedream-4.5'),
-            'black-forest-labs/flux-1-schnell',
-            'recraft/recraft-v3',
-        ]
-        for model in models_to_try:
-            try:
-                payload = json.dumps({
-                    'model': model,
-                    'prompt': prompt,
-                    'n': 1,
-                    'output_format': 'png',
-                    'resolution': '1K'
-                }).encode('utf-8')
-                req = urllib.request.Request(
-                    'https://openrouter.ai/api/v1/images',
-                    data=payload,
-                    headers={
-                        'Authorization': f'Bearer {openrouter_key}',
-                        'Content-Type': 'application/json',
-                        'HTTP-Referer': 'https://central-ai.internal',
-                        'X-Title': 'Central AI Agent Portrait Generator'
-                    },
-                    method='POST'
-                )
-                with urllib.request.build_opener(_NoRedirect()).open(req, timeout=45) as resp:
-                    resp_data = json.loads(resp.read(16_000_001))
-                    img_data = resp_data.get('data', [])[0]
-                    if 'b64_json' in img_data and img_data['b64_json']:
-                        return {'data': [{'b64_json': img_data['b64_json']}]}
-                    if 'url' in img_data and img_data['url']:
-                        b64 = _download_image_to_b64(img_data['url'])
-                        return {'data': [{'b64_json': b64}]}
-            except Exception as e:
-                print(f"[hermes_artwork] OpenRouter generation with {model} failed: {e}")
-                continue
+    res = _try_openrouter_image(prompt, openrouter_key)
+    if res:
+        return {'data': [{'b64_json': res['b64_json']}]}
 
-    # 2. Try OpenAI Images API if configured
-    if openai_key:
-        for model in ['dall-e-3', 'dall-e-2']:
-            try:
-                payload = json.dumps({
-                    'model': model,
-                    'prompt': prompt,
-                    'n': 1,
-                    'size': '1024x1024',
-                    'response_format': 'b64_json'
-                }).encode('utf-8')
-                req = urllib.request.Request(
-                    'https://api.openai.com/v1/images/generations',
-                    data=payload,
-                    headers={
-                        'Authorization': f'Bearer {openai_key}',
-                        'Content-Type': 'application/json'
-                    },
-                    method='POST'
-                )
-                with urllib.request.build_opener(_NoRedirect()).open(req, timeout=60) as resp:
-                    resp_data = json.loads(resp.read(16_000_001))
-                    img_data = resp_data.get('data', [])[0]
-                    if 'b64_json' in img_data and img_data['b64_json']:
-                        return {'data': [{'b64_json': img_data['b64_json']}]}
-                    if 'url' in img_data and img_data['url']:
-                        b64 = _download_image_to_b64(img_data['url'])
-                        return {'data': [{'b64_json': b64}]}
-            except Exception as e:
-                print(f"[hermes_artwork] OpenAI generation with {model} failed: {e}")
-                continue
+    res = _try_openai_image(prompt, openai_key)
+    if res:
+        return {'data': [{'b64_json': res['b64_json']}]}
 
     # 3. Graceful fallback: generate procedural SVG avatar
     try:

@@ -205,6 +205,15 @@ def bootstrap(mode, config):
                 configure_profile(home)
             except Exception as e:
                 print(f'Configure profile failed for {home.name}: {e}', file=sys.stderr)
+            try:
+                import shutil
+                for bundled_root in (Path('/opt/hermes/skills/personal-assistant'), Path(__file__).resolve().parent.parent / 'skills' / 'personal-assistant'):
+                    if bundled_root.is_dir():
+                        dest_pa = home / 'skills' / 'personal-assistant'
+                        dest_pa.mkdir(parents=True, exist_ok=True)
+                        shutil.copytree(bundled_root, dest_pa, dirs_exist_ok=True)
+            except Exception as e:
+                print(f'Bundled skill copy failed for {home.name}: {e}', file=sys.stderr)
             import subprocess
             if subprocess.run([sys.executable, '-c', 'from tools.skills_sync import sync_skills; sync_skills(quiet=True)'],
                               env=dict(os.environ, HERMES_HOME=str(home)), cwd='/opt/hermes').returncode:

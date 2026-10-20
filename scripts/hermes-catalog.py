@@ -15,6 +15,7 @@ with contextlib.redirect_stdout(sys.stderr):
  except Exception:
   ready = False
  skills = []
+ seen_ids = set()
  root = (home / 'skills').resolve()
  if root.exists():
   for path in sorted(root.rglob('SKILL.md')):
@@ -24,7 +25,21 @@ with contextlib.redirect_stdout(sys.stderr):
     found = re.search(r'^' + key + r':\s*(.+)$', content, re.M)
     return found.group(1).strip().strip('\"\'') if found else fallback
    identity = path.parent.relative_to(root).as_posix()
+   seen_ids.add(identity)
    skills.append({'id':identity, 'name':field('name',path.parent.name), 'description':field('description','Installed Hermes skill guidance.')[:600], 'content':content})
+ for extra_base in (Path('/opt/hermes/skills'), Path(__file__).resolve().parent.parent / 'skills'):
+  if extra_base.is_dir():
+   extra_root = extra_base.resolve()
+   for path in sorted(extra_root.rglob('SKILL.md')):
+    if path.stat().st_size > 24000: continue
+    identity = path.parent.relative_to(extra_root).as_posix()
+    if identity in seen_ids: continue
+    content = path.read_text(encoding='utf-8', errors='replace')
+    def field(key, fallback):
+     found = re.search(r'^' + key + r':\s*(.+)$', content, re.M)
+     return found.group(1).strip().strip('\"\'') if found else fallback
+    seen_ids.add(identity)
+    skills.append({'id':identity, 'name':field('name',path.parent.name), 'description':field('description','Installed Hermes skill guidance.')[:600], 'content':content})
  try:
   tools = available_tools()
   modes = ['draft-only','tools']
