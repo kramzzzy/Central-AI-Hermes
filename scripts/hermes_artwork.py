@@ -249,21 +249,29 @@ def _try_openai_image(prompt, openai_key):
 
 
 def generate_marketing_image(body):
-    """Generates a realistic commercial marketing / promotion photograph."""
+    """Generates an ultra-realistic MeiGen-style flagship commercial advertisement poster."""
     import urllib.parse
     raw_prompt = str(body.get('prompt') or body.get('type') or '').strip()
     if len(raw_prompt) < 3:
         raise ArtworkError('Supply a valid marketing visual prompt.', 400)
-    raw_prompt = raw_prompt[:1200]
+    raw_prompt = raw_prompt[:2600]
     seed_val = int(body.get('seed') or int(hashlib.md5(raw_prompt.encode('utf-8')).hexdigest()[:6], 16))
 
-    photorealistic_prompt = (
-        'Award-winning commercial lifestyle and architectural photography, shot on Canon EOS R5 with 35mm f/1.8 lens, '
-        'natural Australian golden hour sunlight, ultra-realistic textures, candid authentic real-world environment, '
-        'photorealistic, high dynamic range, crisp focus, magazine editorial quality. '
-        f'Scene description: {raw_prompt}. '
-        'Strictly no text, no words, no watermarks, no logos, no cartoons, no 3D illustration, no vector diagrams.'
-    )
+    if 'forced perspective' in raw_prompt.lower() or 'glassmorphism' in raw_prompt.lower() or 'futuristic ui' in raw_prompt.lower():
+        photorealistic_prompt = raw_prompt
+    else:
+        photorealistic_prompt = (
+            'Ultra-realistic premium flagship clean-energy commercial advertisement poster, '
+            'featuring a confident Australian subject in a dynamic low-angle cinematic hero pose '
+            'holding a sleek smart solar energy device toward the camera with strong forced perspective, '
+            'hardware dominating the right foreground. '
+            f'Scene & product details: {raw_prompt}. '
+            'Background: clean minimal architectural gradient with subtle blurred large-scale depth typography. '
+            'Lighting: soft studio and golden-hour rim lighting, smooth skin illumination, controlled metallic highlights, '
+            'glossy glass reflections, minimal shadows, premium flagship product photography style. '
+            'Style: high-end flagship commercial advertisement, futuristic, minimal, elegant. '
+            'Quality: 8K, ultra-detailed, sharp focus, HDR, cinematic commercial photography, realistic textures.'
+        )
 
     openrouter_key = os.environ.get('OPENROUTER_API_KEY', '').strip()
     openai_key = os.environ.get('OPENAI_API_KEY', '').strip()
@@ -276,16 +284,16 @@ def generate_marketing_image(body):
     if res:
         return {'data': [res]}
 
-    # Photorealistic Flux fallback so marketing visuals are ALWAYS real photographs
+    # Photorealistic Flux 4:5 vertical flagship commercial poster fallback
     try:
         concise_scene = (
-            f"Photorealistic commercial photography, 35mm lens, natural Australian sunlight, "
-            f"{raw_prompt[:380]}, ultra realistic, no text, no watermark"
+            "Ultra-realistic flagship commercial advertisement poster, dynamic low-angle hero pose with strong forced perspective, "
+            f"{raw_prompt[:380]}, soft studio rim lighting, glossy glass reflections, 8K commercial product photography, HDR"
         )
         encoded = urllib.parse.quote(concise_scene)
-        flux_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&seed={seed_val}&model=flux&nologo=true"
+        flux_url = f"https://image.pollinations.ai/prompt/{encoded}?width=960&height=1200&seed={seed_val}&model=flux&nologo=true"
         b64 = _download_image_to_b64(flux_url, allow_redirects=True)
-        return {'data': [{'b64_json': b64, 'model': 'flux-photorealistic'}]}
+        return {'data': [{'b64_json': b64, 'model': 'flux-meigen-commercial'}]}
     except Exception as e:
         print(f"[hermes_artwork] Flux photorealistic fallback failed: {e}")
         raise ArtworkError(f'Marketing image generation failed: {e}', 502) from None
