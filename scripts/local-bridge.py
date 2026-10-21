@@ -276,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(status,data)
    except ValueError:return self.reply(400,{'error':{'message':'Invalid memory request'}})
    except Exception:return self.reply(503,{'error':{'message':'Memory processor unavailable'}})
-  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/message','/os/sync-snapshot'}:
+  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/message','/os/sync-snapshot'}:
    is_admin=self.authorized()
    if is_admin:
     self._record_box3_origin()
@@ -291,13 +291,24 @@ class Handler(BaseHTTPRequestHandler):
      inspection_chat=chat
    else:
     inspection_chat=chat
-   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/message','/os/sync-snapshot'}:
+   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/message','/os/sync-snapshot'}:
     return self.reply(401,{'error':'Unauthorized'})
    try:
     length=int(self.headers.get('Content-Length','0'))
-    max_len=2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/company','/os/whatsapp/customer-sync'} else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192))
+    max_len=2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/company','/os/whatsapp/customer-sync'} else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/memory/retain','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192))
     if not 0<length<=max_len:return self.reply(413,{'error':'Tool request too large'})
     body=json.loads(self.rfile.read(length))
+    if self.path=='/os/memory/retain':
+     from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
+     entries=body.get('items') if isinstance(body.get('items'),list) else [body]
+     for ent in entries:
+      if isinstance(ent,dict) and ent.get('content'):
+       threading.Thread(
+        target=_retain_memory_item,
+        args=(str(ent.get('content')),str(ent.get('sender') or 'Customer'),str(ent.get('route') or 'customer'),str(ent.get('context') or 'whatsapp')),
+        daemon=True,
+       ).start()
+     return self.reply(200,{'ok':True,'retained':len(entries)})
     if self.path=='/os/whatsapp/customer-sync':
      items=_collect_customer_sync_items()
      return self.reply(200,{'ok':True,'items':items})
@@ -967,6 +978,7 @@ def _start_customer_whatsapp_poller():
    _calculate_solar_pre_assessment,
    _forward_customer_whatsapp_to_box3,
    _append_customer_sync_queue,
+   _retain_memory_item,
   )
   from whatsapp_system_context import clean_reply_punctuation
   history_by_sender={}
@@ -1111,6 +1123,10 @@ def _start_customer_whatsapp_poller():
        proc_map[msg_id]=entry_record
        _save_customer_processed(proc_map)
       _append_customer_sync_queue(entry_record)
+      cust_label=f"{sender_name or 'Customer'} (+{sender_id})" if sender_id else (sender_name or 'Customer')
+      threading.Thread(target=_retain_memory_item,args=(msg_text,cust_label,'customer-whatsapp','whatsapp'),daemon=True).start()
+      if reply_text:
+       threading.Thread(target=_retain_memory_item,args=(reply_text,'James (Customer Service)','customer-whatsapp','whatsapp'),daemon=True).start()
      finally:
       with customer_wa_lock:
        in_progress_customer_msgs.discard(msg_id)

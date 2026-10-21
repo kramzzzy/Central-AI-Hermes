@@ -11,27 +11,43 @@ import shutil
 
 binding=contextvars.ContextVar('leo_text_binding',default=None)
 
-def _retain_memory_item(content, sender, route):
+def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp'):
     try:
+        import os, urllib.request
         if not content or not isinstance(content, str) or not content.strip():
             return
+        api_url = (
+            os.environ.get('HINDSIGHT_URL')
+            or os.environ.get('HINDSIGHT_API_URL')
+            or 'http://hindsight:8888'
+        ).rstrip('/')
         key_file = Path('/run/secrets/hindsight_api_key')
         token = key_file.read_text().strip() if key_file.is_file() else ''
         if not token:
             cfg_file = Path('/opt/data/profiles/leo/hindsight/config.json')
             if cfg_file.is_file():
-                token = json.loads(cfg_file.read_text()).get('api_key', '')
+                try:
+                    cfg_data = json.loads(cfg_file.read_text(encoding='utf-8'))
+                    token = str(cfg_data.get('api_key') or '').strip()
+                    if cfg_data.get('api_url'):
+                        api_url = str(cfg_data['api_url']).rstrip('/')
+                except Exception:
+                    pass
         if not token:
-            return
-        import urllib.request
+            token = (
+                os.environ.get('HINDSIGHT_API_KEY')
+                or os.environ.get('HERMES_MEMORY_TOKEN')
+                or os.environ.get('OPENROUTER_API_KEY')
+                or 'hindsight-default-secret-key-32chars!!'
+            ).strip()
         payload = json.dumps({
             'items': [{
                 'content': f"WhatsApp {sender} ({route}): {content.strip()}",
-                'context': 'whatsapp'
+                'context': context or 'whatsapp'
             }]
         }).encode('utf-8')
         req = urllib.request.Request(
-            'http://hindsight:8888/v1/default/banks/michael-os-leo/memories',
+            f'{api_url}/v1/default/banks/michael-os-leo/memories',
             data=payload,
             headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
             method='POST'
