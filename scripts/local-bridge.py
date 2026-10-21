@@ -310,6 +310,10 @@ class Handler(BaseHTTPRequestHandler):
        ).start()
      return self.reply(200,{'ok':True,'retained':len(entries)})
     if self.path=='/os/whatsapp/customer-sync':
+     act=str(body.get('action') or 'pull').strip().lower()
+     if act in {'dismiss','ack'}:
+      res=_handle_customer_sync_action(act,body)
+      return self.reply(200,res)
      items=_collect_customer_sync_items()
      return self.reply(200,{'ok':True,'items':items})
     if self.path=='/os/sync-snapshot':
@@ -950,6 +954,61 @@ def _scan_customer_sqlite_inbox():
  except Exception:pass
  return results
 
+def _handle_customer_sync_action(action,body):
+ import sqlite3
+ msg_ids=[str(m).strip() for m in (body.get('message_ids') or []) if str(m).strip()]
+ raw_sender=str(body.get('sender_id') or body.get('origin') or '').strip()
+ sender_digits=re.sub(r'[^\d]','',raw_sender)
+ with customer_wa_lock:
+  proc_map=_load_customer_processed()
+  changed=False
+  if action=='ack':
+   for mid in msg_ids:
+    info=proc_map.get(mid)
+    if isinstance(info,dict):
+     if info.get('reply') or info.get('replied') or info.get('handled'):
+      info['synced_to_box3']=True
+      changed=True
+  elif action=='dismiss':
+   for mid in msg_ids:
+    info=proc_map.get(mid)
+    if isinstance(info,dict):
+     info['dismissed']=True
+     info['synced_to_box3']=True
+     info['replied']=True
+     info['handled']=True
+    else:
+     proc_map[mid]={'message_id':mid,'dismissed':True,'synced_to_box3':True,'replied':True,'handled':True}
+    changed=True
+   for mid,info in list(proc_map.items()):
+    if not isinstance(info,dict):continue
+    idigits=re.sub(r'[^\d]','',str(info.get('sender_id') or info.get('wire_chat') or ''))
+    wchat=str(info.get('wire_chat') or '').strip()
+    if (sender_digits and len(sender_digits)>=7 and idigits==sender_digits) or (raw_sender and wchat and wchat==raw_sender):
+     info['dismissed']=True
+     info['synced_to_box3']=True
+     info['replied']=True
+     info['handled']=True
+     changed=True
+   for pkt in _scan_customer_sqlite_inbox():
+    pmid=str(pkt.get('messageId') or '').strip()
+    psid=re.sub(r'[^\d]','',str(pkt.get('senderId') or pkt.get('wireChat') or ''))
+    pwchat=str(pkt.get('wireChat') or pkt.get('chatId') or '').strip()
+    if (pmid and pmid in msg_ids) or (sender_digits and len(sender_digits)>=7 and psid==sender_digits) or (raw_sender and pwchat==raw_sender):
+     if pmid:
+      proc_map[pmid]={'message_id':pmid,'sender_id':psid,'wire_chat':pwchat,'dismissed':True,'synced_to_box3':True,'replied':True,'handled':True}
+      changed=True
+     if pkt.get('_db_id') and Path('/data/customer/text.db').is_file():
+      try:
+       conn=sqlite3.connect('/data/customer/text.db',timeout=3.0)
+       conn.execute("DELETE FROM text_inbox WHERE id=?",(pkt['_db_id'],))
+       conn.commit()
+       conn.close()
+      except Exception:pass
+  if changed:
+   _save_customer_processed(proc_map)
+ return {'ok':True,'action':action}
+
 def _collect_customer_sync_items():
  import urllib.request
  _ensure_customer_caller_enabled()
@@ -958,6 +1017,9 @@ def _collect_customer_sync_items():
  seen_ids=set()
  with customer_wa_lock:
   proc_map=_load_customer_processed()
+  for mid,info in proc_map.items():
+   if isinstance(info,dict) and (info.get('dismissed') or info.get('synced_to_box3')):
+    seen_ids.add(mid)
   http_pkts,active_tok=_poll_customer_caller_http()
   for hp in http_pkts:
    if not isinstance(hp,dict):continue
@@ -1008,7 +1070,7 @@ def _collect_customer_sync_items():
       for it in raw_list:
        if isinstance(it,dict):
         mid=str(it.get('message_id') or '')
-        if mid and mid in in_progress_customer_msgs:
+        if mid and (mid in seen_ids or mid in in_progress_customer_msgs):
          continue
         if mid and mid in proc_map and proc_map[mid].get('reply') and not it.get('reply'):
          it['reply']=proc_map[mid]['reply']
@@ -1021,6 +1083,8 @@ def _collect_customer_sync_items():
    if not isinstance(info,dict) or mid in seen_ids or mid in in_progress_customer_msgs:
     continue
    seen_ids.add(mid)
+   if info.get('dismissed') or info.get('synced_to_box3'):
+    continue
    items.append({
     'sender_id':str(info.get('sender_id') or ''),
     'sender_name':str(info.get('sender_name') or ''),
@@ -1037,6 +1101,9 @@ def _collect_customer_sync_items():
    if not mid or not txt or not sid or mid in seen_ids or mid in in_progress_customer_msgs:
     continue
    seen_ids.add(mid)
+   pinfo=proc_map.get(mid)
+   if isinstance(pinfo,dict) and (pinfo.get('dismissed') or pinfo.get('synced_to_box3')):
+    continue
    created_ts=pkt.get('_db_created')
    created_iso=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(int(created_ts))) if created_ts else time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
    items.append({
@@ -1045,7 +1112,7 @@ def _collect_customer_sync_items():
     'wire_chat':str(pkt.get('wireChat') or pkt.get('chatId') or ''),
     'message_id':mid,
     'text':txt,
-    'reply':(proc_map.get(mid) or {}).get('reply'),
+    'reply':(pinfo or {}).get('reply'),
     'created_at':created_iso,
    })
  return items[-100:]
@@ -1103,7 +1170,7 @@ def _start_customer_whatsapp_poller():
      with customer_wa_lock:
       proc_map=_load_customer_processed()
       existing_proc=proc_map.get(msg_id)
-      if isinstance(existing_proc,dict) and (existing_proc.get('replied') or outbox_sent or (existing_proc.get('handled') and not auto_reply_enabled)):
+      if isinstance(existing_proc,dict) and (existing_proc.get('dismissed') or existing_proc.get('replied') or outbox_sent or (existing_proc.get('handled') and not auto_reply_enabled)):
        continue
       in_progress_customer_msgs.add(msg_id)
      try:
