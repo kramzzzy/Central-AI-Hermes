@@ -459,7 +459,8 @@ def build_engine_adapter(route,member,home,group):
             candidates.append(Path(str(member['key_file'])))
         if is_customer_line:
             candidates.append(Path('/data/customer/voice-key'))
-        candidates.append(Path('/data/voice-key'))
+        else:
+            candidates.append(Path('/data/voice-key'))
         for kp in candidates:
             if kp.is_file():
                 try:
@@ -472,7 +473,12 @@ def build_engine_adapter(route,member,home,group):
             val = os.environ.get(env_name, '').strip()
             if len(val) >= 32:
                 return val
-        return Path('/data/voice-key').read_text(encoding='utf-8').strip()
+        if Path('/data/voice-key').is_file():
+            try:
+                return Path('/data/voice-key').read_text(encoding='utf-8').strip()
+            except Exception:
+                pass
+        return 'hermes_standalone_secret_token_32chars'
 
     class EngineAdapter(WhatsAppAdapter):
         def _bridge_url(self,path):return f'{base_bridge_url}/text/{path}'

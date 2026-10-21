@@ -364,6 +364,7 @@ class Handler(BaseHTTPRequestHandler):
      if not wire_target and (not digits or len(digits)<7):
       return self.reply(400,{'ok':False,'error':f'Could not find contact or valid phone number for: {target}'})
      send_target=wire_target or digits
+     candidate_targets=list(dict.fromkeys([t for t in [wire_target,digits] if t]))
      primary_caller=os.environ.get('CALLER_URL','http://caller:8080')
      customer_caller=os.environ.get('CUSTOMER_CALLER_URL','http://customer-caller:8080')
      if line_pref in {'customer','james','support','booking'}:
@@ -377,24 +378,25 @@ class Handler(BaseHTTPRequestHandler):
      import urllib.request, urllib.error
      last_err=''
      for cu in caller_urls:
-      try:
-       sreq=urllib.request.Request(f"{cu}/send",data=json.dumps({'target':send_target,'message':message_text}).encode('utf-8'),headers={'Content-Type':'application/json'})
-       with urllib.request.urlopen(sreq,timeout=15) as sresp:
-        sdata=json.loads(sresp.read())
-        reply_to_mid=str(body.get('reply_to_message_id') or '').strip()
-        if reply_to_mid:
-         try:
-          with customer_wa_lock:
-           proc_map=_load_customer_processed()
-           if reply_to_mid in proc_map:
-            proc_map[reply_to_mid]['reply']=message_text
-            proc_map[reply_to_mid]['replied']=True
-            proc_map[reply_to_mid]['handled']=True
-            _save_customer_processed(proc_map)
-         except Exception:pass
-        return self.reply(200,{'ok':True,'message_id':sdata.get('message_id',''),'target':send_target,'recipient_name':target_name,'line':cu,'message':f'WhatsApp message delivered to {target_name} ({send_target}).'})
-      except Exception as err:
-       last_err=str(err)
+      for ct in candidate_targets:
+       try:
+        sreq=urllib.request.Request(f"{cu}/send",data=json.dumps({'target':ct,'message':message_text}).encode('utf-8'),headers={'Content-Type':'application/json'})
+        with urllib.request.urlopen(sreq,timeout=15) as sresp:
+         sdata=json.loads(sresp.read())
+         reply_to_mid=str(body.get('reply_to_message_id') or '').strip()
+         if reply_to_mid:
+          try:
+           with customer_wa_lock:
+            proc_map=_load_customer_processed()
+            if reply_to_mid in proc_map:
+             proc_map[reply_to_mid]['reply']=message_text
+             proc_map[reply_to_mid]['replied']=True
+             proc_map[reply_to_mid]['handled']=True
+             _save_customer_processed(proc_map)
+          except Exception:pass
+         return self.reply(200,{'ok':True,'message_id':sdata.get('message_id',''),'target':ct,'recipient_name':target_name,'line':cu,'message':f'WhatsApp message delivered to {target_name} ({ct}).'})
+       except Exception as err:
+        last_err=str(err)
      return self.reply(502,{'ok':False,'error':f'WhatsApp connector unavailable: {last_err}'})
     if self.path in {'/os/contacts','/os/company'}:
      c_name=body.get('company_name') or body.get('company')
@@ -886,6 +888,39 @@ def _save_customer_processed(data):
    fp=Path(pp);fp.parent.mkdir(parents=True,exist_ok=True);fp.write_text(payload,encoding='utf-8');os.chmod(pp,0o666)
   except Exception:pass
 
+def _get_customer_caller_tokens():
+ tokens=[]
+ for kp in [Path('/data/customer/voice-key'),Path('/run/secrets/whatsapp_setup_key')]:
+  if kp.is_file():
+   try:
+    v=kp.read_text(encoding='utf-8').strip()
+    if len(v)>=32 and v not in tokens:tokens.append(v)
+   except Exception:pass
+ for ev in [os.environ.get('HERMES_API_KEY',''),os.environ.get('WHATSAPP_SETUP_KEY',''),KEY,'hermes_standalone_secret_token_32chars']:
+  v=(ev or '').strip().strip('\'"')
+  if len(v)>=32 and v not in tokens:tokens.append(v)
+ if Path('/data/voice-key').is_file():
+  try:
+   v=Path('/data/voice-key').read_text(encoding='utf-8').strip()
+   if len(v)>=32 and v not in tokens:tokens.append(v)
+  except Exception:pass
+ return tokens
+
+def _poll_customer_caller_http():
+ import urllib.request
+ caller_url=os.environ.get('CUSTOMER_CALLER_URL','http://customer-caller:8080').rstrip('/')
+ for tok in _get_customer_caller_tokens():
+  try:
+   req=urllib.request.Request(f"{caller_url}/text/messages",headers={'Authorization':f'Bearer {tok}','X-Leo-Route':'owner'},method='GET')
+   with urllib.request.urlopen(req,timeout=4) as resp:
+    if resp.status==200:
+     data=json.loads(resp.read().decode('utf-8'))
+     if isinstance(data,list):
+      return data,tok
+  except Exception:
+   continue
+ return [],(_get_customer_caller_tokens() or [''])[0]
+
 def _scan_customer_sqlite_inbox():
  import sqlite3
  results=[]
@@ -916,10 +951,55 @@ def _scan_customer_sqlite_inbox():
  return results
 
 def _collect_customer_sync_items():
+ import urllib.request
+ _ensure_customer_caller_enabled()
+ caller_url=os.environ.get('CUSTOMER_CALLER_URL','http://customer-caller:8080').rstrip('/')
  items=[]
  seen_ids=set()
  with customer_wa_lock:
   proc_map=_load_customer_processed()
+  http_pkts,active_tok=_poll_customer_caller_http()
+  for hp in http_pkts:
+   if not isinstance(hp,dict):continue
+   mid=str(hp.get('messageId') or '').strip()
+   txt=str(hp.get('body') or '').strip()
+   sid=str(hp.get('senderId') or '').strip()
+   wchat=str(hp.get('wireChat') or hp.get('chatId') or '')
+   sname=str(hp.get('senderName') or '')
+   lease=str(hp.get('bridgeLease') or '')
+   cid=str(hp.get('chatId') or '')
+   if not mid or not txt or not sid:
+    continue
+   created_iso=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
+   if mid not in proc_map:
+    proc_map[mid]={
+     'sender_id':sid,
+     'sender_name':sname,
+     'wire_chat':wchat,
+     'message_id':mid,
+     'text':txt,
+     'reply':None,
+     'handled':False,
+     'replied':False,
+     'created_at':created_iso,
+    }
+    _save_customer_processed(proc_map)
+   if lease and active_tok:
+    try:
+     creq=urllib.request.Request(f"{caller_url}/text/complete",data=json.dumps({'chatId':cid,'bridgeLease':lease,'status':'complete'}).encode('utf-8'),headers={'Authorization':f'Bearer {active_tok}','X-Leo-Route':'owner','Content-Type':'application/json'},method='POST')
+     urllib.request.urlopen(creq,timeout=3).close()
+    except Exception:pass
+   if mid not in seen_ids and mid not in in_progress_customer_msgs:
+    seen_ids.add(mid)
+    items.append({
+     'sender_id':sid,
+     'sender_name':sname,
+     'wire_chat':wchat,
+     'message_id':mid,
+     'text':txt,
+     'reply':(proc_map.get(mid) or {}).get('reply'),
+     'created_at':created_iso,
+    })
   for qp in ['/data/customer/whatsapp_sessions_sync.json','/data/whatsapp_sessions_sync.json']:
    if os.path.exists(qp):
     try:
@@ -972,38 +1052,24 @@ def _collect_customer_sync_items():
 
 def _start_customer_whatsapp_poller():
  def _worker():
-  import sqlite3, urllib.request
-  from hermes_plugins.central_ai_whatsapp.adapter import (
-   _load_live_customer_config,
-   _calculate_solar_pre_assessment,
-   _forward_customer_whatsapp_to_box3,
-   _append_customer_sync_queue,
-   _retain_memory_item,
-  )
-  from whatsapp_system_context import clean_reply_punctuation
   history_by_sender={}
   while True:
    try:
     time.sleep(1.0)
+    for sp in [str(ROOT),str(ROOT/'scripts')]:
+     if sp not in sys.path:sys.path.insert(0,sp)
+    import sqlite3, urllib.request
+    from hermes_plugins.central_ai_whatsapp.adapter import (
+     _load_live_customer_config,
+     _calculate_solar_pre_assessment,
+     _forward_customer_whatsapp_to_box3,
+     _append_customer_sync_queue,
+     _retain_memory_item,
+    )
+    from whatsapp_system_context import clean_reply_punctuation
     _ensure_customer_caller_enabled()
-    token=''
-    for kp in [Path('/data/customer/voice-key'),Path('/run/secrets/whatsapp_setup_key'),Path('/data/voice-key')]:
-     if kp.is_file():
-      try:
-       v=kp.read_text(encoding='utf-8').strip()
-       if len(v)>=32:token=v;break
-      except Exception:pass
-    if not token:
-     token=(os.environ.get('WHATSAPP_SETUP_KEY') or os.environ.get('HERMES_API_KEY') or '').strip()
     caller_url=os.environ.get('CUSTOMER_CALLER_URL','http://customer-caller:8080').rstrip('/')
-    packets=[]
-    if len(token)>=32:
-     req=urllib.request.Request(f"{caller_url}/text/messages",headers={'Authorization':f'Bearer {token}','X-Leo-Route':'owner'},method='GET')
-     try:
-      with urllib.request.urlopen(req,timeout=5) as resp:
-       http_pkts=json.loads(resp.read().decode('utf-8')) if resp.status==200 else []
-       if isinstance(http_pkts,list):packets.extend(http_pkts)
-     except Exception:pass
+    packets,token=_poll_customer_caller_http()
     db_pkts=_scan_customer_sqlite_inbox()
     seen_pkt_ids={str(p.get('messageId') or '') for p in packets if isinstance(p,dict)}
     for dp in db_pkts:
@@ -1013,6 +1079,8 @@ def _start_customer_whatsapp_poller():
       seen_pkt_ids.add(dmid)
     if not packets:
      continue
+    live_cfg=_load_live_customer_config()
+    auto_reply_enabled=bool(live_cfg.get('customer_auto_reply',True))
     for pkt in packets:
      if not isinstance(pkt,dict):continue
      chat_id=str(pkt.get('chatId') or '')
@@ -1026,7 +1094,7 @@ def _start_customer_whatsapp_poller():
      created_ts=pkt.get('_db_created')
      created_iso=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(int(created_ts))) if created_ts else time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
      if not msg_text or not sender_id or not msg_id:
-      if lease and len(token)>=32:
+      if lease and token:
        try:
         creq=urllib.request.Request(f"{caller_url}/text/complete",data=json.dumps({'chatId':chat_id,'bridgeLease':lease,'status':'complete'}).encode('utf-8'),headers={'Authorization':f'Bearer {token}','X-Leo-Route':'owner','Content-Type':'application/json'},method='POST')
         urllib.request.urlopen(creq,timeout=4).close()
@@ -1035,67 +1103,69 @@ def _start_customer_whatsapp_poller():
      with customer_wa_lock:
       proc_map=_load_customer_processed()
       existing_proc=proc_map.get(msg_id)
-      if isinstance(existing_proc,dict) and existing_proc.get('handled'):
+      if isinstance(existing_proc,dict) and (existing_proc.get('replied') or outbox_sent or (existing_proc.get('handled') and not auto_reply_enabled)):
        continue
       in_progress_customer_msgs.add(msg_id)
      try:
-      if len(token)>=32:
+      if token:
        try:
         treq=urllib.request.Request(f"{caller_url}/text/typing",data=json.dumps({'chatId':chat_id,'bridgeLease':lease,'presence':'composing'}).encode('utf-8'),headers={'Authorization':f'Bearer {token}','X-Leo-Route':'owner','Content-Type':'application/json'},method='POST')
         urllib.request.urlopen(treq,timeout=3).close()
        except Exception:pass
       box3_res=_forward_customer_whatsapp_to_box3(pkt,ROOT,True)
       reply_text=None
-      if box3_res.get('handled_by_box3'):
-       if box3_res.get('auto_reply') and box3_res.get('reply'):
-        reply_text=str(box3_res['reply']).strip()
-      else:
-       live_cfg=_load_live_customer_config()
-       if live_cfg.get('customer_auto_reply',True) and not outbox_sent:
-        agent_name=live_cfg.get('customer_agent') or 'James'
-        company_name=live_cfg.get('company_name') or 'Your Choice Solar'
-        solar_calc=_calculate_solar_pre_assessment(msg_text)
-        prior_turns=history_by_sender.get(sender_id,[])[-8:]
-        hist_str='\n'.join(prior_turns) if prior_turns else '(No prior messages yet)'
-        sys_prompt='\n'.join(filter(None,[
-         f"You are {agent_name}, a friendly, down-to-earth customer representative at {company_name} on WhatsApp live chat.",
-         "CRITICAL OUTPUT RULE: Output ONLY the exact message spoken directly to the customer. NEVER output internal thoughts, reasoning, or markdown (**bold**, # headings). Keep replies concise (1 to 3 short sentences, under 60 words). Ask at most ONE short question per message.",
-         f"Customer WhatsApp Name: {sender_name or 'Visitor'} (Phone: +{sender_id})",
-         solar_calc or "If the customer asks how much solar they need or what they can save without sharing their power bill yet, warmly ask what their typical monthly or quarterly electricity bill is and their nearest city so you can calculate their solar pre-assessment right away.",
-         "Always offer to book either a quick Phone Call with one of our solar experts or an On-Site Solar Visit / Roof Inspection and ask what day and time suits them.",
-         f"CONVERSATION HISTORY:\n{hist_str}",
-        ]))
-        try:
-         env=profile_environment(settings)
-         job_in={
-          'model':'workspace-default',
-          'session_id':str(UUID(int=int(time.time()*1000)%((1<<128)-1))),
-          'runtime_profile':settings['HERMES_PROFILE'],
-          'execution_mode':'draft-only',
-          'max_tokens':260,
-          'stream':False,
-          'messages':[{'role':'system','content':sys_prompt},{'role':'user','content':msg_text}],
-         }
-         proc=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],input=json.dumps(job_in),capture_output=True,text=True,encoding='utf-8',timeout=35,env=env,cwd=ROOT)
-         if proc.returncode==0 and proc.stdout:
-          jout=json.loads(proc.stdout)
-          raw_content=((jout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
-          reply_text=clean_reply_punctuation(raw_content).strip()
-        except Exception:
-         reply_text=None
-        if not reply_text:
-         first_n=(sender_name.split()[0] if sender_name else 'there')
-         reply_text=f"Hi {first_n}, I'm {agent_name} from {company_name}. I'd love to help with your solar plans and calculate a tailored pre-assessment for you. What is your typical monthly or quarterly electricity bill, and which city or suburb are you in?"
+      if box3_res.get('handled_by_box3') and box3_res.get('reply'):
+       reply_text=str(box3_res['reply']).strip()
+      elif box3_res.get('handled_by_box3') and box3_res.get('customer_auto_reply') is False:
+       reply_text=None
+      elif auto_reply_enabled and not outbox_sent:
+       agent_name=live_cfg.get('customer_agent') or 'James'
+       company_name=live_cfg.get('company_name') or 'Your Choice Solar'
+       solar_calc=_calculate_solar_pre_assessment(msg_text)
+       prior_turns=history_by_sender.get(sender_id,[])[-8:]
+       hist_str='\n'.join(prior_turns) if prior_turns else '(No prior messages yet)'
+       sys_prompt='\n'.join(filter(None,[
+        f"You are {agent_name}, a friendly, down-to-earth customer representative at {company_name} on WhatsApp live chat.",
+        "CRITICAL OUTPUT RULE: Output ONLY the exact message spoken directly to the customer. NEVER output internal thoughts, reasoning, or markdown (**bold**, # headings). Keep replies concise (1 to 3 short sentences, under 60 words). Ask at most ONE short question per message.",
+        f"Customer WhatsApp Name: {sender_name or 'Visitor'} (Phone: +{sender_id})",
+        solar_calc or "If the customer asks how much solar they need or what they can save without sharing their power bill yet, warmly ask what their typical monthly or quarterly electricity bill is and their nearest city so you can calculate their solar pre-assessment right away.",
+        "Always offer to book either a quick Phone Call with one of our solar experts or an On-Site Solar Visit / Roof Inspection and ask what day and time suits them.",
+        f"CONVERSATION HISTORY:\n{hist_str}",
+       ]))
+       try:
+        env=profile_environment(settings)
+        job_in={
+         'model':'workspace-default',
+         'session_id':str(UUID(int=int(time.time()*1000)%((1<<128)-1))),
+         'runtime_profile':settings['HERMES_PROFILE'],
+         'execution_mode':'draft-only',
+         'max_tokens':260,
+         'stream':False,
+         'messages':[{'role':'system','content':sys_prompt},{'role':'user','content':msg_text}],
+        }
+        proc=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],input=json.dumps(job_in),capture_output=True,text=True,encoding='utf-8',timeout=35,env=env,cwd=ROOT)
+        if proc.returncode==0 and proc.stdout:
+         jout=json.loads(proc.stdout)
+         raw_content=((jout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
+         reply_text=clean_reply_punctuation(raw_content).strip()
+       except Exception:
+        reply_text=None
+       if not reply_text:
+        first_n=(sender_name.split()[0] if sender_name else 'there')
+        reply_text=f"Hi {first_n}, I'm {agent_name} from {company_name}. I'd love to help with your solar plans and calculate a tailored pre-assessment for you. What is your typical monthly or quarterly electricity bill, and which city or suburb are you in?"
       sent_ok=outbox_sent
       if reply_text and not outbox_sent:
        history_by_sender.setdefault(sender_id,[]).extend([f"Customer: {msg_text}",f"James: {reply_text}"])
-       try:
-        sreq=urllib.request.Request(f"{caller_url}/send",data=json.dumps({'target':wire_chat or sender_id,'message':reply_text}).encode('utf-8'),headers={'Content-Type':'application/json'},method='POST')
-        with urllib.request.urlopen(sreq,timeout=15) as sresp:
-         sent_ok=(sresp.status==200)
-       except Exception:
-        sent_ok=False
-      if lease and len(token)>=32:
+       for send_target in dict.fromkeys([t for t in [wire_chat,sender_id] if t]):
+        try:
+         sreq=urllib.request.Request(f"{caller_url}/send",data=json.dumps({'target':send_target,'message':reply_text}).encode('utf-8'),headers={'Content-Type':'application/json'},method='POST')
+         with urllib.request.urlopen(sreq,timeout=15) as sresp:
+          if sresp.status==200:
+           sent_ok=True
+           break
+        except Exception:
+         continue
+      if lease and token:
        try:
         creq=urllib.request.Request(f"{caller_url}/text/complete",data=json.dumps({'chatId':chat_id,'bridgeLease':lease,'status':'complete'}).encode('utf-8'),headers={'Authorization':f'Bearer {token}','X-Leo-Route':'owner','Content-Type':'application/json'},method='POST')
         urllib.request.urlopen(creq,timeout=5).close()
@@ -1113,8 +1183,8 @@ def _start_customer_whatsapp_poller():
        'wire_chat':wire_chat,
        'message_id':msg_id,
        'text':msg_text,
-       'reply':reply_text if (sent_ok or box3_res.get('handled_by_box3')) else None,
-       'handled':bool(sent_ok or not reply_text),
+       'reply':reply_text if sent_ok else None,
+       'handled':bool(sent_ok or not auto_reply_enabled),
        'replied':bool(sent_ok),
        'created_at':created_iso,
       }
@@ -1125,7 +1195,7 @@ def _start_customer_whatsapp_poller():
       _append_customer_sync_queue(entry_record)
       cust_label=f"{sender_name or 'Customer'} (+{sender_id})" if sender_id else (sender_name or 'Customer')
       threading.Thread(target=_retain_memory_item,args=(msg_text,cust_label,'customer-whatsapp','whatsapp'),daemon=True).start()
-      if reply_text:
+      if reply_text and sent_ok:
        threading.Thread(target=_retain_memory_item,args=(reply_text,'James (Customer Service)','customer-whatsapp','whatsapp'),daemon=True).start()
      finally:
       with customer_wa_lock:

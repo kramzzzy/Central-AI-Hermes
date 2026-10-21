@@ -417,6 +417,27 @@ func main() {
 		sendCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
 		resp, err := socket.SendMessage(sendCtx, targetJID, msg)
+		if err != nil && socket.Store != nil && socket.Store.LIDs != nil {
+			if targetJID.Server == "lid" {
+				if pn, e := socket.Store.LIDs.GetPNForLID(sendCtx, targetJID); e == nil && pn.User != "" {
+					if r2, e2 := socket.SendMessage(sendCtx, pn.ToNonAD(), msg); e2 == nil {
+						resp, err = r2, nil
+					}
+				}
+			} else {
+				if lid, e := socket.Store.LIDs.GetLIDForPN(sendCtx, targetJID); e == nil && lid.User != "" {
+					if r2, e2 := socket.SendMessage(sendCtx, lid.ToNonAD(), msg); e2 == nil {
+						resp, err = r2, nil
+					}
+				}
+				if err != nil {
+					asLID := types.NewJID(targetJID.User, types.HiddenUserServer)
+					if r3, e3 := socket.SendMessage(sendCtx, asLID, msg); e3 == nil {
+						resp, err = r3, nil
+					}
+				}
+			}
+		}
 		if err != nil {
 			log.Printf("outbound whatsapp message to %s failed: %v", cleanTarget, err)
 			w.Header().Set("Content-Type", "application/json")
