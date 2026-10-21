@@ -61,6 +61,7 @@ services:
       - hermes-profiles:/opt/data
       - hermes-state:/opt/os-adapter/.runtime
       - phone-state:/data
+      - customer-phone-state:/data/customer
     networks:
       hermes-net:
         aliases:
@@ -135,6 +136,7 @@ services:
       WHATSAPP_LINE_ID: "executive"
       WHATSAPP_DEVICE_NAME: "Central AI Executive Line"
       WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
     volumes:
       - phone-state:/data
     networks:
@@ -171,6 +173,7 @@ services:
       WHATSAPP_LINE_ID: "customer"
       WHATSAPP_DEVICE_NAME: "Central AI Customer Support"
       WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
     volumes:
       - customer-phone-state:/data
     networks:
@@ -242,6 +245,7 @@ services:
     volumes:
       - hermes-profiles:/opt/data
       - phone-state:/data
+      - customer-phone-state:/data/customer
     networks:
       hermes-net:
         aliases:

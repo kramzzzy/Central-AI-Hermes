@@ -93,7 +93,16 @@ func cleanDigits(s string) string {
 			b = append(b, s[i])
 		}
 	}
-	return string(b)
+	d := string(b)
+	if len(d) > 9 && len(d) >= 2 && d[0] == '0' && d[1] == '0' {
+		d = d[2:]
+	}
+	if len(d) == 10 && d[0] == '0' && d[1] == '4' {
+		d = "61" + d[1:]
+	} else if len(d) == 11 && d[0] == '0' && d[1] == '9' {
+		d = "63" + d[1:]
+	}
+	return d
 }
 
 func managedCallerAllowed(number string) bool {

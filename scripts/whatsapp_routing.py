@@ -67,6 +67,18 @@ def text_routes():
         'group': False,
         'allow_all': True
     }
+    routes['customer'] = {
+        'route': 'customer',
+        'bridge_route': 'owner',
+        'bridge_url': 'http://customer-caller:8080',
+        'key_file': '/data/customer/voice-key',
+        'profile': 'customer-whatsapp-text',
+        'text_profile': 'customer-whatsapp-text',
+        'number': '',
+        'group': False,
+        'allow_all': True,
+        'is_customer_line': True,
+    }
     for c in value.get('contacts', []):
         r = c.get('route') or ('owner' if c.get('role') == 'owner' else ('business' if c.get('role') == 'business' else 'contact-' + (c.get('number') or '')))
         tp = c.get('text_profile') or c.get('profile') or 'leo-whatsapp-text'

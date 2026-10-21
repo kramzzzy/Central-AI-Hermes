@@ -131,7 +131,7 @@ def get_standalone_config():
             'GOOGLE_CLIENT_SECRET': os.environ.get('GOOGLE_CLIENT_SECRET', '').strip(),
             'GOOGLE_REDIRECT_URI': os.environ.get('GOOGLE_REDIRECT_URI', '').strip(),
         },
-        'phone_profiles': ['leo', 'sarah', 'leo-whatsapp-text', 'team-whatsapp-social'],
+        'phone_profiles': ['leo', 'sarah', 'leo-whatsapp-text', 'customer-whatsapp-text', 'team-whatsapp-social'],
     }
 
 

@@ -189,18 +189,155 @@ def _fetch_live_box3_context(text='', home=None):
         return ''
 
 
+def _load_live_customer_config():
+    import os, re
+    cfg = {
+        'customer_auto_reply': True,
+        'customer_agent': 'James',
+        'company_name': 'Your Choice Solar',
+        'owner': '',
+        'known_numbers': set(),
+    }
+    for p in ('/data/contacts.json', '/data/customer/contacts.json', '/opt/os-adapter/.runtime/contacts.json'):
+        f = Path(p)
+        if f.is_file():
+            try:
+                data = json.loads(f.read_text(encoding='utf-8'))
+                if isinstance(data.get('customer_auto_reply'), bool):
+                    cfg['customer_auto_reply'] = data['customer_auto_reply']
+                raw_agent = str(data.get('customer_agent') or '').strip()
+                if raw_agent:
+                    cfg['customer_agent'] = raw_agent.capitalize()
+                raw_company = str(data.get('company_name') or data.get('company') or '').strip()
+                if raw_company:
+                    cfg['company_name'] = raw_company
+                owner_num = re.sub(r'\D', '', str(data.get('owner') or ''))
+                if owner_num:
+                    cfg['owner'] = owner_num
+                    cfg['known_numbers'].add(owner_num)
+                for c in data.get('contacts', []):
+                    cnum = re.sub(r'\D', '', str(c.get('number') or c.get('phone_number') or ''))
+                    if cnum:
+                        cfg['known_numbers'].add(cnum)
+                break
+            except Exception:
+                pass
+    return cfg
+
+
+def _calculate_solar_pre_assessment(text: str) -> str:
+    import math, re
+    if not text or not isinstance(text, str):
+        return ''
+    lower = text.lower()
+    kwh_match = re.search(r'\b(\d{1,3}(?:\.\d+)?)\s*kwh\s*(?:/|per\s+|a\s+)?(?:day|daily)\b', lower)
+    bill_match = re.search(
+        r'(?:\$\s*(\d{2,5}(?:,\d{3})*(?:\.\d{1,2})?)|(\d{2,5}(?:,\d{3})*)\s*(?:dollars|aud|bucks|a\s+month|per\s+month|monthly|a\s+quarter|per\s+quarter|quarterly|a\s+year|yearly))',
+        lower,
+    )
+    if not kwh_match and not bill_match:
+        return ''
+
+    tariff = 0.32
+    supply = 1.15
+    psh = 4.4
+    daily_kwh = 0.0
+    input_desc = ''
+
+    if kwh_match:
+        daily_kwh = float(kwh_match.group(1))
+        input_desc = f'~{round(daily_kwh)} kWh/day usage'
+    elif bill_match:
+        raw_val = (bill_match.group(1) or bill_match.group(2) or '').replace(',', '')
+        try:
+            amount = float(raw_val)
+        except ValueError:
+            return ''
+        if amount < 40 or amount > 25000:
+            return ''
+        if any(w in lower for w in ('quarter', 'quarterly', '3 month', 'three month', '90 day')):
+            days, period_label = 90.0, 'quarterly'
+        elif any(w in lower for w in ('year', 'yearly', 'annual', 'annually')):
+            days, period_label = 365.0, 'annual'
+        elif any(w in lower for w in ('week', 'weekly')):
+            days, period_label = 7.0, 'weekly'
+        else:
+            days, period_label = 30.0, 'monthly'
+        daily_cost = amount / days
+        usage_cost = max(daily_cost - supply, daily_cost * 0.78)
+        daily_kwh = max(5.0, usage_cost / tariff)
+        input_desc = f'${int(round(amount))} {period_label} power bill (~{round(daily_kwh)} kWh/day)'
+
+    if daily_kwh <= 0:
+        return ''
+
+    raw_kw = (daily_kwh * 1.2) / psh
+    standard_sizes = [6.6, 8.8, 10.5, 13.2, 15.8, 20.0, 26.4, 30.0, 39.6, 50.0]
+    rec_kw = next((s for s in standard_sizes if s >= raw_kw), 50.0)
+    panels = int(math.ceil((rec_kw * 1000.0) / 440.0))
+    if rec_kw <= 6.6:
+        battery = 'Optional 10 kWh battery (great for evening peak coverage)'
+    elif rec_kw <= 10.5:
+        battery = '10–13.5 kWh LFP solar battery recommended'
+    elif rec_kw <= 15.8:
+        battery = '13.5–20 kWh modular solar battery recommended'
+    else:
+        battery = '20–30 kWh high-capacity battery storage recommended'
+
+    annual_gen = rec_kw * psh * 365.0
+    self_consumed = min(daily_kwh * 365.0 * 0.70, annual_gen * 0.65)
+    exported = max(0.0, annual_gen - self_consumed)
+    annual_savings = int(round((self_consumed * tariff + exported * 0.06) / 50.0) * 50)
+    monthly_savings = int(round(annual_savings / 12.0 / 10.0) * 10)
+
+    return (
+        f"[SOLAR PRE-ASSESSMENT CALCULATOR RESULT FOR THIS CUSTOMER]\n"
+        f"• Customer Input: {input_desc}\n"
+        f"• Recommended Solar System: {rec_kw} kW (~{panels} × 440W high-efficiency panels)\n"
+        f"• Recommended Battery Option: {battery}\n"
+        f"• Estimated Bill Savings: ~${monthly_savings}/month (~${annual_savings}/year)\n"
+        f"• Estimated Payback Period: ~3.5 to 4.5 years\n"
+        f"INSTRUCTION: Share this pre-assessment clearly and concisely with the customer, then offer to have a solar expert call them (or book a phone call / on-site solar visit at a day and time that suits them)!"
+    )
+
+
 def build_engine_adapter(route,member,home,group):
-    import aiohttp
+    import aiohttp, os, re
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     from gateway.platforms.base import SendResult,get_image_cache_dir,get_audio_cache_dir,get_document_cache_dir
     from whatsapp_system_context import get_whatsapp_reply_style,attach_assistant_skills,clean_reply_punctuation
     owner=member.get('number','')
+    is_customer_line=bool(member.get('is_customer_line') or route=='customer')
+    base_bridge_url=str(member.get('bridge_url') or ('http://customer-caller:8080' if is_customer_line else 'http://caller:8080')).rstrip('/')
+    header_route=str(member.get('bridge_route') or ('owner' if is_customer_line else route))
+
+    def _resolve_bridge_token():
+        candidates = []
+        if member.get('key_file'):
+            candidates.append(Path(str(member['key_file'])))
+        if is_customer_line:
+            candidates.append(Path('/data/customer/voice-key'))
+        candidates.append(Path('/data/voice-key'))
+        for kp in candidates:
+            if kp.is_file():
+                try:
+                    val = kp.read_text(encoding='utf-8').strip()
+                    if len(val) >= 32:
+                        return val
+                except Exception:
+                    pass
+        for env_name in ('WHATSAPP_SETUP_KEY', 'HERMES_API_KEY'):
+            val = os.environ.get(env_name, '').strip()
+            if len(val) >= 32:
+                return val
+        return Path('/data/voice-key').read_text(encoding='utf-8').strip()
+
     class EngineAdapter(WhatsAppAdapter):
-        def _bridge_url(self,path):return 'http://caller:8080/text/'+path
+        def _bridge_url(self,path):return f'{base_bridge_url}/text/{path}'
 
         async def connect(self,*,is_reconnect=False):
             self._http_session=aiohttp.ClientSession(headers={
-                'Authorization':'Bearer '+Path('/data/voice-key').read_text().strip(),'X-Leo-Route':route})
+                'Authorization':'Bearer '+_resolve_bridge_token(),'X-Leo-Route':header_route})
             self._mark_connected()
             self._poll_task=asyncio.create_task(self._poll_messages())
             return True
@@ -219,36 +356,81 @@ def build_engine_adapter(route,member,home,group):
         async def _build_message_event(self,data):
             if bool(data.get('isGroup'))!=member['group']:return None
             if member['group'] and group and data.get('chatId')!=group:return None
+            sender_digits=re.sub(r'\D','',str(data.get('senderId') or ''))
+            live_cfg=_load_live_customer_config()
+            owner_digits=re.sub(r'\D','',str(owner or live_cfg.get('owner') or ''))
+            is_owner_sender=bool(owner_digits and sender_digits==owner_digits)
+            is_known_contact=bool(sender_digits and sender_digits in live_cfg['known_numbers'])
+
+            # Enforce the Public Solar Inquiry Auto-Reply ON/OFF toggle in real time
+            if is_customer_line:
+                if not live_cfg['customer_auto_reply']:
+                    return None
+            elif not member['group'] and not is_owner_sender and not is_known_contact:
+                if not live_cfg['customer_auto_reply']:
+                    return None
+
             if not member.get('allow_all', True) and not member['group'] and owner and data.get('senderId')!=owner:return None
             event=await super()._build_message_event(data)
             if event is not None:
-                live_box3 = await asyncio.to_thread(_fetch_live_box3_context, getattr(event, 'text', '') or '', home)
-                event.channel_prompt='\n\n'.join(filter(None,[event.channel_prompt,get_whatsapp_reply_style(),
-                    'You are fully connected to the Central AI knowledge base (8 Knowledge Base sources and 60 Available skills) and persistent Hindsight memory (\'michael-os-leo\'). '
-                    'All Box 3 tools (mcp__michael_os__inspect_workspace, mcp__michael_os__manage_crm, mcp__michael_os__manage_tasks, mcp__michael_os__create_task, mcp__michael_os__search_knowledge, mcp__michael_os__get_knowledge, mcp__michael_os__add_knowledge, mcp__michael_os__get_workspace_overview) are enabled on this WhatsApp connection. '
-                    'When the user asks to make a social media post, create a task, or assign work to an agent, ALWAYS invoke mcp__michael_os__manage_tasks(action=\'create\', title=..., instruction=..., agent=..., auto_run=True) so the task and AI automation run appear in Box 3 Tasks and Approvals (\'review\' status). '
-                    'NEVER claim that knowledge base or workspace tools are disabled or unavailable on WhatsApp. '
-                    'You represent Your Choice Solar: selling high-grade solar systems, panels, inverters, and batteries, and installing/maintaining solar setups across Australia. '
-                    'Always reply strictly and exclusively in natural Australian English (en-AU); never switch to Tagalog, Taglish, Filipino, or any other language. Answer questions about the knowledge base, CRM, business, services, and company capabilities directly, confidently, and warmly. '
-                    'Use this native profile’s configured memory tools for saved facts; do not invent memories. '
-                    'When the user instructs characteristics, voice emotions, speaking tone, or personal preferences, immediately record and save them into memory so they persist across WhatsApp and App OS. '
-                    'If an attachment is marked unavailable, ask for its contents or a smaller copy; never claim to have read it.',
-                    live_box3]))
-                if route in {'mark', 'owner'}:attach_assistant_skills(event,home)
+                msg_text = getattr(event, 'text', '') or ''
+                live_box3 = await asyncio.to_thread(_fetch_live_box3_context, msg_text, home)
+                solar_calc = _calculate_solar_pre_assessment(msg_text)
+                treat_as_customer_inquiry = is_customer_line or (not member['group'] and not is_owner_sender)
+
+                if treat_as_customer_inquiry:
+                    agent_name = live_cfg['customer_agent'] or 'James'
+                    company_name = live_cfg['company_name'] or 'Your Choice Solar'
+                    customer_phone_display = f'+{sender_digits}' if sender_digits else 'their WhatsApp number'
+                    event.channel_prompt = '\n\n'.join(filter(None, [
+                        event.channel_prompt,
+                        get_whatsapp_reply_style(),
+                        f"You are {agent_name}, the Solar Customer Service & Pre-Assessment Specialist at {company_name} on WhatsApp. "
+                        f"Always reply strictly and exclusively in natural, warm Australian English (en-AU); never switch to Tagalog, Taglish, or any other language. "
+                        f"Keep WhatsApp replies concise, friendly, and easy to read on a phone (2–4 short sentences or clean bullet points). "
+                        f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
+                        f"SOLAR INQUIRY & PRE-ASSESSMENT WORKFLOW:\n"
+                        f"1. Welcome anyone inquiring about solar panels, solar batteries, inverters, rebates, or installation across Australia.\n"
+                        f"2. If the customer shares their monthly or quarterly electricity bill (e.g. $400/month or $600/quarter) or daily kWh usage, give them the Solar Pre-Assessment below (recommended system size in kW, panel count, battery recommendation, and estimated savings). If they haven't shared their bill or usage yet, warmly ask for their approximate monthly or quarterly power bill so you can calculate a tailored solar pre-assessment.\n"
+                        f"3. Always offer to arrange either a **Phone Call with our Solar Expert** (we already have their WhatsApp/phone number {customer_phone_display}) OR an **On-Site Solar Visit / Roof Inspection** at a day and time that suits them.\n"
+                        f"4. When a customer provides their details or books a call/visit, use mcp__michael_os__manage_crm or mcp__michael_os__manage_tasks to log their lead and appointment in Box 3 CRM.",
+                        solar_calc,
+                        live_box3,
+                    ]))
+                else:
+                    event.channel_prompt='\n\n'.join(filter(None,[event.channel_prompt,get_whatsapp_reply_style(),
+                        'You are fully connected to the Central AI knowledge base (8 Knowledge Base sources and 60 Available skills) and persistent Hindsight memory (\'michael-os-leo\'). '
+                        'All Box 3 tools (mcp__michael_os__inspect_workspace, mcp__michael_os__manage_crm, mcp__michael_os__manage_tasks, mcp__michael_os__create_task, mcp__michael_os__search_knowledge, mcp__michael_os__get_knowledge, mcp__michael_os__add_knowledge, mcp__michael_os__get_workspace_overview) are enabled on this WhatsApp connection. '
+                        'When the user asks to make a social media post, create a task, or assign work to an agent, ALWAYS invoke mcp__michael_os__manage_tasks(action=\'create\', title=..., instruction=..., agent=..., auto_run=True) so the task and AI automation run appear in Box 3 Tasks and Approvals (\'review\' status). '
+                        'NEVER claim that knowledge base or workspace tools are disabled or unavailable on WhatsApp. '
+                        'You represent Your Choice Solar: selling high-grade solar systems, panels, inverters, and batteries, and installing/maintaining solar setups across Australia. '
+                        'Always reply strictly and exclusively in natural Australian English (en-AU); never switch to Tagalog, Taglish, Filipino, or any other language. Answer questions about the knowledge base, CRM, business, services, and company capabilities directly, confidently, and warmly. '
+                        'Use this native profile’s configured memory tools for saved facts; do not invent memories. '
+                        'When the user instructs characteristics, voice emotions, speaking tone, or personal preferences, immediately record and save them into memory so they persist across WhatsApp and App OS. '
+                        'If an attachment is marked unavailable, ask for its contents or a smaller copy; never claim to have read it.',
+                        solar_calc,
+                        live_box3]))
+                    if route in {'mark', 'owner'}:attach_assistant_skills(event,home)
             return event
 
         async def _collect_bridge_media(self,data,msg_type):
             urls=[]
-            allowed=(Path('/data/text/media')/route).resolve()
+            allowed_roots=[(Path('/data/text/media')/route).resolve(), (Path('/data/text/media')/header_route).resolve(), (Path('/data/customer/text/media')/header_route).resolve()]
             kind=data.get('mediaType')
             target=Path(get_image_cache_dir() if kind=='image' else get_audio_cache_dir() if kind=='audio' else get_document_cache_dir())
             target.mkdir(parents=True,exist_ok=True)
             for name in data.get('mediaUrls',[]):
-                path=Path(name)
-                if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(allowed):continue
-                copied=target/path.name
-                await asyncio.to_thread(shutil.copyfile,path,copied)
-                copied.chmod(0o600);urls.append(str(copied))
+                cand_paths=[Path(name)]
+                if is_customer_line and str(name).startswith('/data/'):
+                    cand_paths.insert(0, Path('/data/customer') / str(name)[len('/data/'):])
+                for path in cand_paths:
+                    if not path.is_file() or path.is_symlink():continue
+                    resolved=path.resolve()
+                    if not any(resolved.is_relative_to(ar) for ar in allowed_roots):continue
+                    copied=target/path.name
+                    await asyncio.to_thread(shutil.copyfile,path,copied)
+                    copied.chmod(0o600);urls.append(str(copied))
+                    break
             return urls,[data.get('mimetype') or 'application/octet-stream']*len(urls)
 
         async def _poll_messages(self):

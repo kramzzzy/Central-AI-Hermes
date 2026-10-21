@@ -309,9 +309,16 @@ class Handler(BaseHTTPRequestHandler):
     if self.path in {'/os/whatsapp/send','/os/message'}:
      target=str(body.get('target','')).strip() or str(body.get('recipient','')).strip() or str(body.get('phone_or_name','')).strip()
      message_text=str(body.get('message','')).strip()
+     line_pref=str(body.get('line','')).strip().lower()
      if not message_text:
       return self.reply(400,{'ok':False,'error':'Message text is required.'})
      digits=re.sub(r'[^\d]','',target)
+     if digits.startswith('00') and len(digits)>9:
+      digits=digits[2:]
+     if re.match(r'^04\d{8}$',digits):
+      digits='61'+digits[1:]
+     elif re.match(r'^09\d{9}$',digits):
+      digits='63'+digits[1:]
      target_name=body.get('name') or target
      if not digits or len(digits)<7:
       for cf in ['/data/contacts.json',str(ROOT/'.runtime'/'contacts.json'),str(ROOT/'data'/'contacts.json')]:
@@ -341,7 +348,16 @@ class Handler(BaseHTTPRequestHandler):
         if digits:break
      if not digits or len(digits)<7:
       return self.reply(400,{'ok':False,'error':f'Could not find contact or valid phone number for: {target}'})
-     caller_urls=[os.environ.get('CALLER_URL','http://caller:8080'),'http://127.0.0.1:8080','http://whatsapp-connector:8080','http://meowcaller:8080']
+     primary_caller=os.environ.get('CALLER_URL','http://caller:8080')
+     customer_caller=os.environ.get('CUSTOMER_CALLER_URL','http://customer-caller:8080')
+     if line_pref in {'customer','james','support','booking'}:
+      raw_caller_urls=[customer_caller,'http://customer-caller:8080',primary_caller,'http://caller:8080','http://127.0.0.1:8080','http://whatsapp-connector:8080','http://meowcaller:8080']
+     else:
+      raw_caller_urls=[primary_caller,'http://caller:8080',customer_caller,'http://customer-caller:8080','http://127.0.0.1:8080','http://whatsapp-connector:8080','http://meowcaller:8080']
+     caller_urls=[]
+     for cu in raw_caller_urls:
+      if cu and cu not in caller_urls:
+       caller_urls.append(cu)
      import urllib.request, urllib.error
      last_err=''
      for cu in caller_urls:
@@ -349,7 +365,7 @@ class Handler(BaseHTTPRequestHandler):
        sreq=urllib.request.Request(f"{cu}/send",data=json.dumps({'target':digits,'message':message_text}).encode('utf-8'),headers={'Content-Type':'application/json'})
        with urllib.request.urlopen(sreq,timeout=15) as sresp:
         sdata=json.loads(sresp.read())
-        return self.reply(200,{'ok':True,'message_id':sdata.get('message_id',''),'target':digits,'recipient_name':target_name,'message':f'WhatsApp message delivered to {target_name} ({digits}).'})
+        return self.reply(200,{'ok':True,'message_id':sdata.get('message_id',''),'target':digits,'recipient_name':target_name,'line':cu,'message':f'WhatsApp message delivered to {target_name} ({digits}).'})
       except Exception as err:
        last_err=str(err)
      return self.reply(502,{'ok':False,'error':f'WhatsApp connector unavailable: {last_err}'})
@@ -357,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
      c_name=body.get('company_name') or body.get('company')
      if c_name:
       c_payload=json.dumps({'company_name':str(c_name).strip()},indent=2)
-      for cf in ['/data/company.json',str(ROOT/'.runtime'/'company.json'),str(ROOT/'data'/'company.json')]:
+      for cf in ['/data/company.json','/data/customer/company.json',str(ROOT/'.runtime'/'company.json'),str(ROOT/'data'/'company.json')]:
        try:
         p=Path(cf);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(c_payload,encoding='utf-8')
         os.chmod(cf,0o666)
@@ -369,12 +385,12 @@ class Handler(BaseHTTPRequestHandler):
       except Exception:pass
      if self.path=='/os/company':
       return self.reply(200,{'ok':True,'company_name':c_name})
-     for cf in ['/data/contacts.json',str(ROOT/'.runtime'/'contacts.json'),str(ROOT/'data'/'contacts.json')]:
+     for cf in ['/data/contacts.json','/data/customer/contacts.json',str(ROOT/'.runtime'/'contacts.json'),str(ROOT/'data'/'contacts.json')]:
       try:
        p=Path(cf);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(body,indent=2),encoding='utf-8')
        os.chmod(cf,0o666)
       except Exception:pass
-     return self.reply(200,{'ok':True,'count':len(body.get('contacts',[]))})
+     return self.reply(200,{'ok':True,'count':len(body.get('contacts',[])),'customer_auto_reply':body.get('customer_auto_reply',True)})
     if self.path in {'/os/call/drop','/os/call/hangup'} or (self.path=='/os/call' and body.get('action') in {'drop','hangup','terminate'}):
      caller_urls=[os.environ.get('CALLER_URL','http://caller:8080'),'http://127.0.0.1:8080','http://whatsapp-connector:8080','http://meowcaller:8080']
      import urllib.request
