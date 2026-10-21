@@ -15,6 +15,9 @@ def load_config(path):
         settings.setdefault(key, '')
     if set(settings) != set(MANAGED_KEYS) or any(not isinstance(v, str) or (not v and k not in OPTIONAL_KEYS) or any(c in v for c in '\n\r\0') for k, v in settings.items()):
         raise RuntimeError('Incomplete private backend integrations')
+    for req_profile in ('leo', 'sarah', 'leo-whatsapp-text', 'customer-whatsapp-text', 'team-whatsapp-social'):
+        if req_profile not in value['phone_profiles']:
+            value['phone_profiles'].append(req_profile)
     return value
 
 

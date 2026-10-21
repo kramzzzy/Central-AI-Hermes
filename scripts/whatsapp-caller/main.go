@@ -484,6 +484,9 @@ func main() {
   answerIncomingWithVoice(ctx,call,func(callCtx context.Context)(*voiceAudio,error){return prepareVoiceFor(callCtx,member)})
  })
  if marker:=getEnv("ENGINE_ENABLED_FILE","LEO_ENGINE_ENABLED_FILE");marker!="" {
+  if device!=nil && device.ID!=nil {
+   _ = os.WriteFile(marker,[]byte("enabled\n"),0600)
+  }
   current.Lock();current.State="standby";current.Unlock()
   if err:=waitEngineEnabled(ctx,marker);err!=nil {log.Print("engine startup cancelled");return}
  }

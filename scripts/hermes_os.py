@@ -302,7 +302,7 @@ def _configure_profile(home, plugin, allow_enable):
     # Ensure active LLM model is always explicitly configured with no fallback to weak glm-5.2
     model_cfg = config.setdefault('model', {})
     if isinstance(model_cfg, dict):
-        if home.name in {'leo-whatsapp-text', 'team-whatsapp-michael-text', 'team-whatsapp-social'}:
+        if home.name in {'leo-whatsapp-text', 'customer-whatsapp-text', 'team-whatsapp-michael-text', 'team-whatsapp-social'}:
             model_name = os.environ.get('WHATSAPP_CHAT_MODEL', 'openai/gpt-4o-mini')
             if 'deepseek-v4.1-flash' in str(model_name):
                 model_name = 'openai/gpt-4o-mini'
@@ -315,6 +315,17 @@ def _configure_profile(home, plugin, allow_enable):
         model_cfg['provider'] = os.environ.get('HERMES_CHAT_PROVIDER', 'openrouter')
         model_cfg['base_url'] = 'https://openrouter.ai/api/v1'
         model_cfg['api_mode'] = 'chat_completions'
+        if home.name != 'leo':
+            try:
+                leo_cfg_path = home.parent / 'leo' / 'config.yaml'
+                if leo_cfg_path.is_file():
+                    leo_cfg = yaml.safe_load(leo_cfg_path.read_text(encoding='utf-8')) or {}
+                    leo_model = leo_cfg.get('model')
+                    if isinstance(leo_model, dict) and leo_model.get('default') and leo_model.get('provider'):
+                        if not os.environ.get('OPENROUTER_API_KEY') or leo_model.get('provider') != 'openrouter':
+                            model_cfg.update(leo_model)
+            except Exception:
+                pass
     mem = config.setdefault('memory', {})
     if isinstance(mem, dict):
         mem['provider'] = 'hindsight'

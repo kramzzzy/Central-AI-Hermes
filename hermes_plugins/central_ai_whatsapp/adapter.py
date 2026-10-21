@@ -267,7 +267,7 @@ def _append_customer_sync_queue(item: dict):
 
 
 def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool) -> dict:
-    import os, urllib.request
+    import os, socket, urllib.parse, urllib.request
     msg_text = str(data.get('body') or '').strip()
     sender_id = str(data.get('senderId') or '').strip()
     if not msg_text or not sender_id:
@@ -317,16 +317,27 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
 
     for base_url in deduped:
         try:
+            parsed = urllib.parse.urlparse(base_url)
+            host = parsed.hostname
+            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+            if not host:
+                continue
+            try:
+                with socket.create_connection((host, port), timeout=1.5):
+                    pass
+            except Exception:
+                continue
             req = urllib.request.Request(
                 f'{base_url}/api/connections/whatsapp/webhook',
                 data=payload,
                 headers={
                     'Content-Type': 'application/json',
                     'Authorization': f'Bearer {api_key}',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CentralAI-Hermes/1.0',
                 },
                 method='POST',
             )
-            with urllib.request.urlopen(req, timeout=45) as resp:
+            with urllib.request.urlopen(req, timeout=22) as resp:
                 if resp.status == 200:
                     res_data = json.loads(resp.read().decode('utf-8'))
                     if res_data.get('ok'):
@@ -572,19 +583,28 @@ def build_engine_adapter(route,member,home,group):
                                 finally:
                                     await self._send_typing(chat_id,lease,'paused')
                                 if box3_res.get('handled_by_box3'):
-                                    if box3_res.get('auto_reply') and box3_res.get('reply'):
-                                        await self.send(data['chatId'],str(box3_res['reply']))
-                                    await self._complete(data,'complete')
-                                    continue
-                                if not live_cfg['customer_auto_reply']:
+                                    reply_val = str(box3_res['reply']) if (box3_res.get('auto_reply') and box3_res.get('reply')) else None
                                     await asyncio.to_thread(_append_customer_sync_queue,{
                                         'sender_id':data.get('senderId'),
                                         'sender_name':data.get('senderName'),
                                         'wire_chat':data.get('wireChat') or data.get('chatId'),
                                         'message_id':data.get('messageId'),
                                         'text':data.get('body'),
-                                        'reply':None,
+                                        'reply':reply_val,
                                     })
+                                    if reply_val:
+                                        await self.send(data['chatId'],reply_val)
+                                    await self._complete(data,'complete')
+                                    continue
+                                await asyncio.to_thread(_append_customer_sync_queue,{
+                                    'sender_id':data.get('senderId'),
+                                    'sender_name':data.get('senderName'),
+                                    'wire_chat':data.get('wireChat') or data.get('chatId'),
+                                    'message_id':data.get('messageId'),
+                                    'text':data.get('body'),
+                                    'reply':None,
+                                })
+                                if not live_cfg['customer_auto_reply']:
                                     await self._complete(data,'complete')
                                     continue
 

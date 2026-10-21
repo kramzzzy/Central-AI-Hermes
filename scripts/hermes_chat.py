@@ -311,7 +311,7 @@ class NativeChat:
                                          'limit': 500, 'include_hidden': True})
         sessions = list(result.get('sessions', []))
         if self.settings.get('HERMES_PROFILE') == 'leo':
-            for wa_profile in ('leo-whatsapp-text', 'team-whatsapp-michael-text', 'team-whatsapp-michael-business'):
+            for wa_profile in ('leo-whatsapp-text', 'customer-whatsapp-text', 'team-whatsapp-michael-text', 'team-whatsapp-michael-business'):
                 try:
                     wa = self.rpc('session.list', {'profile': wa_profile,
                                                  'limit': 200, 'include_hidden': True})
@@ -398,6 +398,7 @@ class NativeChat:
         allowed_profiles = {
             self.settings['HERMES_PROFILE'],
             'leo-whatsapp-text',
+            'customer-whatsapp-text',
             'team-whatsapp-michael-text',
             'team-whatsapp-michael-business',
         }

@@ -58,7 +58,9 @@ def routing():
 def text_routes():
     value = routing()
     routes = {}
-    # Always guarantee the primary Leo WhatsApp text worker is active with unrestricted freedom
+    # Always guarantee the primary Leo WhatsApp text worker is active with unrestricted freedom.
+    # Customer line (customer-caller:8080) is polled exclusively by local-bridge.py in the hermes
+    # container so voice container never races or steals customer inquiry messages.
     routes['owner'] = {
         'route': 'owner',
         'profile': 'leo-whatsapp-text',
@@ -66,18 +68,6 @@ def text_routes():
         'number': value.get('owner', ''),
         'group': False,
         'allow_all': True
-    }
-    routes['customer'] = {
-        'route': 'customer',
-        'bridge_route': 'owner',
-        'bridge_url': 'http://customer-caller:8080',
-        'key_file': '/data/customer/voice-key',
-        'profile': 'customer-whatsapp-text',
-        'text_profile': 'customer-whatsapp-text',
-        'number': '',
-        'group': False,
-        'allow_all': True,
-        'is_customer_line': True,
     }
     for c in value.get('contacts', []):
         r = c.get('route') or ('owner' if c.get('role') == 'owner' else ('business' if c.get('role') == 'business' else 'contact-' + (c.get('number') or '')))

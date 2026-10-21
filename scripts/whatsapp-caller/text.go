@@ -95,7 +95,7 @@ func(b *textBridge)ready()bool{
  }
  b.guard.Lock();defer b.guard.Unlock()
  if b.activated==0{
-  now:=time.Now().Unix()-300
+  now:=time.Now().Unix()-86400
   if _,err:=b.db.Exec(`INSERT OR IGNORE INTO text_meta(key,value) VALUES('activated',?)`,now);err!=nil{return false}
   if err:=b.db.QueryRow(`SELECT value FROM text_meta WHERE key='activated'`).Scan(&b.activated);err!=nil{return false}
  }
@@ -136,7 +136,7 @@ func(b *textBridge)claim(route string)([]textPacket,error){
  tx,err:=b.db.Begin();if err!=nil{return nil,err};defer tx.Rollback()
  var rows *sql.Rows
  if route=="owner"{
-  rows,err=tx.Query(`SELECT id,payload FROM text_inbox WHERE (route='owner' OR route='mark' OR route LIKE 'contact-%') AND status='queued' ORDER BY created,id LIMIT 8`)
+  rows,err=tx.Query(`SELECT id,payload FROM text_inbox WHERE route!='team' AND status='queued' ORDER BY created,id LIMIT 8`)
  } else {
   rows,err=tx.Query(`SELECT id,payload FROM text_inbox WHERE route=? AND status='queued' ORDER BY created,id LIMIT 8`,route)
  }
@@ -166,7 +166,8 @@ func(b *textBridge)serve(w http.ResponseWriter,r *http.Request){
  reply:=func(code int,value any){w.WriteHeader(code);json.NewEncoder(w).Encode(value)}
  authHeader:=r.Header.Get("Authorization")
  setupKey:=getSetupKey("/run/secrets/whatsapp_setup_key")
- authorized:=hmac.Equal([]byte(authHeader),[]byte("Bearer "+b.key)) || (len(setupKey)>=32 && hmac.Equal([]byte(authHeader),[]byte("Bearer "+setupKey)))
+ envKey:=strings.TrimSpace(getEnv("HERMES_API_KEY","WHATSAPP_SETUP_KEY","VOICE_KEY"))
+ authorized:=hmac.Equal([]byte(authHeader),[]byte("Bearer "+b.key)) || (len(setupKey)>=32 && hmac.Equal([]byte(authHeader),[]byte("Bearer "+setupKey))) || (len(envKey)>=32 && hmac.Equal([]byte(authHeader),[]byte("Bearer "+envKey)))
  if !authorized{reply(401,map[string]string{"error":"Unauthorized"});return}
  route:=r.Header.Get("X-Leo-Route");if !configuredRouteAllowed(route){reply(403,map[string]string{"error":"Route rejected"});return}
  if !b.ready(){reply(503,map[string]string{"error":"Text engine is in standby"});return}
@@ -277,6 +278,10 @@ func(b *textBridge)receive(ctx context.Context,socket *wa.Client,event *events.M
  if !packet.IsGroup{packet.ChatID=sender.User+"@s.whatsapp.net"}
  route:=b.route(packet);if route==""{return}
  m:=event.Message
+ if eph:=m.GetEphemeralMessage();eph!=nil && eph.GetMessage()!=nil{m=eph.GetMessage()}
+ if vo:=m.GetViewOnceMessage();vo!=nil && vo.GetMessage()!=nil{m=vo.GetMessage()}
+ if vo2:=m.GetViewOnceMessageV2();vo2!=nil && vo2.GetMessage()!=nil{m=vo2.GetMessage()}
+ if dwc:=m.GetDocumentWithCaptionMessage();dwc!=nil && dwc.GetMessage()!=nil{m=dwc.GetMessage()}
  packet.Body=m.GetConversation()
  var info *waE2E.ContextInfo
  if text:=m.GetExtendedTextMessage();text!=nil{packet.Body=text.GetText();info=text.GetContextInfo()}
