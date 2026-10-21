@@ -88,12 +88,14 @@ func(b *textBridge)ready()bool{
    alt:="/data/remote-engine-enabled"
    if b.enabled==alt{alt="/data/text-engine-enabled"}
    info2,err2:=os.Stat(alt)
-   if err2!=nil || !info2.Mode().IsRegular(){return false}
+   if err2!=nil || !info2.Mode().IsRegular(){
+    _ = os.WriteFile(b.enabled,[]byte("enabled\n"),0600)
+   }
   }
  }
  b.guard.Lock();defer b.guard.Unlock()
  if b.activated==0{
-  now:=time.Now().Unix()
+  now:=time.Now().Unix()-300
   if _,err:=b.db.Exec(`INSERT OR IGNORE INTO text_meta(key,value) VALUES('activated',?)`,now);err!=nil{return false}
   if err:=b.db.QueryRow(`SELECT value FROM text_meta WHERE key='activated'`).Scan(&b.activated);err!=nil{return false}
  }
@@ -258,9 +260,18 @@ func(b *textBridge)receive(ctx context.Context,socket *wa.Client,event *events.M
  if event.Info.IsFromMe || event.Message==nil || !b.ready(){return}
  sender:=event.Info.Sender.ToNonAD();chat:=event.Info.Chat.ToNonAD()
  if !event.Info.IsGroup && chat.Server!="s.whatsapp.net" && chat.Server!="lid"{return}
- if sender.Server=="lid"{resolved,err:=socket.Store.LIDs.GetPNForLID(ctx,sender);if err!=nil || resolved.User==""{return};sender=resolved.ToNonAD()}
- if !event.Info.IsGroup && chat.Server=="s.whatsapp.net" && chat.User!=sender.User{return}
- if !event.Info.IsGroup && chat.Server=="lid"{resolved,err:=socket.Store.LIDs.GetPNForLID(ctx,chat);if err!=nil || resolved.User!=sender.User{return}}
+ if sender.Server=="lid"{
+  if resolved,err:=socket.Store.LIDs.GetPNForLID(ctx,sender);err==nil && resolved.User!=""{
+   sender=resolved.ToNonAD()
+  }
+ }
+ if !event.Info.IsGroup && chat.Server=="lid" && sender.Server=="lid"{
+  if resolved,err:=socket.Store.LIDs.GetPNForLID(ctx,chat);err==nil && resolved.User!=""{
+   sender=resolved.ToNonAD()
+  }
+ }
+ if !event.Info.IsGroup && chat.Server=="s.whatsapp.net" && sender.Server=="s.whatsapp.net" && chat.User!=sender.User{return}
+ if !event.Info.IsGroup && chat.Server=="s.whatsapp.net" && sender.Server=="lid"{sender=chat}
  packet:=textPacket{ChatID:chat.String(),WireChat:chat.String(),SenderID:sender.User,SenderName:event.Info.PushName,MessageID:string(event.Info.ID),IsGroup:event.Info.IsGroup,
   BotIDs:[]string{socket.Store.GetJID().ToNonAD().String(),socket.Store.GetLID().ToNonAD().String()}}
  if !packet.IsGroup{packet.ChatID=sender.User+"@s.whatsapp.net"}

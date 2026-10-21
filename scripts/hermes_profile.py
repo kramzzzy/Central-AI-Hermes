@@ -59,9 +59,9 @@ def load_profile():
         # Route only its credential lookup to the existing store: no copied refresh
         # token, profile discovery override, private context, or global config change.
         source = Path(shared_auth).resolve(strict=True)
-        owner_text = (name == 'leo-whatsapp-text' and bool(os.environ.get('MICHAEL_TEXT_AUTH_HOME'))
-                      and source.name == 'leo' and not os.environ.get('MICHAEL_TEXT_AUTH_HOME') is False and not os.environ.get('MICHAEL_TEAM_AUTH_HOME'))
-        if (not name.startswith('team-') and not owner_text) or source.parent != home.parent or source == home:
+        owner_text = (name in {'leo-whatsapp-text', 'customer-whatsapp-text'} and bool(os.environ.get('MICHAEL_TEXT_AUTH_HOME') or os.environ.get('MICHAEL_TEAM_AUTH_HOME'))
+                      and source.name == 'leo')
+        if (not name.startswith(('team-', 'customer-', 'contact-')) and not owner_text) or source.parent != home.parent or source == home:
             raise RuntimeError('Invalid backend credential binding')
         from hermes_cli import auth
         if not hasattr(auth, '_load_provider_state_with_source') or not hasattr(auth, '_provider_state_transaction'):

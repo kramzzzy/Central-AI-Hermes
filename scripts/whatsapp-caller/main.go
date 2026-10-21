@@ -396,14 +396,23 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Target and message are required."})
 			return
 		}
+		var targetJID types.JID
 		cleanTarget := cleanDigits(req.Target)
-		if len(cleanTarget) < 7 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Valid phone number with at least 7 digits is required."})
-			return
+		if strings.Contains(req.Target, "@") {
+			if parsed, err := types.ParseJID(strings.TrimSpace(req.Target)); err == nil && (parsed.Server == "lid" || parsed.Server == "s.whatsapp.net") && parsed.User != "" {
+				targetJID = parsed.ToNonAD()
+				cleanTarget = parsed.User
+			}
 		}
-		targetJID := types.NewJID(cleanTarget, types.DefaultUserServer)
+		if targetJID.User == "" {
+			if len(cleanTarget) < 7 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Valid phone number with at least 7 digits is required."})
+				return
+			}
+			targetJID = types.NewJID(cleanTarget, types.DefaultUserServer)
+		}
 		msg := &waE2E.Message{Conversation: proto.String(req.Message)}
 		sendCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()

@@ -225,6 +225,121 @@ def _load_live_customer_config():
     return cfg
 
 
+def _append_customer_sync_queue(item: dict):
+    import os, time
+    entry = {
+        'sender_id': str(item.get('sender_id') or ''),
+        'sender_name': str(item.get('sender_name') or ''),
+        'wire_chat': str(item.get('wire_chat') or ''),
+        'message_id': str(item.get('message_id') or ''),
+        'text': str(item.get('text') or ''),
+        'reply': item.get('reply'),
+        'created_at': str(item.get('created_at') or time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())),
+    }
+    if not entry['sender_id'] or not entry['text']:
+        return
+    for qp in ('/data/customer/whatsapp_sessions_sync.json', '/data/whatsapp_sessions_sync.json'):
+        try:
+            f = Path(qp)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            existing = []
+            if f.is_file():
+                try:
+                    loaded = json.loads(f.read_text(encoding='utf-8'))
+                    if isinstance(loaded, list):
+                        existing = loaded
+                except Exception:
+                    existing = []
+            updated = False
+            for idx, row in enumerate(existing):
+                if isinstance(row, dict) and row.get('message_id') and row.get('message_id') == entry['message_id']:
+                    if entry.get('reply') and not row.get('reply'):
+                        existing[idx]['reply'] = entry['reply']
+                    updated = True
+                    break
+            if not updated:
+                existing.append(entry)
+            existing = existing[-200:]
+            f.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8')
+            os.chmod(qp, 0o666)
+        except Exception:
+            pass
+
+
+def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool) -> dict:
+    import os, urllib.request
+    msg_text = str(data.get('body') or '').strip()
+    sender_id = str(data.get('senderId') or '').strip()
+    if not msg_text or not sender_id:
+        return {'handled_by_box3': False}
+
+    urls = []
+    for p in ('/data/app_os_url.json', '/opt/data/app_os_url.json', '/opt/os-adapter/.runtime/app_os_url.json'):
+        f = Path(p)
+        if f.is_file():
+            try:
+                j = json.loads(f.read_text(encoding='utf-8'))
+                if isinstance(j.get('urls'), list):
+                    urls.extend(str(u).rstrip('/') for u in j['urls'] if u)
+                elif j.get('url'):
+                    urls.append(str(j['url']).rstrip('/'))
+            except Exception:
+                pass
+    for env_k in ('APP_OS_URL', 'MICHAEL_OS_URL'):
+        v = os.environ.get(env_k, '').strip().rstrip('/')
+        if v:
+            urls.append(v)
+    urls.extend(['http://web:3000', 'http://127.0.0.1:3000'])
+    deduped = list(dict.fromkeys(u for u in urls if u.startswith('http')))
+
+    api_key = os.environ.get('HERMES_API_KEY', '').strip()
+    if not api_key and home:
+        try:
+            env_file = Path(home) / '.env'
+            if env_file.is_file():
+                for line in env_file.read_text(encoding='utf-8').splitlines():
+                    if line.startswith('HERMES_API_KEY='):
+                        api_key = line.split('=', 1)[1].strip().strip('"\'')
+                        break
+        except Exception:
+            pass
+    if not api_key:
+        api_key = 'hermes_standalone_secret_token_32chars'
+
+    payload = json.dumps({
+        'sender_id': sender_id,
+        'sender_name': str(data.get('senderName') or ''),
+        'wire_chat': str(data.get('wireChat') or data.get('chatId') or ''),
+        'message_id': str(data.get('messageId') or ''),
+        'text': msg_text,
+        'line': 'customer' if is_customer_line else 'executive',
+    }).encode('utf-8')
+
+    for base_url in deduped:
+        try:
+            req = urllib.request.Request(
+                f'{base_url}/api/connections/whatsapp/webhook',
+                data=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {api_key}',
+                },
+                method='POST',
+            )
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                if resp.status == 200:
+                    res_data = json.loads(resp.read().decode('utf-8'))
+                    if res_data.get('ok'):
+                        return {
+                            'handled_by_box3': True,
+                            'auto_reply': bool(res_data.get('auto_reply')),
+                            'reply': res_data.get('reply'),
+                        }
+        except Exception:
+            continue
+    return {'handled_by_box3': False}
+
+
 def _calculate_solar_pre_assessment(text: str) -> str:
     import math, re
     if not text or not isinstance(text, str):
@@ -441,6 +556,38 @@ def build_engine_adapter(route,member,home,group):
                     for data in packets:
                         token=binding.set(data)
                         try:
+                            sender_digits=re.sub(r'\D','',str(data.get('senderId') or ''))
+                            live_cfg=_load_live_customer_config()
+                            owner_digits=re.sub(r'\D','',str(owner or live_cfg.get('owner') or ''))
+                            is_owner_sender=bool(owner_digits and sender_digits==owner_digits)
+                            is_known_contact=bool(sender_digits and sender_digits in live_cfg['known_numbers'])
+                            treat_as_customer=is_customer_line or (not bool(data.get('isGroup')) and not is_owner_sender and not is_known_contact)
+
+                            if treat_as_customer and str(data.get('body') or '').strip():
+                                chat_id=data.get('chatId')
+                                lease=data.get('bridgeLease')
+                                await self._send_typing(chat_id,lease,'composing')
+                                try:
+                                    box3_res=await asyncio.to_thread(_forward_customer_whatsapp_to_box3,data,home,is_customer_line)
+                                finally:
+                                    await self._send_typing(chat_id,lease,'paused')
+                                if box3_res.get('handled_by_box3'):
+                                    if box3_res.get('auto_reply') and box3_res.get('reply'):
+                                        await self.send(data['chatId'],str(box3_res['reply']))
+                                    await self._complete(data,'complete')
+                                    continue
+                                if not live_cfg['customer_auto_reply']:
+                                    await asyncio.to_thread(_append_customer_sync_queue,{
+                                        'sender_id':data.get('senderId'),
+                                        'sender_name':data.get('senderName'),
+                                        'wire_chat':data.get('wireChat') or data.get('chatId'),
+                                        'message_id':data.get('messageId'),
+                                        'text':data.get('body'),
+                                        'reply':None,
+                                    })
+                                    await self._complete(data,'complete')
+                                    continue
+
                             event=await self._build_message_event(data)
                             if event:
                                 if getattr(event, 'text', None):
@@ -518,6 +665,16 @@ def build_engine_adapter(route,member,home,group):
             cleaned = clean_reply_punctuation(content)
             if not cleaned or not cleaned.strip():
                 return SendResult(success=True)
+            raw_bound = binding.get()
+            if isinstance(raw_bound, dict) and (is_customer_line or not bool(raw_bound.get('isGroup'))):
+                asyncio.create_task(asyncio.to_thread(_append_customer_sync_queue, {
+                    'sender_id': raw_bound.get('senderId'),
+                    'sender_name': raw_bound.get('senderName'),
+                    'wire_chat': raw_bound.get('wireChat') or raw_bound.get('chatId'),
+                    'message_id': raw_bound.get('messageId'),
+                    'text': raw_bound.get('body'),
+                    'reply': cleaned,
+                }))
             asyncio.create_task(asyncio.to_thread(_retain_memory_item, cleaned, 'Leo', route))
             return await super().send(chat_id,cleaned,reply_to=None,metadata=metadata)
 
