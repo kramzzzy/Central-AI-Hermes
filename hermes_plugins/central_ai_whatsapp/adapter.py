@@ -340,6 +340,7 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
         'message_id': str(data.get('messageId') or ''),
         'text': msg_text,
         'line': 'customer' if is_customer_line else 'executive',
+        'created_at': datetime.now(timezone.utc).isoformat(),
     }).encode('utf-8')
 
     for base_url in deduped:
@@ -478,7 +479,8 @@ def build_engine_adapter(route,member,home,group):
                         get_whatsapp_reply_style(),
                         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp. "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
-                        f"Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', or 'Hi [Name]!' on follow-up replies. "
+                        f"Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', 'Hey', 'G\\'day', or 'Hi [Name]!' on follow-up replies. "
+                        f"Speak like a warm, helpful, consultative human specialist: when a customer shares what they need (e.g., installing solar for their farm, home, or business), warmly acknowledge their project first and ask 1 or 2 natural discovery questions (such as their location/suburb, what they run on the property, or their typical power bill) before offering to book a call or site visit. "
                         f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row. "
                         f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
                         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
@@ -644,6 +646,9 @@ def build_engine_adapter(route,member,home,group):
             if _is_non_conversational(content, metadata):
                 return SendResult(success=True)
             cleaned = clean_reply_punctuation(content)
+            if cleaned:
+                cleaned = re.sub(r'\[\[\s*BOOK[\s\S]*?\]\]+', '', cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r'^\s*\[+\s*|\s*\]+\s*$', '', cleaned).strip()
             if not cleaned or not cleaned.strip():
                 return SendResult(success=True)
             raw_bound = binding.get()
