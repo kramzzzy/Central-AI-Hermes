@@ -379,79 +379,9 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
 
 
 def _calculate_solar_pre_assessment(text: str) -> str:
-    import math, re
-    if not text or not isinstance(text, str):
-        return ''
-    lower = text.lower()
-    kwh_match = re.search(r'\b(\d{1,3}(?:\.\d+)?)\s*kwh\s*(?:/|per\s+|a\s+)?(?:day|daily)\b', lower)
-    bill_match = re.search(
-        r'(?:\$\s*(\d{2,5}(?:,\d{3})*(?:\.\d{1,2})?)|(\d{2,5}(?:,\d{3})*)\s*(?:dollars|aud|bucks|a\s+month|per\s+month|monthly|a\s+quarter|per\s+quarter|quarterly|a\s+year|yearly))',
-        lower,
-    )
-    if not kwh_match and not bill_match:
-        return ''
-
-    tariff = 0.32
-    supply = 1.15
-    psh = 4.4
-    daily_kwh = 0.0
-    input_desc = ''
-
-    if kwh_match:
-        daily_kwh = float(kwh_match.group(1))
-        input_desc = f'~{round(daily_kwh)} kWh/day usage'
-    elif bill_match:
-        raw_val = (bill_match.group(1) or bill_match.group(2) or '').replace(',', '')
-        try:
-            amount = float(raw_val)
-        except ValueError:
-            return ''
-        if amount < 40 or amount > 25000:
-            return ''
-        if any(w in lower for w in ('quarter', 'quarterly', '3 month', 'three month', '90 day')):
-            days, period_label = 90.0, 'quarterly'
-        elif any(w in lower for w in ('year', 'yearly', 'annual', 'annually')):
-            days, period_label = 365.0, 'annual'
-        elif any(w in lower for w in ('week', 'weekly')):
-            days, period_label = 7.0, 'weekly'
-        else:
-            days, period_label = 30.0, 'monthly'
-        daily_cost = amount / days
-        usage_cost = max(daily_cost - supply, daily_cost * 0.78)
-        daily_kwh = max(5.0, usage_cost / tariff)
-        input_desc = f'${int(round(amount))} {period_label} power bill (~{round(daily_kwh)} kWh/day)'
-
-    if daily_kwh <= 0:
-        return ''
-
-    raw_kw = (daily_kwh * 1.2) / psh
-    standard_sizes = [6.6, 8.8, 10.5, 13.2, 15.8, 20.0, 26.4, 30.0, 39.6, 50.0]
-    rec_kw = next((s for s in standard_sizes if s >= raw_kw), 50.0)
-    panels = int(math.ceil((rec_kw * 1000.0) / 440.0))
-    if rec_kw <= 6.6:
-        battery = 'Optional 10 kWh battery (great for evening peak coverage)'
-    elif rec_kw <= 10.5:
-        battery = '10–13.5 kWh LFP solar battery recommended'
-    elif rec_kw <= 15.8:
-        battery = '13.5–20 kWh modular solar battery recommended'
-    else:
-        battery = '20–30 kWh high-capacity battery storage recommended'
-
-    annual_gen = rec_kw * psh * 365.0
-    self_consumed = min(daily_kwh * 365.0 * 0.70, annual_gen * 0.65)
-    exported = max(0.0, annual_gen - self_consumed)
-    annual_savings = int(round((self_consumed * tariff + exported * 0.06) / 50.0) * 50)
-    monthly_savings = int(round(annual_savings / 12.0 / 10.0) * 10)
-
-    return (
-        f"[SOLAR PRE-ASSESSMENT CALCULATOR RESULT FOR THIS CUSTOMER]\n"
-        f"• Customer Input: {input_desc}\n"
-        f"• Recommended Solar System: {rec_kw} kW (~{panels} × 440W high-efficiency panels)\n"
-        f"• Recommended Battery Option: {battery}\n"
-        f"• Estimated Bill Savings: ~${monthly_savings}/month (~${annual_savings}/year)\n"
-        f"• Estimated Payback Period: ~3.5 to 4.5 years\n"
-        f"INSTRUCTION: Share this pre-assessment clearly and concisely with the customer, then offer to have a solar expert call them (or book a phone call / on-site solar visit at a day and time that suits them)!"
-    )
+    # Do not inject synthetic solar package sizes, panel wattages, battery capacities,
+    # or savings estimates that do not exist in the Knowledge Base.
+    return ''
 
 
 def build_engine_adapter(route,member,home,group):
@@ -549,9 +479,9 @@ def build_engine_adapter(route,member,home,group):
                         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp. "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
                         f"Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', or 'Hi [Name]!' on follow-up replies. "
-                        f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row.",
+                        f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row. "
+                        f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
                         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
-                        solar_calc,
                         live_box3,
                     ]))
                 else:

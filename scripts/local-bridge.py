@@ -1218,9 +1218,9 @@ def _start_customer_whatsapp_poller():
         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
         "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, markdown **bold**, or # headings). Always answer the customer's actual question directly and naturally first using your Agent Instructions and Knowledge Base below. Never repeat the same question twice in a row.",
+        "STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
         "NO REPEATED GREETINGS: This conversation is already underway and you HAVE ALREADY greeted the customer. NEVER start your reply with 'Hi', 'Hello', 'Hey', or 'Hi " + (first_n or "there") + "!' again. Jump straight into answering their message." if has_prior_reply else f"Greet {first_n or 'the customer'} warmly once on this first reply.",
         f"Customer WhatsApp Name: {sender_name or 'Visitor'} (Phone: +{sender_id})",
-        solar_calc,
         f"CONVERSATION HISTORY:\n{hist_str}",
         f"KNOWLEDGE BASE (FROM APP OS):\n{kb_text}" if kb_text else "",
        ]))
