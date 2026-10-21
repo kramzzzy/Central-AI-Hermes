@@ -145,7 +145,7 @@ _DEFAULT_YCS_SNAPSHOT = {
             "id": "ycs-kb-1-business-context",
             "title": "YCS — business context",
             "category": "Business",
-            "content": "Your Choice Solar supplies and installs new and replacement grid-connected solar and battery packages for residential and commercial customers across Australia. Solutions are tailored to current and future energy needs. Service area, current packages, booking destination and business hours are confirmed per customer enquiry.",
+            "content": "Your Choice Solar supplies and installs complete, custom-engineered turnkey grid-connected solar and battery packages for residential homes, commercial businesses, and farms across Queensland and New South Wales (including Brisbane, Gold Coast, Sunshine Coast, Regional QLD, and Northern NSW). Head Office: Level 3, 146 Bundall Rd, Bundall QLD 4217 | Phone: 1300 123 786 | Licences: QLD 86139, NSW 341836C. Residential Packages: 6.6kW Starter (~15–16 panels + 5kW inverter, ~24–28 kWh/day), 10kW Family (~23–24 panels + 8kW–10kW inverter, ~38–42 kWh/day), 13.2kW+ Large Home & Battery-Ready (~30+ panels + 10kW hybrid/three-phase inverter, ~50+ kWh/day). Solar + Battery Packages: DC-coupled hybrid packages with 9.6kWh, 12.8kWh, 16kWh, or 19.2kWh+ modular LFP battery storage. Commercial & Farm Packages: 15kW, 20kW, 30kW, 50kW up to 100kW three-phase systems. Hardware Brands: Tier-1 Seraphim monocrystalline half-cut panels (415W–440W+), Fronius (Primo/Symo) and Sungrow string/hybrid inverters, and Sungrow LFP batteries. We supply complete turnkey packages rather than standalone single replacement parts.",
         },
         {
             "id": "ycs-kb-2-brand-voice",

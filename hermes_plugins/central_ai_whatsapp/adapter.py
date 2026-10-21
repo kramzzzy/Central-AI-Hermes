@@ -210,6 +210,9 @@ def _load_live_customer_config():
     cfg = {
         'customer_auto_reply': True,
         'customer_agent': 'James',
+        'customer_agent_role': 'Customer Service & Solar Specialist',
+        'customer_agent_instructions': '',
+        'customer_agent_knowledge': [],
         'company_name': 'Your Choice Solar',
         'owner': '',
         'known_numbers': set(),
@@ -224,6 +227,14 @@ def _load_live_customer_config():
                 raw_agent = str(data.get('customer_agent') or '').strip()
                 if raw_agent:
                     cfg['customer_agent'] = raw_agent.capitalize()
+                raw_role = str(data.get('customer_agent_role') or '').strip()
+                if raw_role:
+                    cfg['customer_agent_role'] = raw_role
+                raw_instr = str(data.get('customer_agent_instructions') or '').strip()
+                if raw_instr:
+                    cfg['customer_agent_instructions'] = raw_instr
+                if isinstance(data.get('customer_agent_knowledge'), list):
+                    cfg['customer_agent_knowledge'] = data['customer_agent_knowledge']
                 raw_company = str(data.get('company_name') or data.get('company') or '').strip()
                 if raw_company:
                     cfg['company_name'] = raw_company
@@ -528,20 +539,18 @@ def build_engine_adapter(route,member,home,group):
 
                 if treat_as_customer_inquiry:
                     agent_name = live_cfg['customer_agent'] or 'James'
+                    agent_role = live_cfg.get('customer_agent_role') or 'Customer Service & Solar Specialist'
+                    agent_instr = live_cfg.get('customer_agent_instructions') or ''
                     company_name = live_cfg['company_name'] or 'Your Choice Solar'
                     customer_phone_display = f'+{sender_digits}' if sender_digits else 'their WhatsApp number'
                     event.channel_prompt = '\n\n'.join(filter(None, [
                         event.channel_prompt,
                         get_whatsapp_reply_style(),
-                        f"You are {agent_name}, the Solar Customer Service & Pre-Assessment Specialist at {company_name} on WhatsApp. "
-                        f"Always reply strictly and exclusively in natural, warm Australian English (en-AU); never switch to Tagalog, Taglish, or any other language. "
-                        f"Keep WhatsApp replies concise, friendly, and easy to read on a phone (2–4 short sentences or clean bullet points). "
+                        f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp. "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
-                        f"SOLAR INQUIRY & PRE-ASSESSMENT WORKFLOW:\n"
-                        f"1. Greet the customer only once at the start of a new conversation. Never repeat 'Hi', 'Hello', or 'Hi [Name]!' on follow-up replies.\n"
-                        f"2. Ask ONLY ONE short question per message.\n"
-                        f"3. If the customer shares their monthly or quarterly electricity bill (e.g. $400/month or $600/quarter) or daily kWh usage, give them the Solar Pre-Assessment below (recommended system size in kW, panel count, battery recommendation, and estimated savings) and then offer to arrange either a Phone Call with our Solar Expert or an On-Site Solar Visit / Roof Inspection. If they haven't shared their bill or usage yet, ask ONLY for their approximate monthly or quarterly power bill and city/suburb first.\n"
-                        f"4. When a customer provides their details or books a call/visit, use mcp__michael_os__manage_crm or mcp__michael_os__manage_tasks to log their lead and appointment in Box 3 CRM.",
+                        f"Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', or 'Hi [Name]!' on follow-up replies. "
+                        f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row.",
+                        f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
                         solar_calc,
                         live_box3,
                     ]))

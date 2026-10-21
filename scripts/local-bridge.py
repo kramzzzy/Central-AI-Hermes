@@ -1132,6 +1132,7 @@ def _start_customer_whatsapp_poller():
      _forward_customer_whatsapp_to_box3,
      _append_customer_sync_queue,
      _retain_memory_item,
+     _fetch_live_box3_context,
     )
     from whatsapp_system_context import clean_reply_punctuation
     _ensure_customer_caller_enabled()
@@ -1203,18 +1204,25 @@ def _start_customer_whatsapp_poller():
        reply_text=None
       elif auto_reply_enabled and not outbox_sent:
        agent_name=live_cfg.get('customer_agent') or 'James'
+       agent_role=live_cfg.get('customer_agent_role') or 'Customer Service & Solar Specialist'
+       agent_instr=live_cfg.get('customer_agent_instructions') or ''
+       agent_kb=live_cfg.get('customer_agent_knowledge') or []
+       kb_text='\n\n'.join(f"[{c.get('title','')}]\n{c.get('content','')}" for c in agent_kb if isinstance(c,dict) and c.get('content'))
+       if not kb_text:
+        kb_text=_fetch_live_box3_context(msg_text,ROOT)
        company_name=live_cfg.get('company_name') or 'Your Choice Solar'
        solar_calc=_calculate_solar_pre_assessment(msg_text)
        prior_turns=history_by_sender.get(sender_id,[])[-8:]
        hist_str='\n'.join(prior_turns) if prior_turns else '(No prior messages yet)'
        sys_prompt='\n'.join(filter(None,[
-        f"You are {agent_name}, a friendly, down-to-earth customer representative at {company_name} on WhatsApp live chat.",
-        "CRITICAL OUTPUT RULE: Output ONLY the exact message spoken directly to the customer. NEVER output internal thoughts, reasoning, or markdown (**bold**, # headings). Keep replies concise (1 to 3 short sentences, under 55 words). Ask ONLY ONE short question per message — never stack two questions.",
+        f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
+        f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
+        "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, markdown **bold**, or # headings). Always answer the customer's actual question directly and naturally first using your Agent Instructions and Knowledge Base below. Never repeat the same question twice in a row.",
         "NO REPEATED GREETINGS: This conversation is already underway and you HAVE ALREADY greeted the customer. NEVER start your reply with 'Hi', 'Hello', 'Hey', or 'Hi " + (first_n or "there") + "!' again. Jump straight into answering their message." if has_prior_reply else f"Greet {first_n or 'the customer'} warmly once on this first reply.",
         f"Customer WhatsApp Name: {sender_name or 'Visitor'} (Phone: +{sender_id})",
-        solar_calc or "If the customer asks for a solar quote, how much solar they need, or what they can save without sharing their power bill yet, ask ONLY what their typical monthly or quarterly electricity bill is and their nearest city so you can calculate their solar pre-assessment first. Do NOT also ask about booking a phone call or visit in the same message before giving their pre-assessment.",
-        "ONLY after sharing a solar pre-assessment (or if the customer directly asks to book a call or visit), offer to book either a quick Phone Call with one of our solar experts or an On-Site Solar Visit / Roof Inspection and ask what day and time suits them.",
+        solar_calc,
         f"CONVERSATION HISTORY:\n{hist_str}",
+        f"KNOWLEDGE BASE (FROM APP OS):\n{kb_text}" if kb_text else "",
        ]))
        try:
         env=profile_environment(settings)
