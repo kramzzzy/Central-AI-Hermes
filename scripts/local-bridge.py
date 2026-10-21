@@ -1180,6 +1180,22 @@ def _start_customer_whatsapp_poller():
         urllib.request.urlopen(treq,timeout=3).close()
        except Exception:pass
       box3_res=_forward_customer_whatsapp_to_box3(pkt,ROOT,True)
+      prior_chat_msgs=[]
+      for pmid,pinfo in proc_map.items():
+       if pmid==msg_id or not isinstance(pinfo,dict) or pinfo.get('dismissed'):
+        continue
+       if str(pinfo.get('sender_id') or '')==sender_id and pinfo.get('text'):
+        prior_chat_msgs.append({'role':'user','content':str(pinfo['text'])})
+        if pinfo.get('reply'):
+         prior_chat_msgs.append({'role':'assistant','content':str(pinfo['reply'])})
+      if not prior_chat_msgs and history_by_sender.get(sender_id):
+       for hline in history_by_sender.get(sender_id,[])[-8:]:
+        if hline.startswith('Customer: '):
+         prior_chat_msgs.append({'role':'user','content':hline[10:]})
+        elif hline.startswith('James: '):
+         prior_chat_msgs.append({'role':'assistant','content':hline[7:]})
+      has_prior_reply=any(m.get('role')=='assistant' for m in prior_chat_msgs)
+      first_n=(sender_name.split()[0] if sender_name else '')
       reply_text=None
       if box3_res.get('handled_by_box3') and box3_res.get('reply'):
        reply_text=str(box3_res['reply']).strip()
@@ -1193,10 +1209,11 @@ def _start_customer_whatsapp_poller():
        hist_str='\n'.join(prior_turns) if prior_turns else '(No prior messages yet)'
        sys_prompt='\n'.join(filter(None,[
         f"You are {agent_name}, a friendly, down-to-earth customer representative at {company_name} on WhatsApp live chat.",
-        "CRITICAL OUTPUT RULE: Output ONLY the exact message spoken directly to the customer. NEVER output internal thoughts, reasoning, or markdown (**bold**, # headings). Keep replies concise (1 to 3 short sentences, under 60 words). Ask at most ONE short question per message.",
+        "CRITICAL OUTPUT RULE: Output ONLY the exact message spoken directly to the customer. NEVER output internal thoughts, reasoning, or markdown (**bold**, # headings). Keep replies concise (1 to 3 short sentences, under 55 words). Ask ONLY ONE short question per message — never stack two questions.",
+        "NO REPEATED GREETINGS: This conversation is already underway and you HAVE ALREADY greeted the customer. NEVER start your reply with 'Hi', 'Hello', 'Hey', or 'Hi " + (first_n or "there") + "!' again. Jump straight into answering their message." if has_prior_reply else f"Greet {first_n or 'the customer'} warmly once on this first reply.",
         f"Customer WhatsApp Name: {sender_name or 'Visitor'} (Phone: +{sender_id})",
-        solar_calc or "If the customer asks how much solar they need or what they can save without sharing their power bill yet, warmly ask what their typical monthly or quarterly electricity bill is and their nearest city so you can calculate their solar pre-assessment right away.",
-        "Always offer to book either a quick Phone Call with one of our solar experts or an On-Site Solar Visit / Roof Inspection and ask what day and time suits them.",
+        solar_calc or "If the customer asks for a solar quote, how much solar they need, or what they can save without sharing their power bill yet, ask ONLY what their typical monthly or quarterly electricity bill is and their nearest city so you can calculate their solar pre-assessment first. Do NOT also ask about booking a phone call or visit in the same message before giving their pre-assessment.",
+        "ONLY after sharing a solar pre-assessment (or if the customer directly asks to book a call or visit), offer to book either a quick Phone Call with one of our solar experts or an On-Site Solar Visit / Roof Inspection and ask what day and time suits them.",
         f"CONVERSATION HISTORY:\n{hist_str}",
        ]))
        try:
@@ -1208,7 +1225,7 @@ def _start_customer_whatsapp_poller():
          'execution_mode':'draft-only',
          'max_tokens':260,
          'stream':False,
-         'messages':[{'role':'system','content':sys_prompt},{'role':'user','content':msg_text}],
+         'messages':[{'role':'system','content':sys_prompt},*prior_chat_msgs[-10:],{'role':'user','content':msg_text}],
         }
         proc=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],input=json.dumps(job_in),capture_output=True,text=True,encoding='utf-8',timeout=35,env=env,cwd=ROOT)
         if proc.returncode==0 and proc.stdout:
@@ -1218,8 +1235,14 @@ def _start_customer_whatsapp_poller():
        except Exception:
         reply_text=None
        if not reply_text:
-        first_n=(sender_name.split()[0] if sender_name else 'there')
-        reply_text=f"Hi {first_n}, I'm {agent_name} from {company_name}. I'd love to help with your solar plans and calculate a tailored pre-assessment for you. What is your typical monthly or quarterly electricity bill, and which city or suburb are you in?"
+        if has_prior_reply:
+         reply_text="To calculate a tailored solar quote and pre-assessment for you, what is your typical monthly or quarterly electricity bill, and which city or suburb are you in?"
+        else:
+         reply_text=f"Hi {first_n or 'there'}, I'm {agent_name} from {company_name}. How can I help with your solar plans today?"
+      if reply_text and has_prior_reply:
+       stripped_re=re.sub(r"^(?:hi|hello|hey|g'day|good\s+(?:morning|afternoon|evening))(?:\s+[A-Za-z'-]{2,20})?\s*[!,.—:-]+\s*","",reply_text,flags=re.IGNORECASE).strip()
+       if len(stripped_re)>=8:
+        reply_text=stripped_re[0].upper()+stripped_re[1:]
       sent_ok=outbox_sent
       if reply_text and not outbox_sent:
        history_by_sender.setdefault(sender_id,[]).extend([f"Customer: {msg_text}",f"James: {reply_text}"])

@@ -538,9 +538,9 @@ def build_engine_adapter(route,member,home,group):
                         f"Keep WhatsApp replies concise, friendly, and easy to read on a phone (2–4 short sentences or clean bullet points). "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
                         f"SOLAR INQUIRY & PRE-ASSESSMENT WORKFLOW:\n"
-                        f"1. Welcome anyone inquiring about solar panels, solar batteries, inverters, rebates, or installation across Australia.\n"
-                        f"2. If the customer shares their monthly or quarterly electricity bill (e.g. $400/month or $600/quarter) or daily kWh usage, give them the Solar Pre-Assessment below (recommended system size in kW, panel count, battery recommendation, and estimated savings). If they haven't shared their bill or usage yet, warmly ask for their approximate monthly or quarterly power bill so you can calculate a tailored solar pre-assessment.\n"
-                        f"3. Always offer to arrange either a **Phone Call with our Solar Expert** (we already have their WhatsApp/phone number {customer_phone_display}) OR an **On-Site Solar Visit / Roof Inspection** at a day and time that suits them.\n"
+                        f"1. Greet the customer only once at the start of a new conversation. Never repeat 'Hi', 'Hello', or 'Hi [Name]!' on follow-up replies.\n"
+                        f"2. Ask ONLY ONE short question per message.\n"
+                        f"3. If the customer shares their monthly or quarterly electricity bill (e.g. $400/month or $600/quarter) or daily kWh usage, give them the Solar Pre-Assessment below (recommended system size in kW, panel count, battery recommendation, and estimated savings) and then offer to arrange either a Phone Call with our Solar Expert or an On-Site Solar Visit / Roof Inspection. If they haven't shared their bill or usage yet, ask ONLY for their approximate monthly or quarterly power bill and city/suburb first.\n"
                         f"4. When a customer provides their details or books a call/visit, use mcp__michael_os__manage_crm or mcp__michael_os__manage_tasks to log their lead and appointment in Box 3 CRM.",
                         solar_calc,
                         live_box3,
