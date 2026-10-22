@@ -82,7 +82,14 @@ class TurnControl:
             threading.Thread(target=close,daemon=True).start()
 
 
+_fish_ws_cooldown_until = 0.0
+_fish_http_cooldown_until = 0.0
+_fish_working_model = None
+
+
 def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
+    global _fish_working_model
+    import urllib.error
     import urllib.request
     key = (config.get('FISH_API_KEY') or '').strip()
     voice_id = (config.get('FISH_VOICE_ID') or '').strip()
@@ -95,99 +102,170 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
         'sample_rate': rate,
         'latency': 'balanced'
     }).encode('utf-8')
-    model = config.get('FISH_TTS_MODEL') or 's2.1-pro-free'
-    req = urllib.request.Request(
-        'https://api.fish.audio/v1/tts',
-        data=payload,
-        headers={
-            'Authorization': 'Bearer ' + key,
-            'Content-Type': 'application/json',
-            'model': model
-        },
-        method='POST'
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        if audio is None:
-            return resp.read()
-        if control:
-            control.track(resp)
-        # read() without a size waits for the whole clip. read1() returns the
-        # available HTTP chunk, so callers can play the first PCM immediately.
-        read = getattr(resp, 'read1', resp.read)
-        carry, size, deadline = b'', 0, time.monotonic() + 180
-        while True:
-            if control:
-                control.check()
-            if time.monotonic() > deadline:
-                raise RuntimeError('Speech deadline exceeded')
-            chunk = read(4096)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > rate * 2 * 180:
-                raise RuntimeError('Speech size exceeded')
-            data = carry + chunk
-            cut = len(data) - len(data) % 2
-            carry = data[cut:]
-            if cut:
+    configured_model = config.get('FISH_TTS_MODEL') or _fish_working_model or 's2.1-pro-free'
+    models_to_try = [configured_model]
+    if configured_model != 's1':
+        models_to_try.append('s1')
+    last_exc = None
+    for idx, model in enumerate(models_to_try):
+        req = urllib.request.Request(
+            'https://api.fish.audio/v1/tts',
+            data=payload,
+            headers={
+                'Authorization': 'Bearer ' + key,
+                'Content-Type': 'application/json',
+                'model': model
+            },
+            method='POST'
+        )
+        emitted_any = False
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                _fish_working_model = model
+                if audio is None:
+                    return resp.read()
                 if control:
-                    control.check()
-                audio(data[:cut])
-        if carry:
-            raise RuntimeError('Incomplete speech sample')
-        return b''
+                    control.track(resp)
+                # read() without a size waits for the whole clip. read1() returns the
+                # available HTTP chunk, so callers can play the first PCM immediately.
+                read = getattr(resp, 'read1', resp.read)
+                carry, size, deadline = b'', 0, time.monotonic() + 180
+                while True:
+                    if control:
+                        control.check()
+                    if time.monotonic() > deadline:
+                        raise RuntimeError('Speech deadline exceeded')
+                    chunk = read(4096)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > rate * 2 * 180:
+                        raise RuntimeError('Speech size exceeded')
+                    data = carry + chunk
+                    cut = len(data) - len(data) % 2
+                    carry = data[cut:]
+                    if cut:
+                        if control:
+                            control.check()
+                        emitted_any = True
+                        audio(data[:cut])
+                if carry:
+                    raise RuntimeError('Incomplete speech sample')
+                return b''
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if not emitted_any and idx + 1 < len(models_to_try) and exc.code in {400, 404, 422}:
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    return b''
 
 
 class FishRestSpeech:
-    """Zero-setup HTTP fallback when live websocket is unreachable or blocked."""
+    """Streaming clause-by-clause HTTP fallback when live websocket is unreachable or blocked."""
     def __init__(self, config, audio, control, rate=24000):
+        import queue
         self.config, self.audio, self.control, self.rate = config, audio, control, rate
         self.pending = ''
         self.first_audio = None
         self.first_flush = None
         self.complete = False
         self.bytes = 0
+        self.error = None
+        self.queue = queue.Queue(maxsize=32)
+        self.done = threading.Event()
+        self._native_fallback = None
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def _emit_chunk(self, pcm):
+        self.control.check()
+        self.first_audio = self.first_audio or time.monotonic()
+        self.bytes += len(pcm)
+        self.audio(pcm)
+
+    def _synthesize_clause(self, clause):
+        global _fish_http_cooldown_until
+        self.control.check()
+        if self._native_fallback is None and time.monotonic() >= _fish_http_cooldown_until:
+            clause_bytes_before = self.bytes
+            try:
+                fish_rest_tts(clause, self.config, self.rate, self._emit_chunk, self.control)
+                if self.bytes > clause_bytes_before:
+                    return
+            except TurnCancelled:
+                raise
+            except Exception as exc:
+                self.control.check()
+                if self.bytes > clause_bytes_before:
+                    raise  # Never replay a partly spoken clause through another TTS.
+                _fish_http_cooldown_until = time.monotonic() + 120
+                import sys
+                print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc}), falling back to NativeSpeech", file=sys.stderr)
+        from native_call_speech import pcm as native_pcm
+        for data in native_pcm(clause, self.config, self.rate, self.control):
+            self._emit_chunk(data)
+
+    def _worker(self):
+        try:
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
+                self.control.check()
+                try:
+                    clause = self.queue.get(timeout=.04)
+                except Exception:
+                    continue
+                if clause is None:
+                    self.complete = True
+                    return
+                self._synthesize_clause(clause)
+            raise RuntimeError('Speech deadline exceeded')
+        except Exception as exc:
+            self.error = type(exc).__name__
+        finally:
+            self.done.set()
+
+    def _enqueue(self, clause):
+        clause = clause.strip()
+        if not clause:
+            return
+        self.control.check()
+        self.first_flush = self.first_flush or time.monotonic()
+        self.queue.put_nowait(clause)
+
+    def _drain_ready_clauses(self):
+        while self.pending:
+            if self.first_flush is None:
+                m = re.search(r'^(\s*\S+(?:\s+\S+){1,7}(?<!\d)[.!?,;:]\s+|\s*\S+(?:\s+\S+){4,8}\s+)', self.pending)
+            else:
+                m = re.search(r'^(\s*.+?(?<!\d)[.!?;:]\s+|\s*\S+(?:\s+\S+){9,14}[,;:]\s+)', self.pending, re.S)
+            if not m:
+                break
+            clause = m.group(1).strip()
+            self.pending = self.pending[m.end():]
+            if clause:
+                self._enqueue(clause)
 
     def text(self, value):
         self.pending += value
+        self._drain_ready_clauses()
 
     def sentence(self, text):
         self.pending += ' ' + text
+        self._drain_ready_clauses()
 
     def finish(self):
-        text = self.pending.strip()
+        tail = self.pending.strip()
         self.pending = ''
-        if not text:
-            self.complete = True
-            return
-        self.control.check()
-        try:
-            self.first_flush = time.monotonic()
-            def emit(pcm):
-                self.control.check()
-                self.first_audio = self.first_audio or time.monotonic()
-                self.bytes += len(pcm)
-                self.audio(pcm)
-            fish_rest_tts(text, self.config, self.rate, emit, self.control)
-            if self.bytes:
-                self.complete = True
-                return
-        except Exception as exc:
+        if tail:
+            self._enqueue(tail)
+        self.queue.put_nowait(None)
+        deadline = time.monotonic() + 45
+        while not self.done.wait(.04):
             self.control.check()
-            if self.bytes:
-                raise  # Never replay a partly spoken reply through another TTS.
-            import sys
-            print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc}), falling back to NativeSpeech", file=sys.stderr)
-        try:
-            from native_call_speech import NativeSpeech
-            fallback = NativeSpeech(self.config, self.audio, self.control, self.rate)
-            fallback.text(text)
-            fallback.finish()
-            self.first_audio = fallback.first_audio
-            self.bytes = fallback.bytes
-            self.complete = fallback.complete
-        except Exception:
-            pass
+            if time.monotonic() > deadline:
+                raise RuntimeError('Speech did not finish')
+        self.control.check()
 
 
 class FreeSpeech:
@@ -209,20 +287,28 @@ class FreeSpeech:
         self.started = None
         self.bytes = 0
         self.fallback = None
+        self.fallback_sent = 0
         self.transcript = ''
         self.transport_guard = threading.RLock()
         self.abandoned = False
-        self.connect_deadline = time.monotonic() + 2
-        threading.Thread(target=self.receive, daemon=True).start()
+        self.connect_deadline = time.monotonic() + 1.0
+        if time.monotonic() < _fish_ws_cooldown_until:
+            self.abandoned = True
+            self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
+            self.ready.set()
+            self.done.set()
+        else:
+            threading.Thread(target=self.receive, daemon=True).start()
 
     def receive(self):
-        model = self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'
+        global _fish_ws_cooldown_until
+        model = self.config.get('FISH_TTS_MODEL') or _fish_working_model or 's2.1-pro-free'
         try:
             import msgpack
             from websockets.sync.client import connect
             with connect('wss://api.fish.audio/v1/tts/live', additional_headers={
                     'Authorization': 'Bearer ' + (self.config.get('FISH_API_KEY') or ''),
-                    'model': model}, open_timeout=2, close_timeout=1,
+                    'model': model}, open_timeout=1.2, close_timeout=1,
                     max_size=4*1024*1024, max_queue=8) as socket:
                 with self.transport_guard:
                     if self.abandoned:
@@ -240,9 +326,9 @@ class FreeSpeech:
                     self.control.check()
                     if self.abandoned:
                         return
-                    if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 4:
+                    if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2:
                         raise RuntimeError('Speech first audio deadline exceeded')
-                    try: raw = socket.recv(timeout=.3)
+                    try: raw = socket.recv(timeout=.15)
                     except TimeoutError: continue
                     if not isinstance(raw, bytes): raise RuntimeError('Invalid speech frame')
                     event = msgpack.unpackb(raw, raw=False)
@@ -264,12 +350,25 @@ class FreeSpeech:
                 raise RuntimeError('Speech deadline exceeded')
         except Exception as exc:
             if not self.control.cancelled.is_set():
+                if not self.bytes:
+                    _fish_ws_cooldown_until = time.monotonic() + 120
                 import sys
                 print(f"[FreeSpeech] Cloud WS TTS unavailable ({type(exc).__name__})", file=sys.stderr)
                 self.error = type(exc).__name__
         finally:
             self.ready.set()
             self.done.set()
+
+    def _sync_fallback(self):
+        if not self.fallback:
+            return
+        if len(self.transcript) > self.fallback_sent:
+            unsent = self.transcript[self.fallback_sent:]
+            self.fallback_sent = len(self.transcript)
+            self.fallback.text(unsent)
+        self.first_audio = self.first_audio or self.fallback.first_audio
+        self.first_flush = self.first_flush or self.fallback.first_flush
+        self.bytes = self.fallback.bytes
 
     def use_fallback(self):
         self.control.check()
@@ -285,18 +384,20 @@ class FreeSpeech:
                 try: self.socket.close()
                 except Exception: pass
             threading.Thread(target=close, daemon=True).start()
+        self._sync_fallback()
 
     def send(self, event):
         import msgpack
         self.control.check()
         if self.fallback:
+            self._sync_fallback()
             return
-        while not self.ready.wait(.05):
+        while not self.ready.wait(.03):
             self.control.check()
             if time.monotonic() >= self.connect_deadline:
                 self.use_fallback()
                 return
-        if not self.socket or self.error:
+        if not self.socket or self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2):
             self.use_fallback()
             return
         sent, failed = threading.Event(), threading.Event()
@@ -312,8 +413,8 @@ class FreeSpeech:
                 sent.set()
         # A connected socket can stall on writes too, not just on first audio.
         threading.Thread(target=write, daemon=True).start()
-        deadline = time.monotonic() + 2
-        while not sent.wait(.05):
+        deadline = time.monotonic() + 1.0
+        while not sent.wait(.03):
             self.control.check()
             if time.monotonic() >= deadline:
                 self.use_fallback()
@@ -326,7 +427,10 @@ class FreeSpeech:
         # Strip markdown markers to protect voice prosody
         cleaned = value.replace('**', '').replace('`', '').replace('*', '')
         self.transcript += cleaned
+        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2)) and not self.bytes and not self.fallback:
+            self.use_fallback()
         if self.fallback:
+            self._sync_fallback()
             return
         self.pending += cleaned
         self.unflushed += cleaned
@@ -355,7 +459,10 @@ class FreeSpeech:
 
     def sentence(self, text):
         self.transcript += text.strip() + ' '
+        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2)) and not self.bytes and not self.fallback:
+            self.use_fallback()
         if self.fallback:
+            self._sync_fallback()
             return
         self.started = self.started or time.monotonic()
         self.send({'event': 'text', 'text': text.strip() + ' '})
@@ -367,7 +474,7 @@ class FreeSpeech:
     def finish_fallback(self):
         # Retain every committed word if the socket failed before any audio.
         # Transport retries synthesize text only; they never resubmit to Hermes.
-        self.fallback.text(self.transcript)
+        self._sync_fallback()
         self.fallback.finish()
         self.first_audio = self.fallback.first_audio
         self.first_flush = self.fallback.first_flush
@@ -394,8 +501,11 @@ class FreeSpeech:
         if self.fallback:
             return self.finish_fallback()
         deadline = time.monotonic() + 45
-        while not self.done.wait(.1):
+        while not self.done.wait(.05):
             self.control.check()
+            if (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2) and not self.bytes:
+                self.use_fallback()
+                return self.finish_fallback()
             if time.monotonic() > deadline: raise RuntimeError('Speech did not finish')
         self.control.check()
         if self.error or not self.complete or not self.bytes:

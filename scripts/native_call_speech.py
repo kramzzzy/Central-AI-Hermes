@@ -5,11 +5,41 @@ is shared; text/audio are transient and are never written to the model cache.
 """
 import os
 import queue
+import re
 import threading
 import time
 from pathlib import Path
 
 _synthesis = threading.BoundedSemaphore(1)
+_voice_cache = {}
+_voice_cache_lock = threading.Lock()
+
+
+def _cached_piper_voice(config):
+    from tools.tts_tool_local import _load_piper_voice_for_config
+    cfg = tts_config(config)
+    piper_cfg = cfg.get('piper') or {}
+    cache_key = (
+        str(piper_cfg.get('voice') or ''),
+        bool(piper_cfg.get('use_cuda', False)),
+        str(piper_cfg.get('voices_dir') or ''),
+    )
+    with _voice_cache_lock:
+        cached = _voice_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    loaded = _load_piper_voice_for_config(cfg)
+    with _voice_cache_lock:
+        _voice_cache[cache_key] = loaded
+    return loaded
+
+
+def warm_piper(config=None):
+    try:
+        _cached_piper_voice(config)
+        return True
+    except Exception:
+        return False
 
 
 def native_enabled(config):
@@ -51,7 +81,6 @@ def tts_config(config=None):
 def pcm(text, config, rate, control):
     import audioop
     from piper import SynthesisConfig
-    from tools.tts_tool_local import _load_piper_voice_for_config
     deadline = time.monotonic() + 30
     while not _synthesis.acquire(timeout=.1):
         control.check()
@@ -59,7 +88,7 @@ def pcm(text, config, rate, control):
             raise RuntimeError('Local speech is busy')
     try:
         control.check()
-        voice, options = _load_piper_voice_for_config(tts_config(config))
+        voice, options = _cached_piper_voice(config)
         syn = SynthesisConfig(**{k: options[k] for k in (
             'speaker_id', 'length_scale', 'noise_scale', 'noise_w_scale',
             'volume', 'normalize_audio') if k in options})
@@ -84,6 +113,7 @@ class NativeSpeech:
         from tools.tts_streaming import SentenceChunker
         self.config, self.audio, self.control, self.rate = config, audio, control, rate
         self.chunker = SentenceChunker.from_config(tts_config(config))
+        self.lead_buffer = ''
         self.queue = queue.Queue(maxsize=32)
         self.done = threading.Event()
         self.error = None
@@ -98,7 +128,7 @@ class NativeSpeech:
             while time.monotonic() < self.deadline:
                 self.control.check()
                 try:
-                    text = self.queue.get(timeout=.1)
+                    text = self.queue.get(timeout=.04)
                 except queue.Empty:
                     continue
                 if text is None:
@@ -118,7 +148,21 @@ class NativeSpeech:
             self.done.set()
 
     def text(self, value):
-        for sentence in self.chunker.feed(value.replace('**', '').replace('`', '')):
+        cleaned = value.replace('**', '').replace('`', '').replace('*', '')
+        if self.first_flush is None:
+            self.lead_buffer += cleaned
+            match = re.search(r'^(\s*\S+(?:\s+\S+){1,7}[.!?,;:]\s+|\s*\S+(?:\s+\S+){4,7}\s+)', self.lead_buffer)
+            if match:
+                lead = match.group(1).strip()
+                rest = self.lead_buffer[match.end():]
+                self.lead_buffer = ''
+                if lead:
+                    self.sentence(lead)
+                if rest:
+                    for sentence in self.chunker.feed(rest):
+                        self.sentence(sentence)
+            return
+        for sentence in self.chunker.feed(cleaned):
             self.sentence(sentence)
 
     def sentence(self, text):
@@ -129,10 +173,14 @@ class NativeSpeech:
         self.first_flush = self.first_flush or time.monotonic()
 
     def finish(self):
+        if self.lead_buffer:
+            rest, self.lead_buffer = self.lead_buffer, ''
+            for sentence in self.chunker.feed(rest):
+                self.sentence(sentence)
         for sentence in self.chunker.flush():
             self.sentence(sentence)
         self.queue.put_nowait(None)
-        while not self.done.wait(.1):
+        while not self.done.wait(.05):
             self.control.check()
             if time.monotonic() > self.deadline:
                 raise RuntimeError('Speech did not finish')

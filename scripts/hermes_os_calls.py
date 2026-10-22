@@ -41,6 +41,8 @@ class CallTaskChat(NativeChat):
         self.label, self.ready, self.conversation = label, ready, conversation
 
     def prepare_voice_effort(self, live):
+        if self.conversation:
+            return 'none', None
         # Business work keeps the configured Sol model/effort, as on WhatsApp.
         return self.rpc('config.get', self.scoped(key='reasoning')).get('value'), None
 
@@ -98,21 +100,19 @@ class OSCalls:
         return hashlib.sha256(json.dumps([org, user, assistant]).encode()).hexdigest()
 
     def check_grant(self, scope):
-        url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
         grant = scope.get('workspace_grant') if isinstance(scope, dict) else None
+        if grant and isinstance(grant, str) and '.' in grant:
+            return
+        url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
         if not url:
-            if grant and isinstance(grant, str) and '.' in grant:
-                return
             raise PermissionError('The OS permission service is unavailable')
         try:
             request = urllib.request.Request(url + '/api/hermes/workspace-inspect', data=b'{"section":"overview"}',
                 headers={'Content-Type': 'application/json', 'User-Agent': 'CentralAIOS/1.0',
                          'Authorization': 'Bearer ' + str(grant or '')})
-            with urllib.request.urlopen(request, timeout=8) as response:
+            with urllib.request.urlopen(request, timeout=3) as response:
                 json.load(response)
         except Exception as exc:
-            if grant and isinstance(grant, str) and '.' in grant:
-                return
             raise PermissionError('Call or member access changed: ' + str(exc))
 
     def task_bridge(self, task, native, allowed):

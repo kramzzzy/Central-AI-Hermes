@@ -108,10 +108,31 @@ class StreamPhoneCall:
             "and before running a tool, give a quick natural heads-up ('All right, let me check that for you now')."
         )
         try:
-            from hermes_plugins.central_ai_whatsapp.adapter import _fetch_live_box3_context
-            box3_ctx = _fetch_live_box3_context()
-            if box3_ctx:
-                prompt += "\n\n" + box3_ctx
+            from pathlib import Path
+            from hermes_plugins.central_ai_app_os.client import _DEFAULT_YCS_SNAPSHOT
+            snap = None
+            for candidate in (
+                Path('/data/box3_snapshot.json'),
+                Path('/opt/data/box3_snapshot.json'),
+                Path('/opt/os-adapter/.runtime/box3_snapshot.json'),
+            ):
+                if candidate.is_file():
+                    data = json.loads(candidate.read_text(encoding='utf-8'))
+                    if isinstance(data, dict) and ('knowledge' in data or 'counts' in data):
+                        snap = data
+                        break
+            if not snap:
+                snap = dict(_DEFAULT_YCS_SNAPSHOT)
+            counts = snap.get('counts') or _DEFAULT_YCS_SNAPSHOT['counts']
+            cards = snap.get('knowledge') or _DEFAULT_YCS_SNAPSHOT['knowledge']
+            titles = [str(c.get('title') or '') for c in cards[:12] if isinstance(c, dict) and c.get('title')]
+            prompt += (
+                f"\n\n[Live Workspace Summary: {counts.get('knowledge_sources', len(titles))} knowledge cards "
+                f"({', '.join(titles[:8])}), {counts.get('available_skills', 60)} skills, "
+                "and full Box 3 tools (inspect_workspace, manage_crm, manage_tasks, search_knowledge, "
+                "get_knowledge, add_knowledge, get_workspace_overview, get_live_weather, send_whatsapp_message, "
+                "call_whatsapp_contact) are active. Call tools only when specific workspace data or actions are needed.]"
+            )
         except Exception:
             pass
         def dispatch_tool(event, caller_text):
@@ -564,6 +585,11 @@ class StreamPhoneCall:
                     self.rendered_generation=self.generation;self.last_rendered=time.monotonic()
                 continue
             speaking,pcm=bool(filtered[0]),filtered[1:]
+            if speaking and self.capture and self.silence_frames >= 2 and self.speech_run == 0 and len(pcm) == 1920:
+                samples = struct.unpack('<960h', pcm)
+                rms = (sum(s * s for s in samples) / 960) ** 0.5 / 32768.0
+                if rms < 0.008:
+                    speaking = False
             self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
             if self.capture_rejected:
@@ -618,14 +644,14 @@ class StreamPhoneCall:
                 if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .45)) and not busy:
                     self.greeting_pending=False;self.start_reply(greeting=True)
                 continue
-            # Start background cloud recognition early (~300ms into a pause) so it is
+            # Start background cloud recognition early (~180ms into a pause) so it is
             # already in flight if local Whisper needs fallback at the endpoint.
-            early_quiet = (self.silence_frames >= 5 and now - self.last_speech >= .30) or (now - self.last_speech >= .40)
+            early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .18) or (now - self.last_speech >= .28)
             if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
                 self.prepare_recognition()
             # Support both continuous silent RTP frames and WhatsApp Opus DTX
             # silence suppression (where RTP packets stop arriving during quiet gaps).
-            quiet_enough = (self.silence_frames >= 8 and now - self.last_speech >= .52) or (now - self.last_speech >= .68)
+            quiet_enough = (self.silence_frames >= 6 and now - self.last_speech >= .36) or (now - self.last_speech >= .50)
             if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
                 self.prepare_recognition()
                 audio={
@@ -649,6 +675,8 @@ class StreamPhoneCall:
                         audio['prepared_asr']=early.get('recognizer')
                         audio['confirmation_asr']=early.get('confirmation')
                         audio['confirmation_source']=early.get('confirmation_source')
+                        audio['early_local_done']=early.get('local_done')
+                        audio['early_entry']=early
                     else:
                         self.close_asr(early.get('recognizer'))
                         self.close_asr(early.get('confirmation'))

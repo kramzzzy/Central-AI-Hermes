@@ -542,9 +542,10 @@ Do not start background jobs to rediscover these known missing connections.\n"""
                 }
                 self.service.metrics['latest_caller_text'] = text
                 self.last_user_speech_end = now
-                assistant_name = os.environ.get('FISH_VOICE_NAME') or os.environ.get('CENTRAL_AI_ASSISTANT_NAME') or 'Leo'
                 try:
+                    import os as _os
                     from fish_conversation import is_goodbye_intent
+                    assistant_name = _os.environ.get('FISH_VOICE_NAME') or _os.environ.get('CENTRAL_AI_ASSISTANT_NAME') or 'Leo'
                     if is_goodbye_intent(text, assistant_name):
                         self.task(self.hangup_gracefully('user_goodbye'))
                         return
