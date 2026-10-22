@@ -418,6 +418,11 @@ class Handler(BaseHTTPRequestHandler):
             proc_map[reply_to_mid]['handled']=True
             _save_customer_processed(proc_map)
           except Exception:pass
+         if line_pref in {'customer','james','support','booking'}:
+          try:
+           from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
+           threading.Thread(target=_retain_memory_item,args=(f"Human operator reply to {target_name} ({ct}): {message_text}",'Human Operator (Coaching)','customer-whatsapp','human_operator_coaching'),daemon=True).start()
+          except Exception:pass
          return self.reply(200,{'ok':True,'message_id':sdata.get('message_id',''),'target':ct,'recipient_name':target_name,'line':cu,'message':f'WhatsApp message delivered to {target_name} ({ct}).'})
        except Exception as err:
         last_err=str(err)
@@ -892,6 +897,65 @@ class Handler(BaseHTTPRequestHandler):
 customer_wa_lock=threading.Lock()
 in_progress_customer_msgs=set()
 
+_LAYA_CUSTOMER_STAGE_CRITERIA = {
+ 'greeting_only': 'Customer is saying a brief hello or greeting with no question yet.',
+ 'product_or_rebate_question': 'Customer is asking about solar panels, batteries, rebates, pricing, or how the service works.',
+ 'providing_qualification_details': 'Customer is answering with whether they have existing solar, their power bill amount, street address, full name, phone, or email.',
+ 'ready_to_confirm_or_book': 'Customer is confirming their details or asking to schedule a consultation or call.',
+ 'existing_customer_support': 'Existing customer asking for maintenance, warranty, or repair help.',
+}
+_HINDSIGHT_FAST_CACHE = {}
+
+def _classify_customer_turn_laya(user_text):
+ try:
+  clean_t=(user_text or '').strip()
+  if len(clean_t)<3 or len(clean_t)>1500:
+   return None
+  laya_url=(os.environ.get('LAYA_URL') or 'http://laya:8000').rstrip('/')
+  from hermes_laya import api_key as laya_api_key
+  import urllib.request
+  payload=json.dumps({
+   'state':clean_t,
+   'max_len':512,
+   'questions':{'intent':{'type':'choice','instructions':'What is the customer doing in this message?','criteria':_LAYA_CUSTOMER_STAGE_CRITERIA}},
+  }).encode('utf-8')
+  req=urllib.request.Request(
+   f"{laya_url}/v1/systemone",
+   data=payload,
+   headers={'Content-Type':'application/json','Authorization':f"Bearer {laya_api_key()}"},
+   method='POST',
+  )
+  with urllib.request.urlopen(req,timeout=0.25) as resp:
+   if resp.status==200:
+    res=json.loads(resp.read().decode('utf-8'))
+    ans=(res.get('answers') or {}).get('intent') or {}
+    choice=str(ans.get('choice') or '').strip()
+    conf=float(ans.get('answer_confidence') or 0.0)
+    if choice and conf>=0.35:
+     return {'intent':choice,'confidence':round(conf,3)}
+ except Exception:
+  pass
+ return None
+
+def _recall_hindsight_fast(user_text):
+ try:
+  clean_q=(user_text or '').strip()
+  if len(clean_q)<4 or clean_q.startswith('[PROCESS PLAYBOOK'):
+   return []
+  cache_key=clean_q.lower()[:120]
+  now_ts=time.monotonic()
+  cached=_HINDSIGHT_FAST_CACHE.get(cache_key)
+  if cached and (now_ts-cached[0])<30.0:
+   return cached[1]
+  from hermes_plugins.central_ai_whatsapp.adapter import _recall_memory_items
+  items=_recall_memory_items(clean_q,limit=4)
+  if len(_HINDSIGHT_FAST_CACHE)>100:
+   _HINDSIGHT_FAST_CACHE.clear()
+  _HINDSIGHT_FAST_CACHE[cache_key]=(now_ts,items)
+  return items
+ except Exception:
+  return []
+
 def _fast_draft_only_completion(body,settings_dict):
  if not isinstance(body,dict) or body.get('execution_mode')!='draft-only' or body.get('task_files'):
   return None
@@ -917,9 +981,28 @@ def _fast_draft_only_completion(body,settings_dict):
  model=req_model if req_model and req_model not in {'workspace-default','hermes'} else raw_default
  if 'deepseek-v4.1-flash' in model or 'glm-5.2' in model:
   model='deepseek/deepseek-chat-v3-0324'
+ last_user_msg=''
+ for m in reversed(msgs):
+  if m.get('role')=='user' and not str(m.get('content','')).startswith('[PROCESS PLAYBOOK'):
+   last_user_msg=str(m.get('content') or '').strip()
+   break
+ enrichment_lines=[]
+ if last_user_msg:
+  laya_sig=_classify_customer_turn_laya(last_user_msg)
+  if laya_sig:
+   enrichment_lines.append(f"[LAYA DECISION ENGINE SIGNAL (<15ms ONNX): Customer message intent = {laya_sig['intent']} (confidence {laya_sig['confidence']})]")
+  recalled_facts=_recall_hindsight_fast(last_user_msg)
+  if recalled_facts:
+   enrichment_lines.append("[HINDSIGHT LONG-TERM MEMORY RECALL (Verified Past Context & Coaching)]:\n" + "\n".join(f"- {f}" for f in recalled_facts))
+ out_msgs=[{'role':str(m.get('role') or 'user'),'content':m['content']} for m in msgs]
+ if enrichment_lines and out_msgs and out_msgs[0]['role']=='system':
+  out_msgs[0]={
+   'role':'system',
+   'content':out_msgs[0]['content']+'\n\n'+'\n\n'.join(enrichment_lines),
+  }
  payload=json.dumps({
   'model':model,
-  'messages':[{'role':str(m.get('role') or 'user'),'content':m['content']} for m in msgs],
+  'messages':out_msgs,
   'max_tokens':int(body.get('max_tokens') or 180),
   'temperature':0.3,
  }).encode('utf-8')
@@ -941,6 +1024,16 @@ def _fast_draft_only_completion(body,settings_dict):
   content=str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
   if not content:
    return None
+  if re.search(r'\[\[\s*(?:LEAD|BOOK)\s*:',content,flags=re.IGNORECASE):
+   try:
+    from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
+    threading.Thread(
+     target=_retain_memory_item,
+     args=(f"Qualified customer outcome & confirmation: {content}",'Customer Inquiry Pipeline','omni-channel','qualified_lead_outcome'),
+     daemon=True,
+    ).start()
+   except Exception:
+    pass
   return {
    'model':model,
    'runtime_profile':settings_dict.get('HERMES_PROFILE','leo'),
