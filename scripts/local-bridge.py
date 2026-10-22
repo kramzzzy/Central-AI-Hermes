@@ -1095,7 +1095,7 @@ def _collect_customer_sync_items():
     continue
    created_ts=pkt.get('_db_created')
    has_finished_reply=isinstance(pinfo,dict) and bool(pinfo.get('replied') or pinfo.get('handled') or pinfo.get('reply'))
-   is_stale_unhandled=bool(created_ts and (now_ts-int(created_ts))>=45)
+   is_stale_unhandled=bool(created_ts and (now_ts-int(created_ts))>=15)
    if not has_finished_reply and not is_stale_unhandled:
     continue
    seen_ids.add(mid)
@@ -1209,8 +1209,11 @@ def _start_customer_whatsapp_poller():
       raw_tags=[]
       existing_box3_reply=None
       if box3_res.get('handled_by_box3'):
+       already_replied_locally=isinstance(existing_proc,dict) and bool(existing_proc.get('replied') or existing_proc.get('sending'))
        if box3_res.get('auto_reply') and not box3_res.get('duplicate') and box3_res.get('reply'):
         reply_text=str(box3_res['reply']).strip()
+       elif not outbox_sent and not already_replied_locally and box3_res.get('control_mode')!='human' and box3_res.get('customer_auto_reply') is not False and (box3_res.get('existing_reply') or box3_res.get('reply')):
+        reply_text=str(box3_res.get('existing_reply') or box3_res.get('reply') or '').strip() or None
        else:
         reply_text=None
         existing_box3_reply=str(box3_res.get('existing_reply') or box3_res.get('reply') or '').strip() or None
@@ -1363,7 +1366,8 @@ def _start_customer_whatsapp_poller():
      finally:
       with customer_wa_lock:
        in_progress_customer_msgs.discard(msg_id)
-   except Exception:
+   except Exception as exc:
+    print(f'Customer WhatsApp poller error: {exc}',flush=True)
     time.sleep(2)
  threading.Thread(target=_worker,daemon=True).start()
 

@@ -7,9 +7,13 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 from pathlib import Path
+import re
 import shutil
 import time
+import urllib.parse
+import urllib.request
 
 binding=contextvars.ContextVar('leo_text_binding',default=None)
 
@@ -687,7 +691,7 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
                     },
                     method='POST',
                 )
-                with urllib.request.urlopen(req, timeout=22) as resp:
+                with urllib.request.urlopen(req, timeout=50) as resp:
                     if resp.status == 200:
                         res_data = json.loads(resp.read().decode('utf-8'))
                         if res_data.get('ok'):
@@ -696,6 +700,8 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
                                 'handled_by_box3': True,
                                 'duplicate': bool(res_data.get('duplicate')),
                                 'auto_reply': should_send,
+                                'control_mode': res_data.get('control_mode'),
+                                'customer_auto_reply': res_data.get('customer_auto_reply'),
                                 'reply': res_data.get('reply') if should_send else None,
                                 'existing_reply': res_data.get('reply'),
                             }
