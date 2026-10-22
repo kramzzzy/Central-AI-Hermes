@@ -2,12 +2,14 @@
 import asyncio
 import base64
 import contextvars
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
 import mimetypes
 from pathlib import Path
 import shutil
+import time
 
 binding=contextvars.ContextVar('leo_text_binding',default=None)
 
@@ -294,88 +296,91 @@ def _append_customer_sync_queue(item: dict):
 
 
 def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool) -> dict:
-    import os, socket, urllib.parse, urllib.request
-    msg_text = str(data.get('body') or '').strip()
-    sender_id = str(data.get('senderId') or '').strip()
-    if not msg_text or not sender_id:
-        return {'handled_by_box3': False}
+    try:
+        import os, socket, time, urllib.parse, urllib.request
+        msg_text = str(data.get('body') or '').strip()
+        sender_id = str(data.get('senderId') or '').strip()
+        if not msg_text or not sender_id:
+            return {'handled_by_box3': False}
 
-    urls = []
-    for p in ('/data/app_os_url.json', '/opt/data/app_os_url.json', '/opt/os-adapter/.runtime/app_os_url.json'):
-        f = Path(p)
-        if f.is_file():
+        urls = []
+        for p in ('/data/app_os_url.json', '/opt/data/app_os_url.json', '/opt/os-adapter/.runtime/app_os_url.json'):
+            f = Path(p)
+            if f.is_file():
+                try:
+                    j = json.loads(f.read_text(encoding='utf-8'))
+                    if isinstance(j.get('urls'), list):
+                        urls.extend(str(u).rstrip('/') for u in j['urls'] if u)
+                    elif j.get('url'):
+                        urls.append(str(j['url']).rstrip('/'))
+                except Exception:
+                    pass
+        for env_k in ('APP_OS_URL', 'MICHAEL_OS_URL'):
+            v = os.environ.get(env_k, '').strip().rstrip('/')
+            if v:
+                urls.append(v)
+        urls.extend(['http://web:3000', 'http://127.0.0.1:3000'])
+        deduped = list(dict.fromkeys(u for u in urls if u.startswith('http')))
+
+        api_key = os.environ.get('HERMES_API_KEY', '').strip()
+        if not api_key and home:
             try:
-                j = json.loads(f.read_text(encoding='utf-8'))
-                if isinstance(j.get('urls'), list):
-                    urls.extend(str(u).rstrip('/') for u in j['urls'] if u)
-                elif j.get('url'):
-                    urls.append(str(j['url']).rstrip('/'))
+                env_file = Path(home) / '.env'
+                if env_file.is_file():
+                    for line in env_file.read_text(encoding='utf-8').splitlines():
+                        if line.startswith('HERMES_API_KEY='):
+                            api_key = line.split('=', 1)[1].strip().strip('"\'')
+                            break
             except Exception:
                 pass
-    for env_k in ('APP_OS_URL', 'MICHAEL_OS_URL'):
-        v = os.environ.get(env_k, '').strip().rstrip('/')
-        if v:
-            urls.append(v)
-    urls.extend(['http://web:3000', 'http://127.0.0.1:3000'])
-    deduped = list(dict.fromkeys(u for u in urls if u.startswith('http')))
+        if not api_key:
+            api_key = 'hermes_standalone_secret_token_32chars'
 
-    api_key = os.environ.get('HERMES_API_KEY', '').strip()
-    if not api_key and home:
-        try:
-            env_file = Path(home) / '.env'
-            if env_file.is_file():
-                for line in env_file.read_text(encoding='utf-8').splitlines():
-                    if line.startswith('HERMES_API_KEY='):
-                        api_key = line.split('=', 1)[1].strip().strip('"\'')
-                        break
-        except Exception:
-            pass
-    if not api_key:
-        api_key = 'hermes_standalone_secret_token_32chars'
+        payload = json.dumps({
+            'sender_id': sender_id,
+            'sender_name': str(data.get('senderName') or ''),
+            'wire_chat': str(data.get('wireChat') or data.get('chatId') or ''),
+            'message_id': str(data.get('messageId') or ''),
+            'text': msg_text,
+            'line': 'customer' if is_customer_line else 'executive',
+            'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        }).encode('utf-8')
 
-    payload = json.dumps({
-        'sender_id': sender_id,
-        'sender_name': str(data.get('senderName') or ''),
-        'wire_chat': str(data.get('wireChat') or data.get('chatId') or ''),
-        'message_id': str(data.get('messageId') or ''),
-        'text': msg_text,
-        'line': 'customer' if is_customer_line else 'executive',
-        'created_at': datetime.now(timezone.utc).isoformat(),
-    }).encode('utf-8')
-
-    for base_url in deduped:
-        try:
-            parsed = urllib.parse.urlparse(base_url)
-            host = parsed.hostname
-            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
-            if not host:
-                continue
+        for base_url in deduped:
             try:
-                with socket.create_connection((host, port), timeout=1.5):
-                    pass
+                parsed = urllib.parse.urlparse(base_url)
+                host = parsed.hostname
+                port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+                if not host:
+                    continue
+                try:
+                    with socket.create_connection((host, port), timeout=1.5):
+                        pass
+                except Exception:
+                    continue
+                req = urllib.request.Request(
+                    f'{base_url}/api/connections/whatsapp/webhook',
+                    data=payload,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Bearer {api_key}',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CentralAI-Hermes/1.0',
+                    },
+                    method='POST',
+                )
+                with urllib.request.urlopen(req, timeout=22) as resp:
+                    if resp.status == 200:
+                        res_data = json.loads(resp.read().decode('utf-8'))
+                        if res_data.get('ok'):
+                            return {
+                                'handled_by_box3': True,
+                                'auto_reply': bool(res_data.get('auto_reply')),
+                                'reply': res_data.get('reply'),
+                            }
             except Exception:
                 continue
-            req = urllib.request.Request(
-                f'{base_url}/api/connections/whatsapp/webhook',
-                data=payload,
-                headers={
-                    'Content-Type': 'application/json',
-                    'Authorization': f'Bearer {api_key}',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CentralAI-Hermes/1.0',
-                },
-                method='POST',
-            )
-            with urllib.request.urlopen(req, timeout=22) as resp:
-                if resp.status == 200:
-                    res_data = json.loads(resp.read().decode('utf-8'))
-                    if res_data.get('ok'):
-                        return {
-                            'handled_by_box3': True,
-                            'auto_reply': bool(res_data.get('auto_reply')),
-                            'reply': res_data.get('reply'),
-                        }
-        except Exception:
-            continue
+    except Exception as exc:
+        logging.error('Box 3 customer WhatsApp forward error: %s', exc)
     return {'handled_by_box3': False}
 
 
@@ -541,8 +546,11 @@ def build_engine_adapter(route,member,home,group):
                                 chat_id=data.get('chatId')
                                 lease=data.get('bridgeLease')
                                 await self._send_typing(chat_id,lease,'composing')
+                                box3_res={'handled_by_box3':False}
                                 try:
                                     box3_res=await asyncio.to_thread(_forward_customer_whatsapp_to_box3,data,home,is_customer_line)
+                                except Exception:
+                                    box3_res={'handled_by_box3':False}
                                 finally:
                                     await self._send_typing(chat_id,lease,'paused')
                                 if box3_res.get('handled_by_box3'):
@@ -577,6 +585,14 @@ def build_engine_adapter(route,member,home,group):
                                     asyncio.create_task(asyncio.to_thread(_retain_memory_item, event.text, 'User', route))
                                 await self.handle_message(event)
                             else:await self._complete(data,'rejected')
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as pkt_exc:
+                            logging.error('WhatsApp packet processing error on route %s: %s', route, pkt_exc)
+                            try:
+                                await self._complete(data,'interrupted')
+                            except Exception:
+                                pass
                         finally:binding.reset(token)
                 except asyncio.CancelledError:
                     break

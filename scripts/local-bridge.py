@@ -1180,15 +1180,25 @@ def _start_customer_whatsapp_poller():
         treq=urllib.request.Request(f"{caller_url}/text/typing",data=json.dumps({'chatId':chat_id,'bridgeLease':lease,'presence':'composing'}).encode('utf-8'),headers={'Authorization':f'Bearer {token}','X-Leo-Route':'owner','Content-Type':'application/json'},method='POST')
         urllib.request.urlopen(treq,timeout=3).close()
        except Exception:pass
-      box3_res=_forward_customer_whatsapp_to_box3(pkt,ROOT,True)
+      try:
+       box3_res=_forward_customer_whatsapp_to_box3(pkt,ROOT,True)
+      except Exception:
+       box3_res={'handled_by_box3':False}
       prior_chat_msgs=[]
+      has_dismissed_for_sender=False
       for pmid,pinfo in proc_map.items():
-       if pmid==msg_id or not isinstance(pinfo,dict) or pinfo.get('dismissed'):
+       if pmid==msg_id or not isinstance(pinfo,dict):
         continue
-       if str(pinfo.get('sender_id') or '')==sender_id and pinfo.get('text'):
-        prior_chat_msgs.append({'role':'user','content':str(pinfo['text'])})
-        if pinfo.get('reply'):
-         prior_chat_msgs.append({'role':'assistant','content':str(pinfo['reply'])})
+       if str(pinfo.get('sender_id') or '')==sender_id:
+        if pinfo.get('dismissed'):
+         has_dismissed_for_sender=True
+         continue
+        if pinfo.get('text'):
+         prior_chat_msgs.append({'role':'user','content':str(pinfo['text'])})
+         if pinfo.get('reply'):
+          prior_chat_msgs.append({'role':'assistant','content':str(pinfo['reply'])})
+      if has_dismissed_for_sender and not prior_chat_msgs:
+       history_by_sender.pop(sender_id,None)
       if not prior_chat_msgs and history_by_sender.get(sender_id):
        for hline in history_by_sender.get(sender_id,[])[-8:]:
         if hline.startswith('Customer: '):
@@ -1200,7 +1210,7 @@ def _start_customer_whatsapp_poller():
       reply_text=None
       if box3_res.get('handled_by_box3') and box3_res.get('reply'):
        reply_text=str(box3_res['reply']).strip()
-      elif box3_res.get('handled_by_box3') and box3_res.get('customer_auto_reply') is False:
+      elif box3_res.get('handled_by_box3') and (box3_res.get('customer_auto_reply') is False or box3_res.get('auto_reply') is False):
        reply_text=None
       elif auto_reply_enabled and not outbox_sent:
        agent_name=live_cfg.get('customer_agent') or 'James'
@@ -1247,8 +1257,11 @@ def _start_customer_whatsapp_poller():
          reply_text="To calculate a tailored solar quote and pre-assessment for you, what is your typical monthly or quarterly electricity bill, and which city or suburb are you in?"
         else:
          reply_text=f"Hi {first_n or 'there'}, I'm {agent_name} from {company_name}. How can I help with your solar plans today?"
+      if reply_text:
+       reply_text=re.sub(r'\[\[\s*BOOK[\s\S]*?\]\]+','',reply_text,flags=re.IGNORECASE)
+       reply_text=re.sub(r'^\s*\[+\s*|\s*\]+\s*$','',reply_text).strip()
       if reply_text and has_prior_reply:
-       stripped_re=re.sub(r"^(?:hi|hello|hey|g'day|good\s+(?:morning|afternoon|evening))(?:\s+[A-Za-z'-]{2,20})?\s*[!,.—:-]+\s*","",reply_text,flags=re.IGNORECASE).strip()
+       stripped_re=re.sub(r"^(?:hi|hello|hey|g['\u2019\u2018`]?day|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|again|mate|folks|team))?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*","",reply_text,flags=re.IGNORECASE).strip()
        if len(stripped_re)>=8:
         reply_text=stripped_re[0].upper()+stripped_re[1:]
       sent_ok=outbox_sent
