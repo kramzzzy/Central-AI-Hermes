@@ -695,6 +695,13 @@ class NativeChat:
                 if not self.restore_voice_effort():
                     raise RuntimeError('The previous voice reply is still settling.')
                 effort, restore = self.prepare_voice_effort(live)
+                try:
+                    from hermes_plugins.central_ai_whatsapp.adapter import _calculate_solar_pre_assessment
+                    solar_calc = _calculate_solar_pre_assessment(text)
+                    if solar_calc and 'OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR' not in voice_context:
+                        voice_context = (voice_context + '\n\n' + solar_calc).strip()[:6000]
+                except Exception:
+                    pass
                 self.rpc('prompt.submit', self.scoped(text=text, surface='voice-live', voice_context=voice_context))
                 return {'turn_id': turn, 'cursor': cursor, 'epoch': self.epoch, 'effort': effort}
             except Exception:

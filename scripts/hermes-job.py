@@ -37,6 +37,14 @@ with contextlib.redirect_stdout(sys.stderr):
   if m['role']=='user':
    user_parts.extend(m['content'] if isinstance(m['content'],list) else [{'type':'text','text':m['content']}])
  prompt=user_parts if any(p.get('type')=='image_url' for p in user_parts) else '\n'.join(p['text'] for p in user_parts)
+ if isinstance(prompt,str) and prompt.strip() and 'OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR' not in system:
+  try:
+   from hermes_plugins.central_ai_whatsapp.adapter import _calculate_solar_pre_assessment
+   solar_calc_block=_calculate_solar_pre_assessment(prompt)
+   if solar_calc_block:
+    system=(system+'\n\n'+solar_calc_block).strip()
+  except Exception:
+   pass
  result=agent.run_conversation(user_message=prompt,system_message=system)
  output=(result.get('final_response') or '').strip()
  if result.get('failed') or (not result.get('completed') and not output): raise RuntimeError('Hermes turn did not complete')

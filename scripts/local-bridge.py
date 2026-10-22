@@ -899,6 +899,7 @@ in_progress_customer_msgs=set()
 
 _LAYA_CUSTOMER_STAGE_CRITERIA = {
  'greeting_only': 'Customer is saying a brief hello or greeting with no question yet.',
+ 'solar_calculator_kwh_kw_savings_request': 'Customer is asking to calculate their solar kWh usage, recommended solar panel system size in kW, or bill savings from their power bill.',
  'product_or_rebate_question': 'Customer is asking about solar panels, batteries, rebates, pricing, or how the service works.',
  'providing_qualification_details': 'Customer is answering with whether they have existing solar, their power bill amount, street address, full name, phone, or email.',
  'ready_to_confirm_or_book': 'Customer is confirming their details or asking to schedule a consultation or call.',
@@ -982,11 +983,23 @@ def _fast_draft_only_completion(body,settings_dict):
  if 'deepseek-v4.1-flash' in model or 'glm-5.2' in model:
   model='deepseek/deepseek-chat-v3-0324'
  last_user_msg=''
- for m in reversed(msgs):
+ all_user_msgs=[]
+ for m in msgs:
   if m.get('role')=='user' and not str(m.get('content','')).startswith('[PROCESS PLAYBOOK'):
-   last_user_msg=str(m.get('content') or '').strip()
-   break
+   utxt=str(m.get('content') or '').strip()
+   if utxt:
+    all_user_msgs.append(utxt)
+    last_user_msg=utxt
  enrichment_lines=[]
+ sys_msg_text=str(msgs[0].get('content') or '') if msgs and msgs[0].get('role')=='system' else ''
+ if all_user_msgs and 'OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR' not in sys_msg_text:
+  try:
+   from hermes_plugins.central_ai_whatsapp.adapter import _calculate_solar_pre_assessment
+   solar_calc_block=_calculate_solar_pre_assessment(' \n '.join(all_user_msgs))
+   if solar_calc_block:
+    enrichment_lines.append(solar_calc_block)
+  except Exception:
+   pass
  if last_user_msg:
   laya_sig=_classify_customer_turn_laya(last_user_msg)
   if laya_sig:

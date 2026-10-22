@@ -292,7 +292,7 @@ def _configure_profile(home, plugin, allow_enable):
         # The MCP child inherits its native process's private token path. A shared
         # profile must never persist one worker's credential for another worker.
         'env': {'HERMES_REPO': '/opt/hermes', 'MICHAEL_OS_INHERIT_TOOL_TOKEN': 'true'},
-        'tools': {'include': (['inspect_workspace'] + (['google_workspace'] if config.get('os_specialist',{}).get('google') else [])) if config.get('os_specialist') else all_tools}}
+        'tools': {'include': (['inspect_workspace', 'calculate_solar'] + (['google_workspace'] if config.get('os_specialist',{}).get('google') else [])) if config.get('os_specialist') else all_tools}}
     servers = config.setdefault('mcp_servers', {})
     existing_server = servers.get('michael_os', {})
     if not isinstance(existing_server, dict):
