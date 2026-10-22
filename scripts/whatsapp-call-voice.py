@@ -355,7 +355,8 @@ def recognize(samples):
         condition_on_previous_text=False, initial_prompt='Hello, how are you? What is up. Central AI assistant.',
         log_prob_threshold=-1.8 if CONVERSATION_MODE == 'stream' else -1.0,
         no_speech_threshold=0.85 if CONVERSATION_MODE == 'stream' else 0.6,
-        compression_ratio_threshold=2.4)
+        compression_ratio_threshold=2.4,
+        **({'without_timestamps': True} if CONVERSATION_MODE == 'stream' else {}))
     parts = list(segments)
     text = ' '.join(s.text.strip() for s in parts).strip()
     rms = float(np.sqrt(np.mean(samples*samples)))
@@ -934,8 +935,18 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
         traceback.print_exc()
         raise RuntimeError(f'Private Fish conversation setup unavailable: {e}')
     if CONVERSATION_MODE == 'stream':
+        _recognize_lock = threading.Lock()
         def stream_recognize(pcm):
-            return recognize(np.frombuffer(pcm,dtype='<i2').astype(np.float32)/32768.)
+            samples = np.frombuffer(pcm, dtype='<i2').astype(np.float32) / 32768.
+            if len(samples) > 4800:
+                voiced_idx = np.flatnonzero(np.abs(samples) > 0.006)
+                if len(voiced_idx) > 0:
+                    start_idx = max(0, int(voiced_idx[0]) - 2400)
+                    end_idx = min(len(samples), int(voiced_idx[-1]) + 2400)
+                    if end_idx - start_idx >= 1600:
+                        samples = samples[start_idx:end_idx]
+            with _recognize_lock:
+                return recognize(samples)
         fish_service.recognize=stream_recognize
         cloud_asr=None
         recognition_mode=os.environ.get('WHATSAPP_ASR_MODE', 'auto')

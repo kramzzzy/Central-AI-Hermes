@@ -215,6 +215,11 @@ class StreamPhoneCall:
         if self.early_asr:
             self.close_asr(self.early_asr.get('recognizer'))
             self.close_asr(self.early_asr.get('confirmation'))
+            if self.early_asr.get('speculative'):
+                try:
+                    self.early_asr['speculative'].cancel()
+                except Exception:
+                    pass
             if self.early_asr.get('control'):
                 self.early_asr['control'].cancel()
             self.early_asr=None
@@ -231,11 +236,12 @@ class StreamPhoneCall:
         pcm=bytes(self.capture)
         remote=getattr(self.asr,'remote',False)
         source=self.asr.recognizer.source if remote else (cloud.primary if cloud else 'local')
-        recognizer=None if (remote or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
-        local_done=asyncio.Event()
+        # Only start cloud ASR upfront when local Whisper is unavailable; otherwise
+        # run local Whisper first (~80-120ms) and only prepare cloud ASR on local miss.
+        recognizer=None if (remote or local_fn or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
         early_entry={'recognizer':recognizer,'confirmation':None,
                      'confirmation_source':source,'version':version,'pcm':pcm,
-                     'control':control,'local_result':None,'local_done':None}
+                     'control':control,'local_result':None,'local_done':None,'speculative':None}
         if local_fn and not remote:
             import threading
             done_evt=threading.Event()
@@ -249,9 +255,16 @@ class StreamPhoneCall:
                             and not control.cancelled.is_set()
                             and self.generation==generation
                             and self.capture_version==version):
-                        conv=self._get_fallback_conversation()
-                        if conv and not self.speculative:
-                            self.speculative=conv.prefetch(l_text,control)
+                        if not (self.worker and not self.worker.done()):
+                            conv=self._get_fallback_conversation()
+                            if conv and not self.speculative:
+                                spec=conv.prefetch(l_text,control)
+                                early_entry['speculative']=spec
+                                self.speculative=spec
+                    elif (hasattr(cloud,'prepare')
+                            and not control.cancelled.is_set()
+                            and self.generation==generation):
+                        early_entry['recognizer']=cloud.prepare(pcm,control)
                 except Exception:
                     pass
                 finally:
@@ -261,10 +274,13 @@ class StreamPhoneCall:
         self.service.metrics['early_recognitions_started']=self.service.metrics.get('early_recognitions_started',0)+1
 
     async def _warm_native_conversation(self):
+        conv = None
         try:
-            await asyncio.to_thread(self._get_fallback_conversation)
+            conv = await asyncio.to_thread(self._get_fallback_conversation)
         except Exception:
             pass
+        if conv is not None and (getattr(self.service, 'config', None) or {}).get('OPENROUTER_API_KEY'):
+            return
         if not getattr(self.service, 'native_conversation', None):
             return
         try:
@@ -373,17 +389,21 @@ class StreamPhoneCall:
                         early_local_done = audio.get('early_local_done') if isinstance(audio, dict) else None
                         early_entry = audio.get('early_entry') if isinstance(audio, dict) else None
                         if early_local_done is not None and early_entry is not None:
-                            early_local_done.wait(timeout=0.35)
+                            early_local_done.wait(timeout=1.5)
                         if early_entry and early_entry.get('local_result') is not None:
                             local_text, local_quality = early_entry['local_result']
                         else:
                             local_text, local_quality = self.service.recognize(pcm)
+                        if not speculative and early_entry and early_entry.get('speculative'):
+                            speculative = early_entry.get('speculative')
+                            if self.speculative is speculative:
+                                self.speculative = None
+                        if not early and early_entry and early_entry.get('recognizer'):
+                            early = early_entry.get('recognizer')
                         used_local = True
                         confident_local = (
                             bool(local_text)
                             and local_quality.get('decision') == 'accepted'
-                            and local_quality.get('avg_logprob', -2.0) >= -0.85
-                            and local_quality.get('no_speech_prob', 1.0) <= 0.45
                         )
                         if confident_local or not cloud:
                             text, quality = local_text, local_quality
@@ -585,10 +605,10 @@ class StreamPhoneCall:
                     self.rendered_generation=self.generation;self.last_rendered=time.monotonic()
                 continue
             speaking,pcm=bool(filtered[0]),filtered[1:]
-            if speaking and self.capture and self.silence_frames >= 2 and self.speech_run == 0 and len(pcm) == 1920:
+            if speaking and self.capture and len(pcm) == 1920:
                 samples = struct.unpack('<960h', pcm)
                 rms = (sum(s * s for s in samples) / 960) ** 0.5 / 32768.0
-                if rms < 0.008:
+                if rms < 0.0055 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.009):
                     speaking = False
             self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
