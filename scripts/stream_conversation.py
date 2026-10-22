@@ -235,11 +235,8 @@ class FishRestSpeech:
 
     def _drain_ready_clauses(self):
         while self.pending:
-            if self.first_flush is None:
-                m = re.search(r'^(\s*\S+(?:\s+\S+){1,7}(?<!\d)[.!?,;:]\s+|\s*\S+(?:\s+\S+){4,8}\s+)', self.pending)
-            else:
-                m = re.search(r'^(\s*.+?(?<!\d)[.!?;:]\s+|\s*\S+(?:\s+\S+){9,14}[,;:]\s+)', self.pending, re.S)
-            if not m:
+            m = re.search(r'^(\s*.+?(?<!\d)[.!?]\s+)', self.pending, re.S)
+            if not m or len(m.group(1).strip()) < 24:
                 break
             clause = m.group(1).strip()
             self.pending = self.pending[m.end():]
@@ -291,24 +288,17 @@ class FreeSpeech:
         self.transcript = ''
         self.transport_guard = threading.RLock()
         self.abandoned = False
-        self.connect_deadline = time.monotonic() + 1.0
-        if time.monotonic() < _fish_ws_cooldown_until:
-            self.abandoned = True
-            self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-            self.ready.set()
-            self.done.set()
-        else:
-            threading.Thread(target=self.receive, daemon=True).start()
+        self.connect_deadline = time.monotonic() + 2.0
+        threading.Thread(target=self.receive, daemon=True).start()
 
     def receive(self):
-        global _fish_ws_cooldown_until
         model = self.config.get('FISH_TTS_MODEL') or _fish_working_model or 's2.1-pro-free'
         try:
             import msgpack
             from websockets.sync.client import connect
             with connect('wss://api.fish.audio/v1/tts/live', additional_headers={
                     'Authorization': 'Bearer ' + (self.config.get('FISH_API_KEY') or ''),
-                    'model': model}, open_timeout=1.2, close_timeout=1,
+                    'model': model}, open_timeout=2.0, close_timeout=1,
                     max_size=4*1024*1024, max_queue=8) as socket:
                 with self.transport_guard:
                     if self.abandoned:
@@ -326,7 +316,7 @@ class FreeSpeech:
                     self.control.check()
                     if self.abandoned:
                         return
-                    if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2:
+                    if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 3.0:
                         raise RuntimeError('Speech first audio deadline exceeded')
                     try: raw = socket.recv(timeout=.15)
                     except TimeoutError: continue
@@ -350,8 +340,6 @@ class FreeSpeech:
                 raise RuntimeError('Speech deadline exceeded')
         except Exception as exc:
             if not self.control.cancelled.is_set():
-                if not self.bytes:
-                    _fish_ws_cooldown_until = time.monotonic() + 120
                 import sys
                 print(f"[FreeSpeech] Cloud WS TTS unavailable ({type(exc).__name__})", file=sys.stderr)
                 self.error = type(exc).__name__
@@ -397,7 +385,7 @@ class FreeSpeech:
             if time.monotonic() >= self.connect_deadline:
                 self.use_fallback()
                 return
-        if not self.socket or self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2):
+        if not self.socket or self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 3.0):
             self.use_fallback()
             return
         sent, failed = threading.Event(), threading.Event()
@@ -413,7 +401,7 @@ class FreeSpeech:
                 sent.set()
         # A connected socket can stall on writes too, not just on first audio.
         threading.Thread(target=write, daemon=True).start()
-        deadline = time.monotonic() + 1.0
+        deadline = time.monotonic() + 1.5
         while not sent.wait(.03):
             self.control.check()
             if time.monotonic() >= deadline:
@@ -427,7 +415,7 @@ class FreeSpeech:
         # Strip markdown markers to protect voice prosody
         cleaned = value.replace('**', '').replace('`', '').replace('*', '')
         self.transcript += cleaned
-        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2)) and not self.bytes and not self.fallback:
+        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 3.0)) and not self.bytes and not self.fallback:
             self.use_fallback()
         if self.fallback:
             self._sync_fallback()
@@ -444,13 +432,12 @@ class FreeSpeech:
         self.started = self.started or time.monotonic()
         self.send({'event': 'text', 'text': phrase})
         if not self.fallback:
-            # Flush the first usable phrase while subsequent model words arrive.
+            # Flush the first usable phrase (at least 4 words / 20 chars) while subsequent model words arrive.
             first_phrase = (self.first_flush is None and 
-                            len(self.unflushed.strip()) >= 10 and 
-                            len(self.unflushed.split()) >= 2)
-            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed) or
-                                  (self.first_flush is None and re.search(r',\s*$', self.unflushed) and len(self.unflushed.split()) >= 2))
-            overflow = len(self.unflushed) >= 80
+                            len(self.unflushed.strip()) >= 20 and 
+                            len(self.unflushed.split()) >= 4)
+            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed))
+            overflow = len(self.unflushed) >= 90
 
             if punct_boundary or first_phrase or overflow:
                 self.send({'event': 'flush'})
@@ -459,7 +446,7 @@ class FreeSpeech:
 
     def sentence(self, text):
         self.transcript += text.strip() + ' '
-        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2)) and not self.bytes and not self.fallback:
+        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 3.0)) and not self.bytes and not self.fallback:
             self.use_fallback()
         if self.fallback:
             self._sync_fallback()
@@ -503,7 +490,7 @@ class FreeSpeech:
         deadline = time.monotonic() + 45
         while not self.done.wait(.05):
             self.control.check()
-            if (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 1.2) and not self.bytes:
+            if (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 3.0) and not self.bytes:
                 self.use_fallback()
                 return self.finish_fallback()
             if time.monotonic() > deadline: raise RuntimeError('Speech did not finish')

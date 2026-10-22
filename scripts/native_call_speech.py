@@ -149,19 +149,6 @@ class NativeSpeech:
 
     def text(self, value):
         cleaned = value.replace('**', '').replace('`', '').replace('*', '')
-        if self.first_flush is None:
-            self.lead_buffer += cleaned
-            match = re.search(r'^(\s*\S+(?:\s+\S+){1,7}[.!?,;:]\s+|\s*\S+(?:\s+\S+){4,7}\s+)', self.lead_buffer)
-            if match:
-                lead = match.group(1).strip()
-                rest = self.lead_buffer[match.end():]
-                self.lead_buffer = ''
-                if lead:
-                    self.sentence(lead)
-                if rest:
-                    for sentence in self.chunker.feed(rest):
-                        self.sentence(sentence)
-            return
         for sentence in self.chunker.feed(cleaned):
             self.sentence(sentence)
 
@@ -173,10 +160,6 @@ class NativeSpeech:
         self.first_flush = self.first_flush or time.monotonic()
 
     def finish(self):
-        if self.lead_buffer:
-            rest, self.lead_buffer = self.lead_buffer, ''
-            for sentence in self.chunker.feed(rest):
-                self.sentence(sentence)
         for sentence in self.chunker.flush():
             self.sentence(sentence)
         self.queue.put_nowait(None)

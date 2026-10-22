@@ -18,7 +18,7 @@ from whatsapp_audio import PhoneAudioFilter
 class PhonePCM:
     """Keep provider chunks continuous; pad only the final transport frame."""
     frame_bytes = 1920
-    prefill_frames = 1
+    prefill_frames = 3
     single_burst_frames = 4
 
     def __init__(self):
@@ -35,7 +35,7 @@ class PhonePCM:
             self.chunks += 1
             self.previous_padding += (-len(data)) % self.frame_bytes
             self.pending.extend(data)
-        # Prefill 2 frames (120ms) for low-latency streaming without holding speech back
+        # Prefill 3 frames (180ms) so network jitter never causes mid-word dropouts
         if not self.started and not final:
             if len(self.pending) < self.frame_bytes * self.prefill_frames:
                 return
@@ -55,7 +55,7 @@ class StreamPhoneCall:
         self.service, self.call = service, call
         self.member = member or service.members[routing()['owner']]
         self.jobs = self.member['jobs']
-        self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=16)
+        self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=64)
         self.closed = self.connected = False
         self.state, self.generation = 'initializing', 1
         self.tasks, self.worker = set(), None
@@ -236,9 +236,7 @@ class StreamPhoneCall:
         pcm=bytes(self.capture)
         remote=getattr(self.asr,'remote',False)
         source=self.asr.recognizer.source if remote else (cloud.primary if cloud else 'local')
-        # Only start cloud ASR upfront when local Whisper is unavailable; otherwise
-        # run local Whisper first (~80-120ms) and only prepare cloud ASR on local miss.
-        recognizer=None if (remote or local_fn or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
+        recognizer=None if (remote or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
         early_entry={'recognizer':recognizer,'confirmation':None,
                      'confirmation_source':source,'version':version,'pcm':pcm,
                      'control':control,'local_result':None,'local_done':None,'speculative':None}
@@ -252,6 +250,8 @@ class StreamPhoneCall:
                     early_entry['local_result']=res
                     l_text,l_qual=res
                     if (l_text and l_qual.get('decision')=='accepted'
+                            and l_qual.get('avg_logprob', -2.0) >= -1.05
+                            and l_qual.get('no_speech_prob', 1.0) <= 0.50
                             and not control.cancelled.is_set()
                             and self.generation==generation
                             and self.capture_version==version):
@@ -261,10 +261,6 @@ class StreamPhoneCall:
                                 spec=conv.prefetch(l_text,control)
                                 early_entry['speculative']=spec
                                 self.speculative=spec
-                    elif (hasattr(cloud,'prepare')
-                            and not control.cancelled.is_set()
-                            and self.generation==generation):
-                        early_entry['recognizer']=cloud.prepare(pcm,control)
                 except Exception:
                     pass
                 finally:
@@ -404,6 +400,8 @@ class StreamPhoneCall:
                         confident_local = (
                             bool(local_text)
                             and local_quality.get('decision') == 'accepted'
+                            and local_quality.get('avg_logprob', -2.0) >= -1.05
+                            and local_quality.get('no_speech_prob', 1.0) <= 0.50
                         )
                         if confident_local or not cloud:
                             text, quality = local_text, local_quality
@@ -605,11 +603,6 @@ class StreamPhoneCall:
                     self.rendered_generation=self.generation;self.last_rendered=time.monotonic()
                 continue
             speaking,pcm=bool(filtered[0]),filtered[1:]
-            if speaking and self.capture and len(pcm) == 1920:
-                samples = struct.unpack('<960h', pcm)
-                rms = (sum(s * s for s in samples) / 960) ** 0.5 / 32768.0
-                if rms < 0.0055 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.009):
-                    speaking = False
             self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
             if self.capture_rejected:
@@ -664,14 +657,14 @@ class StreamPhoneCall:
                 if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .45)) and not busy:
                     self.greeting_pending=False;self.start_reply(greeting=True)
                 continue
-            # Start background cloud recognition early (~180ms into a pause) so it is
-            # already in flight if local Whisper needs fallback at the endpoint.
-            early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .18) or (now - self.last_speech >= .28)
+            # Start background cloud + local recognition early (~240ms into a pause) so both
+            # ASR and speculative LLM prefetch are already in flight at the endpoint.
+            early_quiet = (self.silence_frames >= 4 and now - self.last_speech >= .24) or (now - self.last_speech >= .34)
             if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
                 self.prepare_recognition()
             # Support both continuous silent RTP frames and WhatsApp Opus DTX
             # silence suppression (where RTP packets stop arriving during quiet gaps).
-            quiet_enough = (self.silence_frames >= 6 and now - self.last_speech >= .36) or (now - self.last_speech >= .50)
+            quiet_enough = (self.silence_frames >= 8 and now - self.last_speech >= .48) or (now - self.last_speech >= .62)
             if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
                 self.prepare_recognition()
                 audio={

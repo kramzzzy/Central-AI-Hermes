@@ -994,8 +994,9 @@ class FishService:
                     self.state_changed.clear()
                     await connection.send(session.state_event())
                 if struct.unpack('>Q', packet[:8])[0] == session.generation:
+                    sent_at = time.monotonic()
                     await connection.send(packet)
-                    next_audio_at = time.monotonic() + .06
+                    next_audio_at = max(sent_at + .056, next_audio_at + .059) if next_audio_at > sent_at - .12 else sent_at + .058
         sender = asyncio.create_task(send())
         try:
             async for frame in connection:

@@ -938,13 +938,6 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
         _recognize_lock = threading.Lock()
         def stream_recognize(pcm):
             samples = np.frombuffer(pcm, dtype='<i2').astype(np.float32) / 32768.
-            if len(samples) > 4800:
-                voiced_idx = np.flatnonzero(np.abs(samples) > 0.006)
-                if len(voiced_idx) > 0:
-                    start_idx = max(0, int(voiced_idx[0]) - 2400)
-                    end_idx = min(len(samples), int(voiced_idx[-1]) + 2400)
-                    if end_idx - start_idx >= 1600:
-                        samples = samples[start_idx:end_idx]
             with _recognize_lock:
                 return recognize(samples)
         fish_service.recognize=stream_recognize
