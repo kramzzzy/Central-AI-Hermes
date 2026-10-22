@@ -184,17 +184,36 @@ def is_goodbye_intent(text, assistant_name='Leo'):
         return True
     return False
 
+def normalize_voice_greeting(text):
+    """Normalize ASR homophones where 'what's up' is transcribed as 'WhatsApp' in a greeting."""
+    if not text or not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    # Only rewrite when 'whatsapp' is used in a short greeting without messaging/calling verbs
+    if len(stripped.split()) <= 7 and re.search(r'\bwhats\s*app\b', stripped, re.I):
+        if not re.search(r'\b(send|message|text|call|dial|ring|check|read|reply|contact|number|group|to|from|on|via|open)\b', stripped, re.I):
+            if re.match(
+                r'^(?:(?:hey|hi|hello|yo|sup|hiya|howdy|good\s+(?:morning|afternoon|evening))[\s,!.?]*)+(?:\w+[\s,!.?]*)?whats\s*app[\s,!.?]*$'
+                r'|^(?:\w+[\s,!.?]+)?whats\s*app(?:\s+\w+)?[\s,!.?]*$',
+                stripped,
+                re.I,
+            ):
+                return re.sub(r'\bwhats\s*app\b', "what's up", stripped, flags=re.I)
+    return text
+
 def is_casual_greeting_intent(text):
     if not text:
         return False
+    text = normalize_voice_greeting(text)
     trimmed = re.sub(r"[^\w\s']", ' ', text.lower().replace('’', "'")).strip()
     trimmed = re.sub(r'\s+', ' ', trimmed)
     trimmed = re.sub(r'[.!?]+$', '', trimmed).strip()
     patterns = [
-        r'^(?:hey|hi|hello|yo|sup|hiya|howdy)(?:\s+\w+)?$',
-        r'^(?:hey(?:\s+\w+)?\s+)?what(?:\'?s|\s+is)?\s+up(?:\s+\w+)?$',
-        r'^(?:hey(?:\s+\w+)?\s+)?what\s*up(?:\s+\w+)?$',
-        r'^(?:how\s+are\s+you|how\s+r\s+u|how(?:\'?s|\s+is)\s+it\s+going|how\s+do\s+you\s+do|how\s+have\s+you\s+been)(?:\s+doing)?(?:\s+\w+)?$',
+        r'^(?:hey|hi|hello|yo|sup|hiya|howdy)(?:\s+\w+){0,2}$',
+        r'^(?:(?:hey|hi|hello|yo)(?:\s+\w+)?\s+)?what(?:\'?s|\s+is)?\s+up(?:\s+\w+)?$',
+        r'^(?:(?:hey|hi|hello|yo)(?:\s+\w+)?\s+)?what\s*up(?:\s+\w+)?$',
+        r'^(?:(?:hey|hi|hello|yo)(?:\s+\w+)?\s+)?whats\s*app(?:\s+\w+)?$',
+        r'^(?:(?:hey|hi|hello|yo)(?:\s+\w+)?\s+)?(?:how\s+are\s+you|how\s+r\s+u|how(?:\'?s|\s+is)\s+it\s+going|how\s+do\s+you\s+do|how\s+have\s+you\s+been)(?:\s+doing)?(?:\s+\w+)?$',
         r'^(?:good\s+)?(?:morning|afternoon|evening|day)(?:\s+\w+)?$',
         r'^(?:what(?:\'?s|\s+is)\s+good|what(?:\'?s|\s+is)\s+happening|what(?:\'?s|\s+is)\s+new)$',
     ]

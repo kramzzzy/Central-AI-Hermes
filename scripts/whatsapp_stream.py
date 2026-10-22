@@ -11,8 +11,8 @@ import re
 import struct
 import time
 
-from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key
-from fish_conversation import filter_playback_input
+from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key, _is_valid_openrouter_voice_model
+from fish_conversation import filter_playback_input, normalize_voice_greeting
 from whatsapp_audio import PhoneAudioFilter
 
 class PhonePCM:
@@ -254,18 +254,21 @@ class StreamPhoneCall:
         )
 
         prompt = central_ai_identity("\n\n".join(p for p in identity_parts if p))
+        import os
         conv_config = dict(self.service.config or {})
+        if not conv_config.get('OPENROUTER_API_KEY') and os.environ.get('OPENROUTER_API_KEY'):
+            conv_config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
         resolved_model = ''
         for candidate_model in (
-            agent_model if agent_model and agent_model != 'workspace-default' else '',
             os.environ.get('HERMES_VOICE_MODEL', ''),
             conv_config.get('HERMES_VOICE_MODEL', ''),
             os.environ.get('WHATSAPP_CHAT_MODEL', ''),
-            cfg_model if cfg_model and not any(bad in cfg_model for bad in ('glm-5', 'hermes-4', 'deepseek-v4.1-flash')) else '',
-            os.environ.get('HERMES_CHAT_MODEL', ''),
+            agent_model if _is_valid_openrouter_voice_model(agent_model) else '',
+            cfg_model if _is_valid_openrouter_voice_model(cfg_model) else '',
+            os.environ.get('HERMES_CHAT_MODEL', '') if _is_valid_openrouter_voice_model(os.environ.get('HERMES_CHAT_MODEL', '')) else '',
         ):
             m = str(candidate_model or '').strip()
-            if m and m != 'workspace-default':
+            if _is_valid_openrouter_voice_model(m):
                 resolved_model = m
                 break
         if resolved_model:
@@ -416,13 +419,10 @@ class StreamPhoneCall:
         self.service.metrics['early_recognitions_started']=self.service.metrics.get('early_recognitions_started',0)+1
 
     async def _warm_native_conversation(self):
-        conv = None
         try:
-            conv = await asyncio.to_thread(self._get_fallback_conversation)
+            await asyncio.to_thread(self._get_fallback_conversation)
         except Exception:
             pass
-        if conv is not None and (getattr(self.service, 'config', None) or {}).get('OPENROUTER_API_KEY'):
-            return
         if not getattr(self.service, 'native_conversation', None):
             return
         try:
@@ -484,13 +484,14 @@ class StreamPhoneCall:
         loop=asyncio.get_running_loop()
         stage='speech_setup'
         framer=PhonePCM()
+        spoke_any=False
         def output(data,final=False):
             control.check()
             future=asyncio.run_coroutine_threadsafe(self.enqueue(data,generation,control,framer,final),loop)
             try: future.result(timeout=30)
             except Exception: future.cancel();raise TurnCancelled()
         def run():
-            nonlocal framer,output,speculative,stage
+            nonlocal framer,output,speculative,stage,spoke_any
             began=time.monotonic()
             if prepared:_,speech,framer,output=prepared
             else:speech=FreeSpeech(self.service.config,output,control,rate=16000)
@@ -498,12 +499,12 @@ class StreamPhoneCall:
             hermes_started=None
             timing={}
             def speak(value):
-                nonlocal first,stage
+                nonlocal first,stage,spoke_any
                 if pending_input:
                     pending_input['speaking_started']=True
                 if first is None:self.spoken_text=''
                 previous=stage;stage='speech'
-                first=first or time.monotonic();speech.text(value)
+                first=first or time.monotonic();spoke_any=True;speech.text(value)
                 stage=previous
                 self.spoken_text=(self.spoken_text+value)[-2400:]
             try:
@@ -592,7 +593,7 @@ class StreamPhoneCall:
                         speak('Speaker audio mixed with your words. Please repeat your request; no new work was started.')
                         speech.finish(); output(b'', final=True)
                         return 'complete'
-                    text = filtered
+                    text = normalize_voice_greeting(filtered)
                     already_extended = isinstance(audio, dict) and bool(audio.get('extended'))
                     if not text:
                         now_mono = time.monotonic()
@@ -640,9 +641,17 @@ class StreamPhoneCall:
                             raise
                         except Exception as conv_exc:
                             control.check()
-                            if first is None and self.conversation and self.conversation is not conv:
-                                self.conversation.reply(text,speak,control)
-                                conv = self.conversation
+                            if first is None:
+                                if not self.conversation and getattr(self.service, 'native_conversation', None):
+                                    try:
+                                        self.conversation = self.service.native_conversation(self.call, self.member)
+                                    except Exception:
+                                        pass
+                                if self.conversation and self.conversation is not conv:
+                                    self.conversation.reply(text,speak,control)
+                                    conv = self.conversation
+                                else:
+                                    raise conv_exc
                             else:
                                 raise conv_exc
                         finally:
@@ -695,13 +704,14 @@ class StreamPhoneCall:
             self.service.metrics['reply_errors']=self.service.metrics.get('reply_errors',0)+1
             # Log failure location, never transcripts, tokens or provider bodies.
             import traceback
-            failure={'stage':stage,'exception':type(exc).__name__,
+            failure={'stage':stage,'exception':type(exc).__name__,'message':str(exc)[:240],
                      'frames':[{'function':frame.name,'line':frame.lineno}
                                for frame in traceback.extract_tb(exc.__traceback__)[-6:]]}
             self.service.metrics['last_reply_failure']=failure
             print(json.dumps({'phone_voice_reply_failure':failure}),flush=True)
-            # Fail only this reply. Never disconnect/replay an accepted action.
-            if (not self.closed and self.generation==generation and self.connected
+            # Fail only this reply. Never disconnect/replay an accepted action, and never
+            # play recovery audio over a reply that already spoke to the caller.
+            if (not spoke_any and not self.closed and self.generation==generation and self.connected
                     and self.service.allowed(self.call) and time.monotonic()-self.last_recovery>10
                     and getattr(self.service,'recovery',None)):
                 self.last_recovery=time.monotonic()

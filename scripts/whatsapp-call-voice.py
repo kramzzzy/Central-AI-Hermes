@@ -64,6 +64,8 @@ KEY = KEYFILE.read_text().strip()
 config = dotenv_values('/opt/data/profiles/leo/.env')
 from central_ai_integrations import integration_config
 config = integration_config(config)
+if os.environ.get('OPENROUTER_API_KEY') and not config.get('OPENROUTER_API_KEY'):
+    config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
 if os.environ.get('FISH_API_KEY'):
     config['FISH_API_KEY'] = os.environ['FISH_API_KEY'].strip()
 if os.environ.get('FISH_VOICE_ID'):
@@ -408,7 +410,7 @@ def speech(text):
 
 
 GREETING = "Hey Mark! It's Leo. I'm here. What can I help you with?"
-RECOVERY = "I couldn't complete that reply. I'm still here. Check task status before repeating an action."
+RECOVERY = "Sorry, I had a brief connection hiccup. Could you say that again?"
 TASK_ACK = "Let me check that."
 
 
