@@ -60,6 +60,63 @@ def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp'):
         pass
 
 
+def _recall_memory_items(query: str, limit: int = 5) -> list:
+    try:
+        import os, urllib.request
+        clean_q = (query or '').strip()
+        if not clean_q:
+            return []
+        api_url = (
+            os.environ.get('HINDSIGHT_URL')
+            or os.environ.get('HINDSIGHT_API_URL')
+            or 'http://hindsight:8888'
+        ).rstrip('/')
+        key_file = Path('/run/secrets/hindsight_api_key')
+        token = key_file.read_text().strip() if key_file.is_file() else ''
+        if not token:
+            cfg_file = Path('/opt/data/profiles/leo/hindsight/config.json')
+            if cfg_file.is_file():
+                try:
+                    cfg_data = json.loads(cfg_file.read_text(encoding='utf-8'))
+                    token = str(cfg_data.get('api_key') or '').strip()
+                    if cfg_data.get('api_url'):
+                        api_url = str(cfg_data['api_url']).rstrip('/')
+                except Exception:
+                    pass
+        if not token:
+            token = (
+                os.environ.get('HINDSIGHT_API_KEY')
+                or os.environ.get('HERMES_MEMORY_TOKEN')
+                or os.environ.get('OPENROUTER_API_KEY')
+                or 'hindsight-default-secret-key-32chars!!'
+            ).strip()
+        payload = json.dumps({
+            'query': clean_q[:240],
+            'max_tokens': 800,
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            f'{api_url}/v1/default/banks/michael-os-leo/memories/recall',
+            data=payload,
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode('utf-8'))
+                raw_results = data.get('results') or data.get('memories') or data.get('items') or []
+                out = []
+                for r in raw_results:
+                    txt = str(r.get('text') or r.get('content') or r.get('fact') or '').strip() if isinstance(r, dict) else str(r or '').strip()
+                    if txt and txt not in out:
+                        out.append(txt[:280])
+                    if len(out) >= limit:
+                        break
+                return out
+    except Exception:
+        pass
+    return []
+
+
 _NONCONVERSATIONAL_PATTERNS = (
     'self-improvement review',
     'user profile updated',
@@ -307,6 +364,8 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     phone = f"+{digits}" if len(digits) >= 7 else ''
     email = ''
     address = ''
+    existing_solar = ''
+    power_bill = ''
 
     for idx, m in enumerate(turns or []):
         if not isinstance(m, dict) or m.get('role') != 'user':
@@ -315,6 +374,27 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         prev_asst = ''
         if idx > 0 and isinstance(turns[idx - 1], dict) and turns[idx - 1].get('role') == 'assistant':
             prev_asst = str(turns[idx - 1].get('content') or '').lower()
+
+        if not existing_solar:
+            if re.search(r'\b(no\s+solar|don\'?t\s+have\s+solar|do\s+not\s+have\s+solar|no\s+existing\s+solar|brand\s+new\s+solar|new\s+solar\s+install|never\s+had\s+solar|none\s+yet)\b', text, re.I):
+                existing_solar = 'No existing solar'
+            elif re.search(r'\b(already\s+have\s+solar|got\s+solar|existing\s+solar|have\s+a\s+\d+(?:\.\d+)?\s*kw|old\s+solar|replace\s+my\s+solar|upgrade\s+my\s+solar|\d+\s*(?:year|yr)s?\s+old(?:\s+solar)?)\b', text, re.I):
+                existing_solar = text[:120]
+            elif re.search(r'\b(have you got solar|do you have solar|existing solar|solar already)\b', prev_asst) and re.match(r'^(no|nah|nope|not yet|none|yes|yeah|yep)\b', text, re.I):
+                existing_solar = 'No existing solar' if re.match(r'^(no|nah|nope|not yet|none)\b', text, re.I) else text[:120]
+
+        if not power_bill:
+            bm = (
+                re.search(r'\$\s*\d{2,5}(?:\.\d{1,2})?(?:\s*(?:/|\bper\b|\ba\b)?\s*(?:quarter|qtr|quarterly|month|monthly|bi-?monthly|bill|year|yr))?', text, re.I)
+                or re.search(r'\b(\d{2,5})\s*(?:dollars|aud|bucks)?\s*(?:per|a|each)?\s*(quarter|qtr|quarterly|month|monthly|bill)\b', text, re.I)
+            )
+            if bm:
+                power_bill = bm.group(0).strip()
+            elif re.search(r'\b(power bill|electricity bill|energy bill|last bill|how much was your)\b', prev_asst) and re.search(r'\b\d{2,5}\b', text):
+                nm = re.search(r'\$?\s*\d{2,5}(?:\s*(?:per|a)?\s*(?:quarter|month|qtr))?', text, re.I)
+                if nm:
+                    val = nm.group(0).strip()
+                    power_bill = val if val.startswith('$') else f"${val}"
 
         if not email:
             em = re.search(r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', text, re.I)
@@ -414,21 +494,29 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     has_phone = len(re.sub(r'\D', '', phone)) >= 7
     has_email = '@' in email
     has_street_address = bool(address and re.search(r'\d', address) and len(address) >= 5)
+    has_existing_solar = len(existing_solar) >= 2
+    has_power_bill = len(power_bill) >= 2
 
     missing_natural = []
+    if not has_existing_solar:
+        missing_natural.append('whether you have solar already (and if yes, how old and what size in kW)')
+    if not has_power_bill:
+        missing_natural.append('how much your last power bill was ($$)')
+    if not has_street_address:
+        missing_natural.append(
+            f"the full street address of your property in {address}"
+            if address
+            else "your property's street address"
+        )
     if not has_full_name:
         missing_natural.append('your last name (so we have your full name)' if name else 'your full name (first and last)')
     if not has_phone:
         missing_natural.append('your best contact phone number')
     if not has_email:
         missing_natural.append('your email address')
-    if not has_street_address:
-        missing_natural.append(
-            f"the street address of your property in {address}"
-            if address
-            else "your property's street address and suburb"
-        )
 
+    solar_status = f"COLLECTED ({existing_solar})" if has_existing_solar else "MISSING (Ask: have you got solar already, and if yes how old and what size?)"
+    bill_status = f"COLLECTED ({power_bill})" if has_power_bill else "MISSING (Ask: how much was your last power bill?)"
     name_status = (
         f"COLLECTED ({name})"
         if has_full_name
@@ -446,16 +534,18 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         else (
             f'INCOMPLETE — only general area "{address}" is known (MUST ask for their full street address)'
             if address
-            else "MISSING (MUST ask for their property street address and suburb)"
+            else "MISSING (MUST ask for their property street address)"
         )
     )
 
     checklist_lines = [
-        'LIVE CRM LEAD CHECKLIST (REQUIRED FOR NEW LEAD PIPELINE EVEN WITHOUT CALENDAR BOOKING):',
-        f"- Full Name (First & Last): {name_status}",
-        f"- Phone Number: {phone_status}",
-        f"- Email Address: {email_status}",
-        f"- Property Street Address: {addr_status}",
+        'LIVE QUALIFICATION & CRM LEAD CHECKLIST (FROM PROCESS KNOWLEDGE BASE PLAYBOOK):',
+        f"- 1. Existing Solar Check (Have you got solar already? If yes, how old & how big?): {solar_status}",
+        f"- 2. Last Power Bill ($$): {bill_status}",
+        f"- 3. Property Street Address: {addr_status}",
+        f"- 4. Full Name (First & Last): {name_status}",
+        f"- 5. Phone Number: {phone_status}",
+        f"- 6. Email Address: {email_status}",
     ]
 
     return {
@@ -463,23 +553,24 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         'phone': phone,
         'email': email,
         'address': address,
+        'existing_solar': existing_solar,
+        'power_bill': power_bill,
         'has_full_name': has_full_name,
         'has_phone': has_phone,
         'has_email': has_email,
         'has_street_address': has_street_address,
+        'has_existing_solar': has_existing_solar,
+        'has_power_bill': has_power_bill,
         'missing_natural': missing_natural,
         'missing_str': _format_natural_list(missing_natural),
         'checklist_prompt': '\n'.join(checklist_lines),
     }
 
 
-def _guard_premature_lead_handoff(reply_text: str, missing_natural: list) -> str:
+def _is_premature_lead_handoff(reply_text: str, missing_natural: list) -> bool:
     if not reply_text or not missing_natural:
-        return reply_text
-    if not _PREMATURE_HANDOFF_RE.search(reply_text):
-        return reply_text
-    needed = _format_natural_list(missing_natural)
-    return f"I'd be happy to set up your solar and battery consultation with our team. Before I register your inquiry in our CRM, could you please share {needed} so I can confirm all your details?"
+        return False
+    return bool(_PREMATURE_HANDOFF_RE.search(reply_text))
 
 
 def _append_customer_sync_queue(item: dict):
@@ -710,17 +801,29 @@ def build_engine_adapter(route,member,home,group):
                     agent_instr = live_cfg.get('customer_agent_instructions') or ''
                     company_name = live_cfg['company_name'] or 'Your Choice Solar'
                     customer_phone_display = f'+{sender_digits}' if sender_digits else 'their WhatsApp number'
+                    recalled_mem = await asyncio.to_thread(
+                        _recall_memory_items,
+                        f"{agent_name} customer service communication style solar qualifying questions {data.get('senderName') or ''} {msg_text[:100]}",
+                        5,
+                    )
+                    mem_block = (
+                        "PERSISTENT HINDSIGHT MEMORY (LEARNED COMMUNICATION & CUSTOMER CONTEXT):\n"
+                        + "\n".join(f"- {m}" for m in recalled_mem)
+                        if recalled_mem
+                        else ""
+                    )
                     event.channel_prompt = '\n\n'.join(filter(None, [
                         event.channel_prompt,
                         get_whatsapp_reply_style(),
-                        f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp. "
+                        f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp, linked directly to the Process Knowledge Base ('YCS — customer-service drafting playbook'). "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
                         f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): Speak like a real, natural human specialist texting on WhatsApp. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks [Name]', 'Got it, [Name]', or 'Great, [Name]'. Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. "
                         "PROFESSIONAL BUSINESS TONE (NO SLANG): Always use warm, courteous, professional English. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
-                        f"MANDATORY FULL LEAD COLLECTION & DATA CONFIRMATION (EVEN WITHOUT A CALENDAR BOOKING): Every inquiry must be added to the Central OS CRM New Lead pipeline so our team is notified. NEVER close the conversation or say 'A specialist will reach out shortly' or 'I will arrange a consultation' while Full Name (first AND last name), Phone Number, Email Address, or Property Street Address are still missing. Once all 4 details are collected, read back and confirm all collected details with the customer and append [[LEAD:{{\"name\":\"First Last\",\"phone\":\"{customer_phone_display}\",\"email\":\"...\",\"address\":\"...\",\"notes\":\"...\"}}]]. "
+                        f"MANDATORY SOLAR QUALIFICATION & CRM NEW LEAD CONFIRMATION (FROM PROCESS PLAYBOOK): Every inquiry must be qualified and added to the Central OS CRM New Lead pipeline so our team is notified: (1) Have you got solar already (if yes, how old and how big in kW)? (2) How much was your last power bill ($$)? (3) What is your property street address? (4) Full Name (first AND last name), Phone Number, and Email Address. NEVER close the conversation or say 'A specialist will reach out shortly' while any of these details are still missing. Once collected, read back and confirm all collected details with the customer and append [[LEAD:{{\"name\":\"First Last\",\"phone\":\"{customer_phone_display}\",\"email\":\"...\",\"address\":\"...\",\"notes\":\"...\"}}]]. "
                         f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row. "
                         f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
                         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
+                        mem_block,
                         live_box3,
                     ]))
                 else:

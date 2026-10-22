@@ -276,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(status,data)
    except ValueError:return self.reply(400,{'error':{'message':'Invalid memory request'}})
    except Exception:return self.reply(503,{'error':{'message':'Memory processor unavailable'}})
-  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/message','/os/sync-snapshot'}:
+  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/memory/recall','/os/message','/os/sync-snapshot'}:
    is_admin=self.authorized()
    if is_admin:
     self._record_box3_origin()
@@ -291,11 +291,11 @@ class Handler(BaseHTTPRequestHandler):
      inspection_chat=chat
    else:
     inspection_chat=chat
-   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/message','/os/sync-snapshot'}:
+   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/memory/recall','/os/message','/os/sync-snapshot'}:
     return self.reply(401,{'error':'Unauthorized'})
    try:
     length=int(self.headers.get('Content-Length','0'))
-    max_len=2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/company','/os/whatsapp/customer-sync'} else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/memory/retain','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192))
+    max_len=2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/company','/os/whatsapp/customer-sync'} else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/memory/retain','/os/memory/recall','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192))
     if not 0<length<=max_len:return self.reply(413,{'error':'Tool request too large'})
     body=json.loads(self.rfile.read(length))
     if self.path=='/os/memory/retain':
@@ -309,6 +309,12 @@ class Handler(BaseHTTPRequestHandler):
         daemon=True,
        ).start()
      return self.reply(200,{'ok':True,'retained':len(entries)})
+    if self.path=='/os/memory/recall':
+     from hermes_plugins.central_ai_whatsapp.adapter import _recall_memory_items
+     q=str(body.get('query') or '').strip()
+     lim=min(int(body.get('limit') or 5),10)
+     memories=_recall_memory_items(q,lim)
+     return self.reply(200,{'ok':True,'memories':memories})
     if self.path=='/os/whatsapp/customer-sync':
      act=str(body.get('action') or 'pull').strip().lower()
      if act in {'dismiss','ack'}:
@@ -1120,9 +1126,10 @@ def _start_customer_whatsapp_poller():
      _forward_customer_whatsapp_to_box3,
      _append_customer_sync_queue,
      _retain_memory_item,
+     _recall_memory_items,
      _fetch_live_box3_context,
      _extract_and_analyze_customer_lead,
-     _guard_premature_lead_handoff,
+     _is_premature_lead_handoff,
     )
     from whatsapp_system_context import clean_reply_punctuation
     _ensure_customer_caller_enabled()
@@ -1212,9 +1219,13 @@ def _start_customer_whatsapp_poller():
        agent_role=live_cfg.get('customer_agent_role') or 'Customer Service & Solar Specialist'
        agent_instr=live_cfg.get('customer_agent_instructions') or ''
        agent_kb=live_cfg.get('customer_agent_knowledge') or []
-       kb_text='\n\n'.join(f"[{c.get('title','')}]\n{c.get('content','')}" for c in agent_kb if isinstance(c,dict) and c.get('content'))
+       sorted_kb=sorted([c for c in agent_kb if isinstance(c,dict) and c.get('content')],key=lambda x:0 if str(x.get('category') or '').lower()=='process' else 1)
+       kb_text='\n\n'.join(f"[{c.get('title','')}{' (' + str(c.get('category')) + ')' if c.get('category') else ''}]\n{c.get('content','')}" for c in sorted_kb)
        if not kb_text:
         kb_text=_fetch_live_box3_context(msg_text,ROOT)
+       recalled_mem=_recall_memory_items(f"{agent_name} customer service communication style solar qualifying questions {sender_name} {msg_text[:100]}",5)
+       if recalled_mem:
+        kb_text=(kb_text+"\n\n[PERSISTENT HINDSIGHT MEMORY]\n"+"\n".join(f"- {m}" for m in recalled_mem)).strip()
        company_name=live_cfg.get('company_name') or 'Your Choice Solar'
        solar_calc=_calculate_solar_pre_assessment(msg_text)
        prior_turns=history_by_sender.get(sender_id,[])[-8:]
@@ -1252,6 +1263,23 @@ def _start_customer_whatsapp_poller():
          raw_content=((jout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
          raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',raw_content,flags=re.IGNORECASE)
          reply_text=clean_reply_punctuation(raw_content).strip()
+         if reply_text and _is_premature_lead_handoff(reply_text,lead_info['missing_natural']):
+          retry_job={
+           **job_in,
+           'session_id':str(UUID(int=(int(time.time()*1000)+1)%((1<<128)-1))),
+           'messages':[
+            *job_in['messages'],
+            {'role':'assistant','content':reply_text},
+            {'role':'user','content':f"[PROCESS PLAYBOOK SELF-CORRECTION: Your draft reply above tried to hand off or close the conversation before completing the Process Knowledge Base qualification and CRM checklist. Still missing: {lead_info['missing_str']}. Rewrite your reply in your natural human voice (no 'Thanks' or greeting prefixes) to warmly ask for the next missing detail(s) instead of closing.]"},
+           ],
+          }
+          rproc=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],input=json.dumps(retry_job),capture_output=True,text=True,encoding='utf-8',timeout=30,env=env,cwd=ROOT)
+          if rproc.returncode==0 and rproc.stdout:
+           rjout=json.loads(rproc.stdout)
+           rraw=((rjout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
+           if rraw.strip():
+            raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',rraw,flags=re.IGNORECASE) or raw_tags
+            reply_text=clean_reply_punctuation(rraw).strip()
        except Exception:
         reply_text=None
        if not reply_text:
@@ -1275,8 +1303,6 @@ def _start_customer_whatsapp_poller():
         stripped_re=re.sub(rf",\s*{esc_fn}(?=[,.!?]|$)","",stripped_re,flags=re.IGNORECASE).strip()
        if len(stripped_re)>=8:
         reply_text=stripped_re[0].upper()+stripped_re[1:]
-      if reply_text and not box3_res.get('handled_by_box3'):
-       reply_text=_guard_premature_lead_handoff(reply_text,lead_info['missing_natural'])
       sent_ok=outbox_sent or bool(existing_box3_reply)
       can_send=False
       if reply_text and not outbox_sent:

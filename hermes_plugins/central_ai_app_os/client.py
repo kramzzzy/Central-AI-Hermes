@@ -175,19 +175,36 @@ _DEFAULT_YCS_SNAPSHOT = {
             "id": "ycs-kb-6-customer-service-playbook",
             "title": "YCS — customer-service drafting playbook",
             "category": "Process",
-            "content": "Read current CRM records before updating. Save requested client facts, notes and next actions through CRM tools, and create follow-up tasks. For enquiries identify new installation, upgrade, existing-job update or reported issue. Ask for missing location, decision-maker, existing equipment, goals and billing period.",
+            "content": (
+                "UNIFIED CUSTOMER SERVICE, WHATSAPP, WEBSITE & SOCIAL MEDIA INQUIRY PLAYBOOK (PROCESS):\n"
+                "1. One Unified Natural Human Communication Style (WhatsApp, Website, Facebook & Instagram): Speak like a welcoming, courteous, natural human specialist in clear Australian English (2 to 3 natural plain-text sentences). Always use polite, professional greetings such as 'Hi [Name]' or 'Hello [Name]' on the very first message only—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. Never start replies with 'Thanks', 'Thank you', 'Thanks [Name]', or 'Got it, [Name]', and never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up turns.\n"
+                "2. Mandatory Solar Qualifying Questions (Client Qualification Standard): Naturally qualify every solar and battery inquiry by asking:\n"
+                "   - Existing Solar Check: 'Have you got solar already? (If yes, how old is it and how big in kW?)'\n"
+                "   - Last Power Bill ($$): 'How much was your last power bill?'\n"
+                "   - Property Street Address: 'What is your property street address?' (If only a suburb/city like 'Gold Coast' was given, ask for the full street address).\n"
+                "3. Full Contact Details & Data Confirmation (For CRM New Lead Pipeline Even Without Calendar Booking): Collect and confirm the customer's Full Name (first and last name), Phone Number, Email Address, Property Street Address, Existing Solar status (age & size if yes), and Last Power Bill ($$). Never close the chat or say 'A specialist will reach out shortly' while any of these details are still missing. Once collected, explicitly read back and confirm all details with the customer so the inquiry is automatically added to the CRM New Lead pipeline and our team is notified.\n"
+                "4. Strict System Data Grounding (Never Invent or Recreate Data): Rely strictly on the facts in your assigned Knowledge Base, Agent Instructions, CRM records, and Live Calendar. Never invent, recreate, calculate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, finance terms, or warranty lengths)."
+            ),
         },
         {
             "id": "ycs-kb-7-social-media-playbook",
             "title": "YCS — social-media drafting playbook",
             "category": "Process",
-            "content": "Save captions, content plans and briefs in Files, create production tasks and local calendar entries for approved planning dates. Plan Facebook/Instagram captions with objective, audience, platform, proposed CTA, visual brief/alt text, sources and approval gaps.",
+            "content": (
+                "UNIFIED SOCIAL MEDIA & INQUIRY PROCESS (FACEBOOK, INSTAGRAM, WHATSAPP & WEBSITE):\n"
+                "1. Shared Communication & Inquiry Qualification Style: When drafting or replying to Facebook and Instagram inquiries/DMs/comments, share the exact same warm, courteous, natural human communication style as WhatsApp and Website Chat (polite Australian English, no 'G'day'/'mate' slang, no 'Thanks [Name]' filler, greet once only). Qualify inquiries using the unified process: (a) Have you got solar already (if yes, how old and how big in kW)? (b) How much was your last power bill ($$)? (c) What is your property street address? (d) Full Name (first & last), Phone Number, and Email Address confirmed for the CRM New Lead pipeline.\n"
+                "2. CURRENT APP OS CONTENT WORKFLOW: Save captions, content plans and briefs in Files, create production tasks and local calendar entries for approved planning dates. Plan Facebook/Instagram captions with objective, audience, platform, proposed CTA, visual brief/alt text, sources and approval gaps."
+            ),
         },
         {
             "id": "ycs-kb-8-appointment-playbook",
             "title": "YCS — appointment coordination playbook",
             "category": "Process",
-            "content": "Read local calendar events and workspace timezone. Collect purpose, client/contact details, location and explicit preferred dates, duration and timezone. Save related CRM notes and follow-up tasks.",
+            "content": (
+                "UNIFIED APPOINTMENT & QUALIFICATION PROCESS:\n"
+                "1. Shared Communication & Solar Qualification Standard: Use the unified warm, natural human communication style (greet once only on the first turn, never start with 'Thanks [Name]' or 'Got it, [Name]', no casual slang). Ensure every inquiry is qualified with: (a) Have you got solar already (if yes, how old and how big in kW)? (b) How much was your last power bill ($$)? (c) What is your property street address? (d) Full Name (first & last), Phone Number, and Email Address read back and confirmed for the CRM New Lead pipeline.\n"
+                "2. CURRENT APP OS CALENDAR WORKFLOW: Read local calendar events and workspace timezone. Collect purpose, client/contact details, location and explicit preferred dates, duration and timezone. Save related CRM notes and follow-up tasks."
+            ),
         },
     ],
     "agents": [
