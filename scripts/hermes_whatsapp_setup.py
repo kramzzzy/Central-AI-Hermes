@@ -73,22 +73,36 @@ class WhatsAppSetup:
         if body['action']=='groups':
             return json.loads(self.fetch('/setup/groups',start=True, line=line))
         if body['action'] == 'start':
-            self.fetch('/pairing/start', start=True, line=line)
             import time
-            for _ in range(5):
-                time.sleep(0.2)
-                try:
-                    st = json.loads(self.fetch('/status', line=line))
-                    if st.get('state') == 'pairing' and self.fetch('/qr.png', line=line):
-                        break
-                except Exception:
-                    pass
+            already_has_qr = False
+            try:
+                st0 = json.loads(self.fetch('/status', line=line))
+                if st0.get('state') == 'pairing':
+                    px0 = self.fetch('/qr.png', line=line)
+                    if px0 and px0.startswith(b'\x89PNG\r\n\x1a\n'):
+                        already_has_qr = True
+            except Exception:
+                pass
+            if not already_has_qr:
+                self.fetch('/pairing/start', start=True, line=line)
+                for _ in range(18):
+                    time.sleep(0.25)
+                    try:
+                        st = json.loads(self.fetch('/status', line=line))
+                        if st.get('state') == 'connected':
+                            break
+                        if st.get('state') == 'pairing':
+                            px = self.fetch('/qr.png', line=line)
+                            if px and px.startswith(b'\x89PNG\r\n\x1a\n'):
+                                break
+                    except Exception:
+                        pass
         if body['action'] == 'disconnect':
             try:
                 self.fetch('/pairing/disconnect', start=True, line=line)
             except Exception:
                 pass
-            phone_dir = Path('/data')
+            phone_dir = Path('/data/customer') if line == 'customer' else Path('/data')
             for f in [phone_dir / 'remote-engine-enabled', phone_dir / 'call-request.json']:
                 if f.is_file():
                     try: f.unlink()
@@ -107,6 +121,13 @@ class WhatsAppSetup:
                 result['push_name'] = state['push_name']
         if name == 'pairing':
             pixels = self.fetch('/qr.png', line=line)
+            if not pixels:
+                import time
+                for _ in range(6):
+                    time.sleep(0.3)
+                    pixels = self.fetch('/qr.png', line=line)
+                    if pixels and pixels.startswith(b'\x89PNG\r\n\x1a\n'):
+                        break
             if pixels and pixels.startswith(b'\x89PNG\r\n\x1a\n'):
                 result['qr'] = 'data:image/png;base64,' + base64.b64encode(pixels).decode('ascii')
         return result

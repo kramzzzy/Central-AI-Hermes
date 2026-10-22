@@ -222,7 +222,14 @@ func main() {
     pairingCancel()
     pairingCancel = nil
    }
+   doneCh := pairingDone
    pairingMu.Unlock()
+   if doneCh != nil {
+    select {
+    case <-doneCh:
+    case <-time.After(2 * time.Second):
+    }
+   }
    if socket.Store!=nil {
     _=socket.Store.Delete(ctx)
     socket.Store.ID=nil
@@ -468,7 +475,7 @@ func main() {
     go func() {
       time.Sleep(2 * time.Second)
       if socket.Store != nil && socket.Store.ID != nil && !socket.IsConnected() {
-        connectPairedDevice(ctx, socket)
+        startPairing(ctx, socket)
       }
     }()
   case *events.LoggedOut:
@@ -481,7 +488,7 @@ func main() {
       socket.Store.ID=nil
      }
      socket.Disconnect()
-     go connectPairedDevice(ctx,socket)
+     startPairing(ctx,socket)
     }()
   }
  })
@@ -508,10 +515,10 @@ func main() {
   if device!=nil && device.ID!=nil {
    _ = os.WriteFile(marker,[]byte("enabled\n"),0600)
   }
-  current.Lock();current.State="standby";current.Unlock()
+  current.Lock();if current.State=="starting" {current.State="standby"};current.Unlock()
   if err:=waitEngineEnabled(ctx,marker);err!=nil {log.Print("engine startup cancelled");return}
  }
-	go connectPairedDevice(ctx, socket)
+	startPairing(ctx, socket)
 	// Proactive WhatsApp Connection Keep-Alive & Self-Healing Watchdog
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -536,7 +543,7 @@ func main() {
 					current.Lock()
 					current.State = "reconnecting"
 					current.Unlock()
-					go connectPairedDevice(ctx, socket)
+					startPairing(ctx, socket)
 				}
 			}
 		}

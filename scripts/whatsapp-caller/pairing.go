@@ -10,11 +10,14 @@ import (
 )
 
 var (
-	pairingMu     sync.Mutex
-	pairingCancel context.CancelFunc
+	pairingMu        sync.Mutex
+	pairingCancel    context.CancelFunc
+	pairingDone      chan struct{}
+	pairingStartedAt time.Time
 )
 
 // startPairing initiates or restarts the WhatsApp QR pairing flow.
+// Guarantees at most one active pairing/connection loop on socket at any time.
 func startPairing(parentCtx context.Context, socket *wa.Client) {
 	if socket == nil {
 		return
@@ -22,38 +25,65 @@ func startPairing(parentCtx context.Context, socket *wa.Client) {
 	pairingMu.Lock()
 	defer pairingMu.Unlock()
 
-	// If already connected with an active stored session, don't restart pairing
+	// If already connected with an active stored session, ensure connected state
 	if socket.Store != nil && socket.Store.ID != nil {
 		current.Lock()
 		current.LinkedNumber = socket.Store.ID.User
 		if socket.Store.PushName != "" {
 			current.PushName = socket.Store.PushName
 		}
-		current.State = "connected"
+		if socket.IsConnected() {
+			current.State = "connected"
+			current.Unlock()
+			return
+		}
 		current.Unlock()
-		return
 	}
 
-	// Cancel previous pairing attempt if one was running
-	if pairingCancel != nil {
-		pairingCancel()
-		pairingCancel = nil
+	// If a pairing loop is already running and either has a valid QR code or started recently (<12s),
+	// do NOT cancel or disconnect it—let it finish emitting/displaying the QR code.
+	if pairingDone != nil {
+		select {
+		case <-pairingDone:
+			pairingDone = nil
+		default:
+			current.Lock()
+			st := current.State
+			hasValidCode := current.code != "" && time.Now().Before(current.expires)
+			current.Unlock()
+			if hasValidCode || st == "reconnecting" || (st == "pairing" && time.Since(pairingStartedAt) < 12*time.Second) {
+				return
+			}
+			// Otherwise cancel stale loop and wait for it to exit cleanly
+			if pairingCancel != nil {
+				pairingCancel()
+				pairingCancel = nil
+			}
+			doneCh := pairingDone
+			pairingMu.Unlock()
+			select {
+			case <-doneCh:
+			case <-time.After(2 * time.Second):
+			}
+			pairingMu.Lock()
+			pairingDone = nil
+		}
 	}
 
 	current.Lock()
-	current.State = "pairing"
-	current.code = ""
+	if socket.Store == nil || socket.Store.ID == nil {
+		current.State = "pairing"
+	}
 	current.Unlock()
 
 	pairCtx, cancel := context.WithCancel(parentCtx)
 	pairingCancel = cancel
+	done := make(chan struct{})
+	pairingDone = done
+	pairingStartedAt = time.Now()
 
 	go func() {
-		defer func() {
-			pairingMu.Lock()
-			pairingCancel = nil
-			pairingMu.Unlock()
-		}()
+		defer close(done)
 		connectPairedDevice(pairCtx, socket)
 	}()
 }
