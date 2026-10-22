@@ -20,7 +20,10 @@ binding=contextvars.ContextVar('leo_text_binding',default=None)
 def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp'):
     try:
         import os, urllib.request
-        if not content or not isinstance(content, str) or not content.strip():
+        if not content or not isinstance(content, str) or len(content.strip()) < 20:
+            return
+        ctx_norm = str(context or 'whatsapp').strip().lower()
+        if ctx_norm in {'whatsapp', 'website', 'customer'} and os.environ.get('HINDSIGHT_RETAIN_ALL_CHAT', '').lower() != 'true':
             return
         api_url = (
             os.environ.get('HINDSIGHT_URL')
@@ -1175,8 +1178,6 @@ def build_engine_adapter(route,member,home,group):
 
                             event=await self._build_message_event(data)
                             if event:
-                                if getattr(event, 'text', None):
-                                    asyncio.create_task(asyncio.to_thread(_retain_memory_item, event.text, 'User', route))
                                 await self.handle_message(event)
                             else:await self._complete(data,'rejected')
                         except asyncio.CancelledError:
@@ -1275,7 +1276,8 @@ def build_engine_adapter(route,member,home,group):
                     'text': raw_bound.get('body'),
                     'reply': sync_reply,
                 }))
-            asyncio.create_task(asyncio.to_thread(_retain_memory_item, cleaned, 'Leo', route))
+            if raw_tags:
+                asyncio.create_task(asyncio.to_thread(_retain_memory_item, f"{cleaned} {' '.join(raw_tags)}", 'Leo', route, 'qualified_lead_outcome'))
             return await super().send(chat_id,cleaned,reply_to=None,metadata=metadata)
 
         async def edit_message(self,chat_id,message_id,content,*,finalize=False):

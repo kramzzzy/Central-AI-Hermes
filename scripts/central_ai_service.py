@@ -90,16 +90,28 @@ def install_memory(home):
             h_data = {
                 "mode": "local_external",
                 "bank_id": target_bank_id,
-                "recall_budget": "mid",
+                "recall_budget": "low",
+                "auto_retain": False,
+                "retain_every_n_turns": 25,
                 "timeout": 120
             }
             atomic_write(hindsight_cfg, json.dumps(h_data, indent=2) + '\n')
         else:
             try:
                 cur_h = json.loads(hindsight_cfg.read_text(encoding='utf-8'))
-                if isinstance(cur_h, dict) and cur_h.get("bank_id") == "michael-os-leo-whatsapp-text":
-                    cur_h["bank_id"] = "michael-os-leo"
-                    atomic_write(hindsight_cfg, json.dumps(cur_h, indent=2) + '\n')
+                if isinstance(cur_h, dict):
+                    changed = False
+                    if cur_h.get("bank_id") == "michael-os-leo-whatsapp-text":
+                        cur_h["bank_id"] = "michael-os-leo"
+                        changed = True
+                    if cur_h.get("auto_retain") is not False:
+                        cur_h["auto_retain"] = False
+                        changed = True
+                    if cur_h.get("retain_every_n_turns") != 25:
+                        cur_h["retain_every_n_turns"] = 25
+                        changed = True
+                    if changed:
+                        atomic_write(hindsight_cfg, json.dumps(cur_h, indent=2) + '\n')
             except Exception:
                 pass
 

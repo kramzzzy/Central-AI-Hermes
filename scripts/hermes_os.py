@@ -345,7 +345,8 @@ def _configure_profile(home, plugin, allow_enable):
             'api_key': hs_key,
             'bank_id': target_bank_id,
             'recall_budget': 'low',
-            'retain_every_n_turns': 3,
+            'auto_retain': False,
+            'retain_every_n_turns': 25,
             'timeout': 120
         }, indent=2))
     else:
@@ -359,8 +360,11 @@ def _configure_profile(home, plugin, allow_enable):
                 if cur_hs.get('recall_budget') != 'low':
                     cur_hs['recall_budget'] = 'low'
                     changed = True
-                if cur_hs.get('retain_every_n_turns') != 3:
-                    cur_hs['retain_every_n_turns'] = 3
+                if cur_hs.get('auto_retain') is not False:
+                    cur_hs['auto_retain'] = False
+                    changed = True
+                if cur_hs.get('retain_every_n_turns') != 25:
+                    cur_hs['retain_every_n_turns'] = 25
                     changed = True
                 if changed:
                     hs_cfg.write_text(json.dumps(cur_hs, indent=2))

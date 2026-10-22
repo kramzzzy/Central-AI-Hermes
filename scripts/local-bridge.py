@@ -1025,7 +1025,7 @@ def _fast_draft_only_completion(body,settings_dict):
   headers={
    'Authorization':f'Bearer {api_key}',
    'Content-Type':'application/json',
-   'HTTP-Referer':'https://central-ai.local',
+   'HTTP-Referer':'https://central-ai.app',
    'X-Title':'Central AI',
   },
   method='POST',
@@ -1566,10 +1566,9 @@ def _start_customer_whatsapp_poller():
        proc_map[msg_id]=entry_record
        _save_customer_processed(proc_map)
       _append_customer_sync_queue(entry_record)
-      cust_label=f"{sender_name or 'Customer'} (+{sender_id})" if sender_id else (sender_name or 'Customer')
-      threading.Thread(target=_retain_memory_item,args=(msg_text,cust_label,'customer-whatsapp','whatsapp'),daemon=True).start()
-      if reply_text and sent_ok:
-       threading.Thread(target=_retain_memory_item,args=(reply_text,'James (Customer Service)','customer-whatsapp','whatsapp'),daemon=True).start()
+      if raw_tags and reply_text and sent_ok and not box3_res.get('handled_by_box3'):
+       cust_label=f"{sender_name or 'Customer'} (+{sender_id})" if sender_id else (sender_name or 'Customer')
+       threading.Thread(target=_retain_memory_item,args=(f"Customer ({cust_label}): {msg_text} -> James: {reply_text} {' '.join(raw_tags)}",'James (Customer Service)','customer-whatsapp','qualified_lead_outcome'),daemon=True).start()
      finally:
       with customer_wa_lock:
        in_progress_customer_msgs.discard(msg_id)
