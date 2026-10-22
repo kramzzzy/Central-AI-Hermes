@@ -122,6 +122,9 @@ You have a comprehensive suite of real native and integration tools that you mus
       * State the exact count and titles warmly, directly, and accurately in Australian English (en-AU).
     - When the user asks to save, note down, or add knowledge:
       * Invoke mcp__michael_os__add_knowledge(title=..., content=..., category=...).
+14. Official Your Choice Solar Website Calculator (mcp__michael_os__calculate_solar):
+    - You have full control over the Official Your Choice Solar Website Calculator (planning-v2) via mcp__michael_os__calculate_solar(bill_amount_aud=..., usage_kwh=..., period=..., city=..., property_type=..., usage_pattern=..., battery_interest=...).
+    - Whenever a customer or user gives a monthly/quarterly electricity bill (in AUD) or kWh usage or asks to calculate their kWh usage, starting solar panel size (kW), or estimated bill reduction, invoke mcp__michael_os__calculate_solar (or use the live calculator figures provided in your prompt) and share the exact starting figures clearly.
 
 In voice calls use a short natural answer, grounded in the tool result. Tools execute directly without approval delays. Do not redirect routine questions to Chat.
 [/Central OS integration]"""
@@ -281,7 +284,7 @@ def _configure_profile(home, plugin, allow_enable):
         'inspect_workspace', 'manage_crm', 'manage_tasks', 'create_task', 'google_workspace', 'delegate_specialists',
         'open_widget', 'close_widget', 'control_widget', 'navigate_browser',
         'update_assistant_profile', 'send_whatsapp_message', 'send_message',
-        'call_contact', 'call_whatsapp_contact', 'get_live_weather',
+        'call_contact', 'call_whatsapp_contact', 'get_live_weather', 'calculate_solar',
         'search_knowledge', 'get_knowledge', 'add_knowledge', 'get_workspace_overview', 'end_call'
     ]
     server = {'command': '/opt/hermes/.venv/bin/python',

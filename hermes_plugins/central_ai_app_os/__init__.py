@@ -9,7 +9,7 @@ from .client import (
     send_whatsapp_message, send_message,
     call_contact, call_whatsapp_contact,
     open_widget, close_widget, control_widget,
-    navigate_browser, get_live_weather, end_call
+    navigate_browser, get_live_weather, calculate_solar, end_call
 )
 
 TOOLS = {
@@ -381,6 +381,31 @@ TOOLS = {
             "parameters": {
                 "type": "object",
                 "properties": {},
+            },
+        },
+    },
+    "mcp__michael_os__calculate_solar": {
+        "handler": calculate_solar,
+        "check_fn": None,
+        "emoji": "⚡",
+        "description": "Run the Official Your Choice Solar Website Calculator (planning-v2) from a bill amount (AUD) or electricity usage (kWh).",
+        "schema": {
+            "name": "mcp__michael_os__calculate_solar",
+            "description": "Run the Official Your Choice Solar Website Calculator (planning-v2) from a customer's electricity bill (AUD) or electricity usage (kWh). Returns estimated daily/monthly/annual kWh usage, starting solar panel size (kW / kWp), annual solar generation (kWh), and estimated yearly/monthly/quarterly bill reduction (AUD).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bill_amount_aud": {"type": "number", "description": "Electricity bill amount in AUD (e.g. 1200 for $1,200/month or 600 for $600/quarter)."},
+                    "usage_kwh": {"type": "number", "description": "Electricity usage in kWh if the customer knows their kWh instead of bill amount."},
+                    "period": {"type": "string", "enum": ["daily", "day", "monthly", "month", "two_months", "quarterly", "quarter", "year"], "description": "Billing or usage period ('monthly', 'quarterly', 'daily')."},
+                    "city": {"type": "string", "description": "Australian city or location (e.g. 'Brisbane, QLD', 'Gold Coast', 'Sydney', 'Melbourne', 'Perth')."},
+                    "property_type": {"type": "string", "enum": ["home", "business", "farm"], "description": "Property type ('home', 'business', or 'farm')."},
+                    "usage_pattern": {"type": "string", "enum": ["daytime", "evenings", "mix"], "description": "When the property uses electricity most ('daytime'=75% self-use, 'mix'=50%, 'evenings'=25%)."},
+                    "battery_interest": {"type": "string", "enum": ["yes", "no", "not_sure"], "description": "Whether interested in a solar battery ('yes', 'no', 'not_sure')."},
+                    "tariff_rate_aud": {"type": "number", "description": "Electricity import usage rate in AUD/kWh (default 0.30)."},
+                    "daily_supply_charge_aud": {"type": "number", "description": "Daily supply charge in AUD/day (default 1.00)."},
+                    "feed_in_tariff_aud": {"type": "number", "description": "Export feed-in tariff in AUD/kWh (default 0.00)."},
+                },
             },
         },
     },

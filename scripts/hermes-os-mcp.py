@@ -527,6 +527,40 @@ def end_call() -> dict:
     return {'ok': True, 'action': 'end_call', 'status': 'Call termination signal dispatched.'}
 
 
+@server.tool(name='calculate_solar')
+def calculate_solar(
+    bill_amount_aud: float | None = None,
+    usage_kwh: float | None = None,
+    period: str = 'quarterly',
+    city: str = 'Brisbane, QLD',
+    property_type: str = 'home',
+    usage_pattern: str = 'mix',
+    battery_interest: str = 'not_sure',
+    tariff_rate_aud: float = 0.30,
+    daily_supply_charge_aud: float = 1.00,
+    feed_in_tariff_aud: float = 0.00,
+) -> dict:
+    """Run the Official Your Choice Solar Website Calculator (planning-v2) from a customer's electricity bill (AUD) or electricity usage (kWh).
+    Returns estimated daily/monthly/annual kWh usage, starting solar panel size (kW / kWp), annual solar generation (kWh), and estimated yearly/monthly/quarterly bill reduction (AUD).
+    """
+    payload = {
+        'bill_amount_aud': bill_amount_aud,
+        'usage_kwh': usage_kwh,
+        'period': period,
+        'city': city,
+        'property_type': property_type,
+        'usage_pattern': usage_pattern,
+        'battery_interest': battery_interest,
+        'tariff_rate_aud': tariff_rate_aud,
+        'daily_supply_charge_aud': daily_supply_charge_aud,
+        'feed_in_tariff_aud': feed_in_tariff_aud,
+    }
+    try:
+        return _plugin_client.calculate_solar_planning_v2(payload)
+    except Exception as exc:
+        return {'error': f'Solar calculation failed: {str(exc)}'}
+
+
 if __name__ == '__main__':
     server.run(transport='stdio')
 

@@ -177,13 +177,9 @@ _DEFAULT_YCS_SNAPSHOT = {
             "category": "Process",
             "content": (
                 "UNIFIED CUSTOMER SERVICE, WHATSAPP, WEBSITE & SOCIAL MEDIA INQUIRY PLAYBOOK (PROCESS):\n"
-                "1. One Unified Natural Human Communication Style (WhatsApp, Website, Facebook & Instagram): Speak like a welcoming, courteous, natural human specialist in clear Australian English (2 to 3 natural plain-text sentences). Always use polite, professional greetings such as 'Hi [Name]' or 'Hello [Name]' on the very first message only—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. Never start replies with 'Thanks', 'Thank you', 'Thanks [Name]', or 'Got it, [Name]', and never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up turns.\n"
-                "2. Mandatory Solar Qualifying Questions (Client Qualification Standard): Naturally qualify every solar and battery inquiry by asking:\n"
-                "   - Existing Solar Check: 'Have you got solar already? (If yes, how old is it and how big in kW?)'\n"
-                "   - Last Power Bill ($$): 'How much was your last power bill?'\n"
-                "   - Property Street Address: 'What is your property street address?' (If only a suburb/city like 'Gold Coast' was given, ask for the full street address).\n"
-                "3. Full Contact Details & Data Confirmation (For CRM New Lead Pipeline Even Without Calendar Booking): Collect and confirm the customer's Full Name (first and last name), Phone Number, Email Address, Property Street Address, Existing Solar status (age & size if yes), and Last Power Bill ($$). Never close the chat or say 'A specialist will reach out shortly' while any of these details are still missing. Once collected, explicitly read back and confirm all details with the customer so the inquiry is automatically added to the CRM New Lead pipeline and our team is notified.\n"
-                "4. Strict System Data Grounding (Never Invent or Recreate Data): Rely strictly on the facts in your assigned Knowledge Base, Agent Instructions, CRM records, and Live Calendar. Never invent, recreate, calculate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, finance terms, or warranty lengths)."
+                "1. Start Simple & Friendly (No Information Overload): Speak like a warm, friendly, natural human in clear Australian English (1 to 2 short plain-text sentences max). Never output internal notes, reminders, or parenthetical stage text such as '(Next step: ...)' or '(Note: ...)'. When a customer starts with a simple greeting like 'Hi' or 'Hello', reply ONLY with a warm, simple 1-sentence greeting introducing yourself and asking how you can help today—never dump company information or ask qualifying questions on an opening greeting. Never use casual slang ('G'day', 'mate', 'howdy'), never start replies with 'Thanks' or 'Got it, [Name]', and never repeat 'Hi' or the customer's first name on follow-up messages.\n"
+                "2. Official Your Choice Solar Calculator (planning-v2) & Answering Questions First: You have full control over the official Your Choice Solar Website Calculator (planning-v2) via live prompt calculation or mcp__michael_os__calculate_solar. Whenever a customer shares their power bill or kWh usage or asks to calculate their kWh, starting solar panel size (kW), or estimated bill reduction (e.g. 'how much kWh?', 'calculate first', 'what size system?'), share the official calculator's starting figures clearly in 1 to 2 simple sentences first (estimated daily/monthly kWh usage, starting kW of panels to explore, and estimated yearly/monthly bill reduction), and then ask ONLY ONE simple follow-up question per turn: (1) Have you got solar already? (2) Roughly how much was your last power bill ($$)? (3) What is your property street address? (4) Full Name (first and last), Phone Number, and Email Address confirmed for the CRM New Lead pipeline.\n"
+                "3. Strict System Data Grounding: Rely on your assigned Knowledge Base, Agent Instructions, Official Your Choice Solar Calculator (planning-v2), CRM records, and Live Calendar. Never invent unverified hardware brands, fixed package prices, rebate amounts, or warranty lengths."
             ),
         },
         {
@@ -672,6 +668,184 @@ def navigate_browser(arguments, **kwargs):
 def get_live_weather(arguments, **kwargs):
     from app_os_weather import read_weather
     return json.dumps(read_weather(arguments))
+
+
+def calculate_solar_planning_v2(arguments=None):
+    """Official Your Choice Solar Website Calculator (planning-v2) — exact math from solar.js."""
+    args = dict(arguments or {})
+    prop_raw = str(args.get("property_type") or args.get("property") or "Home").strip().lower()
+    prop_label = "Farm" if prop_raw == "farm" else ("Business" if prop_raw in {"business", "commercial"} else "Home")
+    city_raw = str(args.get("city") or args.get("location") or "Brisbane, QLD").strip() or "Brisbane, QLD"
+
+    usage_pattern = str(args.get("usage_pattern") or "mix").strip().lower()
+    self_use_val = args.get("selfUse") if args.get("selfUse") is not None else args.get("self_use_pct")
+    if self_use_val is not None:
+        try:
+            self_use = max(0.0, min(100.0, float(self_use_val)))
+        except Exception:
+            self_use = 50.0
+    else:
+        self_use = 75.0 if usage_pattern == "daytime" else (25.0 if usage_pattern in {"evenings", "evening"} else 50.0)
+
+    bat_raw = str(args.get("battery_interest") or args.get("battery") or "Not sure").strip().lower()
+    battery_label = "Yes" if bat_raw == "yes" else ("No" if bat_raw == "no" else "Not sure")
+
+    try:
+        import_rate = float(args.get("tariff_rate_aud") or args.get("importRate") or 0.30)
+    except Exception:
+        import_rate = 0.30
+    try:
+        supply_charge = float(args.get("daily_supply_charge_aud") if args.get("daily_supply_charge_aud") is not None else (args.get("supplyCharge") if args.get("supplyCharge") is not None else 1.0))
+    except Exception:
+        supply_charge = 1.0
+    try:
+        export_rate = float(args.get("feed_in_tariff_aud") if args.get("feed_in_tariff_aud") is not None else (args.get("exportRate") if args.get("exportRate") is not None else 0.0))
+    except Exception:
+        export_rate = 0.0
+    try:
+        yield_val = float(args.get("yield_kwh_per_kwp") or args.get("yield") or 1400.0)
+    except Exception:
+        yield_val = 1400.0
+    try:
+        target_pct = float(args.get("target_pct") or args.get("target") or 80.0)
+    except Exception:
+        target_pct = 80.0
+
+    usage_kwh = args.get("usage_kwh")
+    bill_aud = args.get("bill_amount_aud")
+    if usage_kwh is None and args.get("mode") == "usage" and args.get("consumption") is not None:
+        usage_kwh = args.get("consumption")
+    if bill_aud is None and args.get("mode") != "usage" and args.get("consumption") is not None:
+        bill_aud = args.get("consumption")
+
+    def _clean_float(v):
+        if v is None:
+            return None
+        try:
+            return float(str(v).replace(",", "").replace("$", "").strip())
+        except Exception:
+            return None
+
+    u_val = _clean_float(usage_kwh)
+    b_val = _clean_float(bill_aud)
+
+    period_raw = str(args.get("period") or ("monthly" if (b_val and b_val < 420) else "quarterly")).strip().lower()
+    if period_raw in {"day", "daily"}:
+        norm_period = "daily"
+        period_label = "per day"
+    elif period_raw in {"month", "monthly", "mth", "mo"}:
+        norm_period = "monthly"
+        period_label = "per month"
+    elif period_raw in {"two_months", "2 months", "bi-monthly", "bimonthly"}:
+        norm_period = "monthly"
+        period_label = "per 2 months"
+        if u_val:
+            u_val = u_val / 2.0
+        if b_val:
+            b_val = b_val / 2.0
+    elif period_raw in {"year", "yearly", "annual", "annually"}:
+        norm_period = "quarterly"
+        period_label = "per year"
+        if u_val:
+            u_val = u_val / 4.0
+        if b_val:
+            b_val = b_val / 4.0
+    else:
+        norm_period = "quarterly"
+        period_label = "per quarter (3 months)"
+
+    if u_val and u_val > 0:
+        mode = "usage"
+        consumption = u_val
+    else:
+        mode = str(args.get("mode") or "totalBill")
+        if mode not in {"bill", "totalBill"}:
+            mode = "totalBill"
+        if norm_period == "daily":
+            norm_period = "monthly"
+        consumption = b_val if (b_val and b_val > 0) else 600.0
+
+    periods_per_year = {"daily": 365, "monthly": 12, "quarterly": 4}[norm_period]
+    if mode == "totalBill" and consumption * periods_per_year <= supply_charge * 365:
+        mode = "bill"
+
+    annual_energy_cost = consumption * periods_per_year - (supply_charge * 365 if mode == "totalBill" else 0.0)
+    annual_usage = consumption * periods_per_year if mode == "usage" else annual_energy_cost / import_rate
+    generation = annual_usage * target_pct / 100.0
+    capacity = generation / yield_val
+    self_consumed = min(generation * self_use / 100.0, annual_usage)
+    exported = generation - self_consumed
+    bill_reduction = self_consumed * import_rate
+    export_credit = exported * export_rate
+    annual_benefit = bill_reduction + export_credit
+
+    daily_kwh = round(annual_usage / 365.0, 1)
+    monthly_kwh = round(annual_usage / 12.0, 1)
+    quarterly_kwh = round(annual_usage / 4.0, 1)
+    rec_kw = round(capacity, 1)
+    cap_kwp = round(capacity, 2)
+    annual_gen = round(generation)
+    daily_gen = round(generation / 365.0, 1)
+    annual_sav = round(bill_reduction)
+    quarterly_sav = round(bill_reduction / 4.0)
+    monthly_sav = round(bill_reduction / 12.0)
+
+    if mode == "usage":
+        summary_for_customer = (
+            f"Based on your usage of around {daily_kwh} kWh/day (~{round(monthly_kwh):,} kWh/month or {round(annual_usage):,} kWh/year) in {city_raw}, "
+            f"our official solar calculator (planning-v2) shows a starting solar size to explore of {rec_kw} kW of panels "
+            f"(generating ~{annual_gen:,} kWh/year) and an estimated bill reduction of around AUD ${annual_sav:,}/year (~AUD ${monthly_sav:,}/month)."
+        )
+    else:
+        disp_bill = round(b_val if (b_val and b_val > 0) else consumption)
+        summary_for_customer = (
+            f"Based on your AUD ${disp_bill:,} {period_label} bill in {city_raw}, "
+            f"our official solar calculator (planning-v2) estimates your electricity usage at around {daily_kwh} kWh/day (~{round(monthly_kwh):,} kWh/month or {round(annual_usage):,} kWh/year), "
+            f"with a starting solar size to explore of {rec_kw} kW of panels (generating ~{annual_gen:,} kWh/year) "
+            f"and an estimated bill reduction of around AUD ${annual_sav:,}/year (~AUD ${monthly_sav:,}/month)."
+        )
+
+    return {
+        "ok": True,
+        "model": "planning-v2",
+        "property": prop_label,
+        "city": city_raw,
+        "mode": mode,
+        "period": norm_period,
+        "period_label": period_label,
+        "input_bill_aud": b_val if mode != "usage" else None,
+        "estimated_daily_kwh": daily_kwh,
+        "estimated_monthly_kwh": monthly_kwh,
+        "estimated_quarterly_kwh": quarterly_kwh,
+        "annual_usage_kwh": round(annual_usage, 1),
+        "recommended_kw": rec_kw,
+        "capacity_kwp": cap_kwp,
+        "daily_generation_kwh": daily_gen,
+        "annual_generation_kwh": annual_gen,
+        "self_consumed_kwh": round(self_consumed),
+        "exported_kwh": round(exported),
+        "estimated_monthly_savings_aud": monthly_sav,
+        "estimated_quarterly_savings_aud": quarterly_sav,
+        "estimated_annual_savings_aud": annual_sav,
+        "export_credit_aud": round(export_credit),
+        "annual_benefit_aud": round(annual_benefit),
+        "assumptions": (
+            f"Uses AUD ${import_rate:.2f}/kWh, AUD ${supply_charge:.2f}/day supply charge, "
+            f"{int(yield_val):,} kWh/kW/year solar output, {int(target_pct)}% energy target, and {int(self_use)}% self-use."
+        ),
+        "summary_for_customer": summary_for_customer,
+    }
+
+
+def calculate_solar(arguments=None, **kwargs):
+    try:
+        res = calculate_solar_planning_v2(arguments)
+        return json.dumps(res)
+    except Exception as exc:
+        raw = _call_app_os_mcp("central_ai_calculate_solar", dict(arguments or {}), timeout=10)
+        if raw:
+            return raw
+        return json.dumps({"error": f"Solar calculation error: {str(exc)}"})
 
 
 def end_call(arguments=None, **kwargs):

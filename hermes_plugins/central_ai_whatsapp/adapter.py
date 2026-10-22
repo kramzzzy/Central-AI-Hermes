@@ -394,13 +394,15 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
 
         if not power_bill:
             bm = (
-                re.search(r'\$\s*\d{2,5}(?:\.\d{1,2})?(?:\s*(?:/|\bper\b|\ba\b)?\s*(?:quarter|qtr|quarterly|month|monthly|bi-?monthly|bill|year|yr))?', text, re.I)
-                or re.search(r'\b(\d{2,5})\s*(?:dollars|aud|bucks)?\s*(?:per|a|each)?\s*(quarter|qtr|quarterly|month|monthly|bill)\b', text, re.I)
+                re.search(r'(?:\$|aud\s*)\s*(\d{1,3}(?:,\d{3})+|\d{2,5})(?:\.\d{1,2})?(?:\s*(?:/|\bper\b|\ba\b|\bfor\s+the\b)?\s*(?:quarter|qtr|quarterly|month|monthly|bi-?monthly|bill|year|yr))?', text, re.I)
+                or re.search(r'\b(?:for\s+the\s+|per\s+)?(quarter|qtr|quarterly|month|monthly)\s*(?:bill\s*)?(?:is|was|of)?\s*\$?\s*(\d{1,3}(?:,\d{3})+|\d{2,5})(?:\.\d{1,2})?\s*(?:dollars|aud|bucks)?\b', text, re.I)
+                or re.search(r'\b(\d{1,3}(?:,\d{3})+|\d{2,5})(?:\.\d{1,2})?\s*(?:dollars|aud|bucks)(?:\s*(?:per|a|each|for\s+the)?\s*(quarter|qtr|quarterly|month|monthly|bill))?', text, re.I)
+                or re.search(r'\b(\d{1,3}(?:,\d{3})+|\d{2,5})(?:\.\d{1,2})?\s*(?:dollars|aud|bucks)?\s*(?:per|a|each|for\s+the)?\s*(quarter|qtr|quarterly|month|monthly|bill)\b', text, re.I)
             )
             if bm:
                 power_bill = bm.group(0).strip()
-            elif re.search(r'\b(power bill|electricity bill|energy bill|last bill|how much was your)\b', prev_asst) and re.search(r'\b\d{2,5}\b', text):
-                nm = re.search(r'\$?\s*\d{2,5}(?:\s*(?:per|a)?\s*(?:quarter|month|qtr))?', text, re.I)
+            elif re.search(r'\b(power bill|electricity bill|energy bill|last bill|how much was your)\b', prev_asst) and re.search(r'\b(\d{1,3}(?:,\d{3})+|\d{2,5})\b', text):
+                nm = re.search(r'\$?\s*(\d{1,3}(?:,\d{3})+|\d{2,5})(?:\s*(?:aud|dollars|bucks))?(?:\s*(?:per|a|for\s+the)?\s*(?:quarter|month|qtr|monthly|quarterly))?', text, re.I)
                 if nm:
                     val = nm.group(0).strip()
                     power_bill = val if val.startswith('$') else f"${val}"
@@ -732,8 +734,137 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
 
 
 def _calculate_solar_pre_assessment(text: str) -> str:
-    # Do not inject synthetic solar package sizes, panel wattages, battery capacities,
-    # or savings estimates that do not exist in the Knowledge Base.
+    if not text or not str(text).strip():
+        return ''
+    try:
+        from hermes_plugins.central_ai_app_os.client import calculate_solar_planning_v2
+    except Exception:
+        return ''
+
+    raw = str(text)
+    city = 'Brisbane, QLD'
+    for c_key, c_label in (
+        ('brisbane', 'Brisbane, QLD'),
+        ('gold coast', 'Gold Coast, QLD'),
+        ('sunshine coast', 'Sunshine Coast, QLD'),
+        ('toowoomba', 'Toowoomba, QLD'),
+        ('townsville', 'Townsville, QLD'),
+        ('cairns', 'Cairns, QLD'),
+        ('ipswich', 'Ipswich, QLD'),
+        ('sydney', 'Sydney, NSW'),
+        ('newcastle', 'Newcastle, NSW'),
+        ('wollongong', 'Wollongong, NSW'),
+        ('melbourne', 'Melbourne, VIC'),
+        ('geelong', 'Geelong, VIC'),
+        ('perth', 'Perth, WA'),
+        ('adelaide', 'Adelaide, SA'),
+        ('canberra', 'Canberra, ACT'),
+        ('hobart', 'Hobart, TAS'),
+        ('darwin', 'Darwin, NT'),
+    ):
+        if re.search(rf'\b{re.escape(c_key)}\b', raw, flags=re.IGNORECASE):
+            city = c_label
+            break
+
+    prop_type = 'farm' if re.search(r'\bfarm\b', raw, flags=re.IGNORECASE) else (
+        'business' if re.search(r'\b(business|commercial|warehouse|shop|office|factory)\b', raw, flags=re.IGNORECASE) else 'home'
+    )
+    usage_pattern = 'daytime' if re.search(r'\b(daytime|during the day|work from home|wfh)\b', raw, flags=re.IGNORECASE) else (
+        'evenings' if re.search(r'\b(evening|evenings|night|after work)\b', raw, flags=re.IGNORECASE) else 'mix'
+    )
+    battery_interest = 'yes' if re.search(r'\b(battery|batteries|storage|powerwall|blackout)\b', raw, flags=re.IGNORECASE) else 'not_sure'
+
+    # 1. Explicit kWh usage mention
+    kwh_m = re.search(
+        r'\b(\d{1,3}(?:,\d{3})+|\d{1,6})(?:\.(\d+))?\s*kwh(?:\s*(?:per|a|/|each|every|for\s+the|\s)\s*(day|daily|month|monthly|quarter|quarterly|year|yearly|annum))?',
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if kwh_m:
+        try:
+            val = float(kwh_m.group(1).replace(',', '') + ('.' + kwh_m.group(2) if kwh_m.group(2) else ''))
+            unit = (kwh_m.group(3) or '').lower()
+            period = 'daily'
+            if 'month' in unit or (not unit and 120 < val <= 1200):
+                period = 'monthly'
+            elif 'quarter' in unit or (not unit and 1200 < val <= 4500):
+                period = 'quarterly'
+            elif 'year' in unit or 'annum' in unit or (not unit and val > 4500):
+                period = 'year'
+            res = calculate_solar_planning_v2({
+                'property_type': prop_type,
+                'city': city,
+                'usage_kwh': val,
+                'period': period,
+                'usage_pattern': usage_pattern,
+                'battery_interest': battery_interest,
+            })
+            return (
+                f"OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR (planning-v2) LIVE RESULT:\n"
+                f"- Summary: {res['summary_for_customer']}\n"
+                f"- Estimated Electricity Usage: {res['estimated_daily_kwh']} kWh/day (~{round(res['estimated_monthly_kwh']):,} kWh/month, {round(res['annual_usage_kwh']):,} kWh/year)\n"
+                f"- Starting Solar System Size to Explore: {res['recommended_kw']} kW of panels ({res['capacity_kwp']} kWp, generating ~{res['annual_generation_kwh']:,} kWh/year)\n"
+                f"- Estimated Bill Reduction: AUD ${res['estimated_annual_savings_aud']:,}/year (~AUD ${res['estimated_monthly_savings_aud']:,}/month)\n"
+                f"- CALCULATOR INSTRUCTION: Share these official starting figures clearly if the customer shared their usage or asked to calculate kWh/size."
+            )
+        except Exception:
+            pass
+
+    # 2. Bill amount mention (supports "paid for the month 1,200 AUD", "$1,200 a month", "$600 per quarter")
+    num_pat = r'(\d{1,3}(?:,\d{3})+|\d{2,6})(?:\.\d{1,2})?'
+    unit_pat = r'(month|monthly|mth|mo|quarter|quarterly|qtr|three months|3 months|two months|2 months|bi-?monthly|year|yearly|annual|annually)'
+    patterns = [
+        (rf'\b(?:for\s+the\s+|per\s+|each\s+|every\s+|last\s+)?{unit_pat}\s*(?:bill\s*|power\s*bill\s*)?(?:is|was|of|around|about|:)?\s*(?:\$|aud\s*)?{num_pat}\s*(?:bucks|dollars|aud)?\b', 2, 1),
+        (rf'(?:\$|\baud\s*){num_pat}\s*(?:bucks|dollars|aud)?\s*(?:(?:per|a|/|each|every|for\s+the)\s*)?{unit_pat}?', 1, 2),
+        (rf'\b{num_pat}\s*(?:bucks|dollars|aud)\b(?:\s*(?:per|a|/|each|every|for\s+the)?\s*{unit_pat})?', 1, 2),
+        (rf'\b(?:bill|spend|paying|pay|paid|costs?)\s*(?:is|was|of|around|about|for\s+the\s+{unit_pat})?\s*\$?{num_pat}\s*(?:bucks|dollars|aud)?\s*(?:(?:per|a|/|each|every|for\s+the)\s*)?{unit_pat}?', 2, 3),
+    ]
+    found_amt = None
+    found_period = None
+    for pat, amt_idx, unit_idx in patterns:
+        for m in re.finditer(pat, raw, flags=re.IGNORECASE):
+            try:
+                amt = float((m.group(amt_idx) or '').replace(',', ''))
+            except Exception:
+                continue
+            if not (35 <= amt <= 100000):
+                continue
+            if amt in {2024, 2025, 2026, 2027} and '$' not in m.group(0) and 'aud' not in m.group(0).lower():
+                continue
+            u_str = (m.group(unit_idx) or (m.group(1) if amt_idx == 2 and unit_idx == 3 else '') or '').lower()
+            window = raw[max(0, m.start() - 40):min(len(raw), m.end() + 40)].lower()
+            if any(k in u_str or k in window for k in ('month', 'mth', ' mo ')):
+                found_period = 'monthly'
+            elif any(k in u_str or k in window for k in ('two', '2 month', 'bi')):
+                found_period = 'two_months'
+            elif any(k in u_str or k in window for k in ('quarter', 'qtr', '3 month', 'three')):
+                found_period = 'quarterly'
+            elif any(k in u_str or k in window for k in ('year', 'annual')):
+                found_period = 'year'
+            else:
+                found_period = 'monthly' if amt < 420 else 'quarterly'
+            found_amt = amt
+
+    if found_amt is not None and found_period is not None:
+        try:
+            res = calculate_solar_planning_v2({
+                'property_type': prop_type,
+                'city': city,
+                'bill_amount_aud': found_amt,
+                'period': found_period,
+                'usage_pattern': usage_pattern,
+                'battery_interest': battery_interest,
+            })
+            return (
+                f"OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR (planning-v2) LIVE RESULT:\n"
+                f"- Summary: {res['summary_for_customer']}\n"
+                f"- Estimated Electricity Usage: {res['estimated_daily_kwh']} kWh/day (~{round(res['estimated_monthly_kwh']):,} kWh/month, {round(res['annual_usage_kwh']):,} kWh/year)\n"
+                f"- Starting Solar System Size to Explore: {res['recommended_kw']} kW of panels ({res['capacity_kwp']} kWp, generating ~{res['annual_generation_kwh']:,} kWh/year)\n"
+                f"- Estimated Bill Reduction: AUD ${res['estimated_annual_savings_aud']:,}/year (~AUD ${res['estimated_monthly_savings_aud']:,}/month)\n"
+                f"- CALCULATOR INSTRUCTION: Share these official starting figures clearly when the customer gives their bill or asks to calculate kWh/size."
+            )
+        except Exception:
+            pass
     return ''
 
 
@@ -838,7 +969,8 @@ def build_engine_adapter(route,member,home,group):
                         f"START SIMPLE & FRIENDLY (1 TO 2 SHORT SENTENCES MAX): Speak like a warm, friendly, real human texting on WhatsApp (1 to 2 short plain-text sentences max). NEVER output internal notes such as '(Next step: ...)', '(Step ...)', or '(Note: ...)'. When the customer simply says 'Hi' or 'Hello', reply ONLY with a warm, simple 1-sentence greeting introducing yourself and asking how you can help today—never dump company info or ask qualifying questions on an opening greeting. "
                         f"GENUINELY EXPLAIN QUESTIONS & ASK ONE QUESTION AT A TIME: Never say 'I\\'d be happy to explain...' without actually explaining it right away! When a customer asks how solar works with their billing or house, explain it clearly in 1 to 2 simple sentences first (e.g., daytime solar panels power your home appliances directly first so you buy far less electricity from the grid, and excess solar can charge a battery or earn feed-in bill credits), and then ask ONLY ONE simple question per turn (never stack two questions with 'Also, ...'): (1) Do they already have solar on the property? (2) Roughly how much was their last power bill ($$)? (3) What is the property street address? (4) Full Name (first AND last name), Phone Number, and Email Address. Once collected, briefly confirm all details and append [[LEAD:{{\"name\":\"First Last\",\"phone\":\"{customer_phone_display}\",\"email\":\"...\",\"address\":\"...\",\"notes\":\"...\"}}]]. "
                         f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): NEVER start your replies with 'Thanks', 'Thank you', 'Thanks [Name]', 'Got it, [Name]', or 'Great, [Name]'. Greet once only on the first turn; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
-                        f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths.",
+                        f"STRICT SYSTEM DATA GROUNDING: Rely on your Agent Instructions, Knowledge Base, and Official Your Choice Solar Website Calculator (planning-v2) below. Always share the official calculator's starting kWh usage, kW panel size, and estimated bill reduction when available or requested; never invent unverified hardware brands, fixed package prices, rebate amounts, or warranty lengths.",
+                        solar_calc,
                         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
                         f"KNOWLEDGE BASE (FROM APP OS):\n{kb_str}" if kb_str else "",
                     ]))
