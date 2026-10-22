@@ -801,17 +801,6 @@ def build_engine_adapter(route,member,home,group):
                     agent_instr = live_cfg.get('customer_agent_instructions') or ''
                     company_name = live_cfg['company_name'] or 'Your Choice Solar'
                     customer_phone_display = f'+{sender_digits}' if sender_digits else 'their WhatsApp number'
-                    recalled_mem = await asyncio.to_thread(
-                        _recall_memory_items,
-                        f"{agent_name} customer service communication style solar qualifying questions {data.get('senderName') or ''} {msg_text[:100]}",
-                        5,
-                    )
-                    mem_block = (
-                        "PERSISTENT HINDSIGHT MEMORY (LEARNED COMMUNICATION & CUSTOMER CONTEXT):\n"
-                        + "\n".join(f"- {m}" for m in recalled_mem)
-                        if recalled_mem
-                        else ""
-                    )
                     event.channel_prompt = '\n\n'.join(filter(None, [
                         event.channel_prompt,
                         get_whatsapp_reply_style(),
@@ -823,7 +812,6 @@ def build_engine_adapter(route,member,home,group):
                         f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row. "
                         f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
                         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
-                        mem_block,
                         live_box3,
                     ]))
                 else:

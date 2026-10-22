@@ -1223,9 +1223,6 @@ def _start_customer_whatsapp_poller():
        kb_text='\n\n'.join(f"[{c.get('title','')}{' (' + str(c.get('category')) + ')' if c.get('category') else ''}]\n{c.get('content','')}" for c in sorted_kb)
        if not kb_text:
         kb_text=_fetch_live_box3_context(msg_text,ROOT)
-       recalled_mem=_recall_memory_items(f"{agent_name} customer service communication style solar qualifying questions {sender_name} {msg_text[:100]}",5)
-       if recalled_mem:
-        kb_text=(kb_text+"\n\n[PERSISTENT HINDSIGHT MEMORY]\n"+"\n".join(f"- {m}" for m in recalled_mem)).strip()
        company_name=live_cfg.get('company_name') or 'Your Choice Solar'
        solar_calc=_calculate_solar_pre_assessment(msg_text)
        prior_turns=history_by_sender.get(sender_id,[])[-8:]
