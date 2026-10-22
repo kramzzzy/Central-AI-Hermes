@@ -852,6 +852,58 @@ def calculate_solar(arguments=None, **kwargs):
         return json.dumps({"error": f"Solar calculation error: {str(exc)}"})
 
 
+def google_workspace(arguments=None, **kwargs):
+    params = dict(arguments or kwargs or {})
+    operation = str(params.get("operation") or "status").strip()
+    args = params.get("args") if isinstance(params.get("args"), dict) else {}
+    # Allow top-level convenience args if model passed them directly instead of nested in 'args'
+    if not args:
+        extra = {k: v for k, v in params.items() if k not in ("operation", "args") and v is not None}
+        if extra:
+            args = extra
+    body = {"operation": operation, "args": args}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    token = process_token()
+    if token:
+        for bridge_url in _bridge_urls("/google/tool"):
+            try:
+                req = urllib.request.Request(
+                    bridge_url,
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
+                )
+                with opener.open(req, timeout=45) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except Exception:
+                continue
+    api_key = _hermes_api_key()
+    for base in _app_os_urls():
+        try:
+            req = urllib.request.Request(
+                f"{base}/api/connections/google/tool",
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + api_key,
+                    "User-Agent": "CentralOS/1.0",
+                },
+            )
+            with opener.open(req, timeout=45) as resp:
+                return resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            try:
+                err_body = exc.read(4096).decode("utf-8", errors="replace")
+                if err_body:
+                    return err_body
+            except Exception:
+                pass
+            if exc.code in {401, 403}:
+                return json.dumps({"error": "Conversation access or Google permission was denied. Reconnect/check Settings → Google Workspace."})
+        except Exception:
+            continue
+    return json.dumps({"error": "Google Workspace connection is unavailable or not yet authorized in Settings → Google Workspace."})
+
+
 def end_call(arguments=None, **kwargs):
     token = process_token()
     if token:

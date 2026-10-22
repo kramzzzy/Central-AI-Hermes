@@ -9,7 +9,8 @@ from .client import (
     send_whatsapp_message, send_message,
     call_contact, call_whatsapp_contact,
     open_widget, close_widget, control_widget,
-    navigate_browser, get_live_weather, calculate_solar, end_call
+    navigate_browser, get_live_weather, calculate_solar,
+    google_workspace, end_call
 )
 
 TOOLS = {
@@ -367,6 +368,47 @@ TOOLS = {
                     "location": {"type": "string", "description": "Target city or region (e.g. 'brisbane', 'sydney', 'melbourne')"},
                     "unit": {"type": "string", "enum": ["C", "F"], "description": "Temperature unit"},
                 },
+            },
+        },
+    },
+    "mcp__michael_os__google_workspace": {
+        "handler": google_workspace,
+        "check_fn": None,
+        "emoji": "📧",
+        "description": "Access and control the member's connected Google Workspace (Gmail, Google Calendar, Shared Team Calendar, Google Drive, Google Sheets) according to their granted permissions.",
+        "schema": {
+            "name": "mcp__michael_os__google_workspace",
+            "description": "Use this member's connected Google Workspace account (Gmail, Calendar, Team Calendar, Drive, Sheets). Read operations execute immediately if the member enabled the capability in Settings → Google Workspace: 'status', 'gmail_inbox', 'gmail_search', 'gmail_read', 'calendar_list', 'calendar_events', 'team_calendar_events', 'drive_list', 'drive_read', 'sheets_read'. Write operations ('send_email', 'create_event', 'update_event', 'delete_event', 'update_sheet') prepare a preview action that the member reviews and approves in Settings → Google Workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": [
+                            "status",
+                            "gmail_inbox",
+                            "gmail_search",
+                            "gmail_read",
+                            "calendar_list",
+                            "calendar_events",
+                            "team_calendar_events",
+                            "drive_list",
+                            "drive_read",
+                            "sheets_read",
+                            "send_email",
+                            "create_event",
+                            "update_event",
+                            "delete_event",
+                            "update_sheet",
+                        ],
+                        "description": "Google Workspace operation to perform.",
+                    },
+                    "args": {
+                        "type": "object",
+                        "description": "Operation arguments (e.g. {'query': '...'}, {'message_id': '...'}, {'start': '2026-10-22T00:00:00+10:00', 'end': '2026-10-29T23:59:59+10:00'}, {'to': '...', 'subject': '...', 'body': '...'}, {'summary': '...', 'start': '...', 'end': '...'}, {'spreadsheet_id': '...', 'range': 'Sheet1!A1:D10', 'values': [[...]]}).",
+                    },
+                },
+                "required": ["operation"],
             },
         },
     },
