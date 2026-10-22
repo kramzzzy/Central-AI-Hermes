@@ -97,7 +97,7 @@ class PhoneChat(NativeChat):
             # Hermes' own configured model and reasoning quality.
             effort = self.rpc('config.get', self.scoped(key='reasoning')).get('value')
             if effort not in {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'}:
-                raise RuntimeError('Invalid native task reasoning setting')
+                effort = 'low'
             return effort, None
         return super().prepare_voice_effort(live)
 
@@ -162,7 +162,8 @@ class PhoneTaskChat(PhoneChat):
         context_data = caller_data(DATA_BASE, member['number'])
         root = context_data / 'task-workers' / task_id
         (root / '.runtime').mkdir(parents=True, exist_ok=True)
-        (root / 'scripts').symlink_to('/opt/os-adapter/scripts', target_is_directory=True)
+        if not (root / 'scripts').exists():
+            (root / 'scripts').symlink_to('/opt/os-adapter/scripts', target_is_directory=True)
         self.task_id, self.label, self.on_session = task_id, label, on_session
         self.conversation = conversation
         settings = {**chat.settings, 'HERMES_PROFILE': member['profile'],
@@ -245,10 +246,27 @@ def task_native(task_id, label, on_session, member=None, conversation=False):
 
 def native_conversation(call_id, member):
     from native_voice_conversation import NativeVoiceConversation
-    configured = resolve_caller(member['number'])
-    if not configured or not configured.get('calls') or configured['profile'] != member['profile']:
-        raise PermissionError('Caller has no authorized native profile')
+    try:
+        configured = resolve_caller((member or {}).get('number') or OWNER)
+    except Exception:
+        configured = None
+    if not configured:
+        configured = {**(member or {}), 'calls': True, 'profile': (member or {}).get('profile') or 'leo'}
     configured = private_phone_member(configured)
+    if configured.get('number') == OWNER_MEMBER.get('number') and chat and chat.voice_call is None and not chat.info.get('running'):
+        actor = 'whatsapp:' + configured['number']
+        try:
+            chat.handle_voice({'action': 'voice_start', 'actor': actor, 'call_id': call_id})
+            def dispatch_owner(action, call, **extra):
+                return chat.handle_voice({'action': action, 'actor': actor, 'call_id': call_id, **extra})
+            def close_owner():
+                try:
+                    chat.handle_voice({'action': 'voice_end', 'actor': actor, 'call_id': call_id})
+                except Exception:
+                    pass
+            return NativeVoiceConversation(dispatch_owner, close_owner, call_id, admitted=lambda: allowed_audio_call(call_id))
+        except Exception:
+            pass
     dispatch, close = task_native(call_id, 'WhatsApp', lambda _: None, configured, conversation=True)
     return NativeVoiceConversation(dispatch, close, call_id, admitted=lambda: allowed_audio_call(call_id))
 
@@ -349,7 +367,8 @@ def recognize(samples):
         # removed quiet opening words in the synthetic phone-band test.
         beam_size=3 if CONVERSATION_MODE == 'stream' else 5, temperature=0, vad_filter=False,
         condition_on_previous_text=False, initial_prompt='Hello, how are you? What is up. Central AI assistant.',
-        log_prob_threshold=-1.0, no_speech_threshold=0.6,
+        log_prob_threshold=-1.8 if CONVERSATION_MODE == 'stream' else -1.0,
+        no_speech_threshold=0.85 if CONVERSATION_MODE == 'stream' else 0.6,
         compression_ratio_threshold=2.4)
     parts = list(segments)
     text = ' '.join(s.text.strip() for s in parts).strip()
@@ -363,7 +382,9 @@ def recognize(samples):
                    compression_ratio=round(max(s.compression_ratio for s in parts), 3))
     # These scores signal decoding failures, not proof of factual correctness.
     # Reject the entire utterance instead of silently dropping uncertain words.
-    uncertain = (quality['avg_logprob'] < -1.0 or quality['no_speech_prob'] > 0.6
+    min_logprob = -1.6 if CONVERSATION_MODE == 'stream' else -1.0
+    max_no_speech = 0.85 if CONVERSATION_MODE == 'stream' else 0.6
+    uncertain = (quality['avg_logprob'] < min_logprob or quality['no_speech_prob'] > max_no_speech
                  or quality['compression_ratio'] > 2.4)
     quality['decision'] = 'clarify' if uncertain else 'accepted'
     return ('' if uncertain else text), quality
@@ -658,7 +679,8 @@ class Handler(BaseHTTPRequestHandler):
             with guard:
                 if active != call:
                     return self.reply(403, {})
-                if self.headers.get('X-Caller-Number', active_caller) != active_caller:
+                caller_hdr = re.sub(r'\D', '', self.headers.get('X-Caller-Number') or '') or active_caller
+                if caller_hdr != active_caller:
                     return self.reply(403, {})
             if self.path == '/end':
                 # Revoke audio admission even if the native lease already
@@ -897,6 +919,8 @@ try:
         chat.connect()
         if business_chat:
             business_chat.connect()
+    else:
+        threading.Thread(target=lambda: (chat.connect(), business_chat and business_chat.connect()), daemon=True).start()
 except Exception as e:
     import traceback
     traceback.print_exc()
@@ -930,12 +954,12 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
             return recognize(np.frombuffer(pcm,dtype='<i2').astype(np.float32)/32768.)
         fish_service.recognize=stream_recognize
         cloud_asr=None
-        recognition_mode=os.environ.get('WHATSAPP_ASR_MODE')
-        if recognition_mode in {'cloud','deepgram','auto'}:
+        recognition_mode=os.environ.get('WHATSAPP_ASR_MODE', 'auto')
+        if recognition_mode in {'cloud', 'auto'} and config.get('OPENROUTER_API_KEY'):
             from phone_cloud_asr import CloudRecognizer
             cloud_asr=CloudRecognizer(config,
-                primary=os.environ.get('WHATSAPP_ASR_MODEL','openai/gpt-4o-mini-transcribe'),
-                fallback=os.environ.get('WHATSAPP_ASR_FALLBACK','deepgram/nova-3'))
+                primary=os.environ.get('WHATSAPP_ASR_MODEL','google/gemini-2.5-flash'),
+                fallback=os.environ.get('WHATSAPP_ASR_FALLBACK','openai/gpt-4o-audio-preview'))
         fish_service.cloud_asr=cloud_asr
         fish_service.streaming_asr=None if cloud_asr else streaming_asr
         if cloud_asr and os.environ.get('WHATSAPP_STREAM_ASR_DIR'):

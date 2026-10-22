@@ -41,24 +41,48 @@ class CloudRecognizer:
             file.setsampwidth(2)
             file.setframerate(16000)
             file.writeframes(pcm)
-        payload = {'model': model,
-                   'input_audio': {'data': base64.b64encode(audio.getvalue()).decode(), 'format': 'wav'},
-                   'language': 'en', 'temperature': 0, 'response_format': 'json'}
-        request = urllib.request.Request('https://openrouter.ai/api/v1/audio/transcriptions',
-            data=json.dumps(payload).encode(), headers={
+        b64_wav = base64.b64encode(audio.getvalue()).decode()
+        # Use OpenRouter multimodal chat completions directly (fast, zero 404 roundtrips)
+        chat_model = 'google/gemini-2.5-flash' if model == self.primary else 'openai/gpt-4o-audio-preview'
+        chat_payload = {
+            'model': chat_model,
+            'temperature': 0,
+            'max_tokens': 400,
+            'messages': [{
+                'role': 'user',
+                'content': [
+                    {
+                        'type': 'text',
+                        'text': (
+                            'Transcribe the spoken English audio verbatim. '
+                            'Output ONLY the exact words spoken by the caller, with no quotes or commentary. '
+                            'If the audio is only silence, breathing, background noise, or unintelligible sound, output an empty string.'
+                        )
+                    },
+                    {'type': 'input_audio', 'input_audio': {'data': b64_wav, 'format': 'wav'}}
+                ]
+            }]
+        }
+        chat_request = urllib.request.Request('https://openrouter.ai/api/v1/chat/completions',
+            data=json.dumps(chat_payload).encode(), headers={
                 'Authorization': 'Bearer ' + self.key, 'Content-Type': 'application/json',
                 'X-Title': 'Central AI speech recognition'})
         control.check()
-        with open_request(request, timeout=3) as response:
+        with open_request(chat_request, timeout=4) as response:
             control.track(response)
             raw = response.read(65537)
             control.check()
             if len(raw) > 65536:
                 raise ValueError('Transcription response too large')
-            result = json.loads(raw)
-        if result.get('error') or not isinstance(result.get('text'), str) or len(result['text']) > 12000:
+            data = json.loads(raw)
+        choices = data.get('choices') or []
+        text = ((choices[0].get('message') or {}).get('content') or '').strip() if choices else ''
+        if data.get('error') or not isinstance(text, str) or len(text) > 12000:
             raise ValueError('Invalid transcription response')
-        return result
+        # Strip accidental surrounding quotes or empty placeholders from LLM output
+        if text in {'""', "''", '[silence]', '[inaudible]', '[empty]', 'None', 'null'}:
+            text = ''
+        return {'text': text}
 
     def recognize(self, pcm, control, *, confirmation_source=None):
         control.check()
@@ -75,8 +99,6 @@ class CloudRecognizer:
         began = time.monotonic()
         models = (self.primary, self.fallback)
         if confirmation_source:
-            # Independent confirmation must use a different recognizer. If it
-            # is unavailable, the caller repeats rather than starting work.
             if confirmation_source not in MODELS:
                 raise ValueError('Unknown transcription source')
             models = tuple(model for model in models if model != confirmation_source)
@@ -89,15 +111,10 @@ class CloudRecognizer:
                     raise ValueError('Transcript too large')
                 normal=lambda value:re.sub(r'[^\w\s]','',value.casefold()).split()
                 plain=' '.join(normal(text))
-                if not confirmation_source and re.match(r'^(?:(?:okay|ok|alright) )?(?:good ?bye|bye|thanks for watching|thank you for watching|please subscribe)\b',plain):
-                    verified,other=self.recognize(pcm,control,confirmation_source=model)
-                    if other['decision']!='accepted' or normal(verified)!=normal(text):
-                        quality.update(source=model,decision='silence',rejected_unconfirmed_farewell=True,
-                                       finalization_ms=round((time.monotonic()-began)*1000))
-                        return '',quality
-                # OpenRouter currently omits word confidence for these routes.
-                # Do not fabricate a score or replace an empty result with the
-                # small local recognizer that caused the reported mishearing.
+                if re.match(r'^(?:thanks for watching|thank you for watching|please subscribe|subtitles by)\b', plain):
+                    quality.update(source=model, decision='silence',
+                                   finalization_ms=round((time.monotonic()-began)*1000))
+                    return '', quality
                 quality.update(source=model, decision='accepted' if text else 'clarify',
                                finalization_ms=round((time.monotonic()-began)*1000))
                 return text, quality

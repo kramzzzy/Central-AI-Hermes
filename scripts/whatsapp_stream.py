@@ -11,7 +11,7 @@ import re
 import struct
 import time
 
-from stream_conversation import FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key
+from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key
 from fish_conversation import filter_playback_input
 from whatsapp_audio import PhoneAudioFilter
 
@@ -65,6 +65,7 @@ class StreamPhoneCall:
         self.capture = bytearray()
         self.voiced = self.speech_run = 0
         self.silence_frames = 0
+        self.capture_extended = False
         self.last_user_activity = self.last_speech = time.monotonic()
         self.playback_until = self.last_speaking_end = 0.
         self.last_notice = self.last_progress = 0.
@@ -74,6 +75,7 @@ class StreamPhoneCall:
         self.received_input = False
         self.rendered_generation, self.last_rendered = None, 0.
         self.last_recovery = 0.
+        self.last_clarify_at = 0.
         self.asr = None
         self.prepared_speech = None
         self.speculative=None
@@ -85,6 +87,36 @@ class StreamPhoneCall:
         self.capture_version=0
         self.callback_new_tasks_since = time.time() if callback_notice else None
         self.conversation = None
+        self.fallback_conversation = None
+
+    def _get_fallback_conversation(self):
+        if self.fallback_conversation is not None:
+            return self.fallback_conversation
+        try:
+            from central_ai_identity import central_ai_identity, get_company_name
+            company = get_company_name()
+        except Exception:
+            def central_ai_identity(x): return x
+            company = ""
+        company_str = f" representing {company}" if company else ""
+        caller_name = self.member.get('name', '') or 'the caller'
+        prompt = central_ai_identity(
+            f"You are Leo, the personal assistant{company_str}, speaking with {caller_name} on a live WhatsApp voice call.\n"
+            "Speak naturally, warmly, and concisely in 1 to 2 short sentences, like an attentive human on a phone call. No markdown or bullet lists.\n"
+            "Use brief, natural conversational acknowledgments ('Got it', 'No worries at all', 'Right, that makes sense') when appropriate, "
+            "and before running a tool, give a quick natural heads-up ('All right, let me check that for you now')."
+        )
+        try:
+            from hermes_plugins.central_ai_whatsapp.adapter import _fetch_live_box3_context
+            box3_ctx = _fetch_live_box3_context()
+            if box3_ctx:
+                prompt += "\n\n" + box3_ctx
+        except Exception:
+            pass
+        def dispatch_tool(event, caller_text):
+            return self.jobs.handle(self.call, event, self.service.allowed)
+        self.fallback_conversation = Conversation(self.service.config, prompt, dispatch_tool)
+        return self.fallback_conversation
 
     def task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -106,6 +138,7 @@ class StreamPhoneCall:
 
     def flush(self):
         self.generation += 1
+        self.capture_extended = False
         if self.control: self.control.cancel()
         if self.prepared_speech:
             self.prepared_speech[0].cancel();self.prepared_speech=None
@@ -124,10 +157,10 @@ class StreamPhoneCall:
 
     def resume_input(self):
         pending=self.pending_input
-        if not getattr(self.service,'cloud_asr',None) or self.state!='thinking' or not pending or pending['generation']!=self.generation:
+        if self.state!='thinking' or not pending or pending['generation']!=self.generation:
             return False
         with pending['control'].guard:
-            if pending['committed'] or pending['control'].cancelled.is_set():return False
+            if pending.get('speaking_started') or pending['control'].cancelled.is_set():return False
             previous=pending['pcm']
             self.flush()
             self.capture=bytearray(previous)+self.capture
@@ -142,6 +175,7 @@ class StreamPhoneCall:
         self.flush()
         self.capture.clear();self.pre.clear();self.voiced=self.speech_run=0
         self.silence_frames=0
+        self.capture_extended=False
         self.capture_echo_text=''
         self.capture_rejected=False
         self.close_asr(self.asr);self.asr=None
@@ -170,16 +204,29 @@ class StreamPhoneCall:
         remote=getattr(self.asr,'remote',False)
         source=self.asr.recognizer.source if remote else cloud.primary
         recognizer=None if remote else cloud.prepare(pcm,control)
-        # Start both checks only after endpoint detection. Mid-sentence pauses
-        # must not fill the request slots with cancelled provider uploads.
-        confirmation=cloud.prepare(pcm,control,confirmation_source=source)
-        if recognizer or confirmation:
-            self.early_asr={'recognizer':recognizer,'confirmation':confirmation,
+        if recognizer:
+            self.early_asr={'recognizer':recognizer,'confirmation':None,
                             'confirmation_source':source,'version':self.capture_version,'pcm':pcm}
             self.service.metrics['early_recognitions_started']=self.service.metrics.get('early_recognitions_started',0)+1
 
+    async def _warm_native_conversation(self):
+        if not getattr(self.service, 'native_conversation', None):
+            return
+        try:
+            conv = await asyncio.to_thread(self.service.native_conversation, self.call, self.member)
+            if self.closed:
+                await asyncio.to_thread(conv.close)
+            else:
+                self.conversation = conv
+        except Exception as exc:
+            print(f"[StreamPhoneCall] native_conversation init fallback to fast stream: {exc}", flush=True)
+
     async def start(self):
-        self.conversation = await asyncio.to_thread(self.service.native_conversation, self.call, self.member)
+        warm_task = self.task(self._warm_native_conversation())
+        try:
+            await asyncio.wait({warm_task}, timeout=2.5)
+        except Exception:
+            pass
         self.task(self.feed());self.task(self.tick())
         # A paired-device socket can connect while the handset is still
         # ringing. Wait for real media before producing the greeting.
@@ -202,7 +249,10 @@ class StreamPhoneCall:
     def start_reply(self, audio=None, notice=None, greeting=False):
         if self.worker and not self.worker.done(): return False
         generation = self.generation
-        if self.prepared_speech and (self.prepared_speech[0].cancelled.is_set() or self.prepared_speech[1].error):
+        if self.prepared_speech and (
+                self.prepared_speech[0].cancelled.is_set()
+                or self.prepared_speech[1].error
+                or self.prepared_speech[1].done.is_set()):
             self.prepared_speech[0].cancel();self.prepared_speech=None
         self.prepare_speech()
         prepared,self.prepared_speech=self.prepared_speech,None
@@ -240,6 +290,8 @@ class StreamPhoneCall:
             timing={}
             def speak(value):
                 nonlocal first,stage
+                if pending_input:
+                    pending_input['speaking_started']=True
                 if first is None:self.spoken_text=''
                 previous=stage;stage='speech'
                 first=first or time.monotonic();speech.text(value)
@@ -249,40 +301,20 @@ class StreamPhoneCall:
                 if greeting:
                     speak('Hello! What can I help you with?')
                 elif notice:
-                    self.conversation.reply(json.dumps(notice,ensure_ascii=False)[:12000],speak,control,notice=True)
+                    conv = self.conversation or self._get_fallback_conversation()
+                    conv.reply(json.dumps(notice,ensure_ascii=False)[:12000],speak,control,notice=True)
                 else:
                     stage='recognition'
                     pcm=audio['pcm'] if isinstance(audio,dict) else audio
                     streaming=audio.get('stream') if isinstance(audio,dict) else None
                     cloud=getattr(self.service,'cloud_asr',None)
                     confirmation_asr=audio.get('confirmation_asr') if isinstance(audio,dict) else None
-                    confirmation_source=audio.get('confirmation_source') if isinstance(audio,dict) else None
                     if confirmation_asr:control.track(confirmation_asr)
-                    def confirm(source):
-                        began_confirmation=time.monotonic()
-                        try:
-                            if confirmation_asr and source==confirmation_source:
-                                try:
-                                    result=confirmation_asr.finish(control)
-                                    # A failed-over first pass must never confirm itself.
-                                    if result[1].get('source')!=source:
-                                        self.service.metrics['parallel_confirmations_used']=self.service.metrics.get('parallel_confirmations_used',0)+1
-                                        return result
-                                except Exception:
-                                    control.check()
-                            return cloud.recognize(pcm,control,confirmation_source=source)
-                        finally:
-                            timing['verification_ms']=round((time.monotonic()-began_confirmation)*1000)
-                            self.service.metrics['last_confirmation_wait_ms']=timing['verification_ms']
+                    used_local = False
                     if streaming and getattr(streaming,'remote',False):
                         text,quality=streaming.finish(control)
-                        if quality.get('fallback_allowed') and cloud:
+                        if (not text or quality.get('fallback_allowed')) and cloud:
                             text,quality=cloud.recognize(pcm,control)
-                        elif text and cloud and re.match(r'^(?:(?:okay|ok|alright)\W+)?(?:good\s*bye|bye|thanks? for watching|please subscribe)\b',text,re.I):
-                            verified,confirmation=confirm(quality['source'])
-                            normal=lambda value:re.sub(r'[^\w\s]','',value.casefold()).split()
-                            if confirmation['decision']!='accepted' or normal(verified)!=normal(text):
-                                text='';quality.update(decision='silence',rejected_unconfirmed_farewell=True)
                     elif cloud:
                         early=audio.get('prepared_asr') if isinstance(audio,dict) else None
                         if early:
@@ -298,8 +330,19 @@ class StreamPhoneCall:
                                 text,quality=cloud.recognize(pcm,control)
                         else:text,quality=cloud.recognize(pcm,control)
                     else:
-                        text,quality=streaming.finish() if streaming else self.service.recognize(pcm)
-                        if streaming and quality['decision']=='clarify':text,quality=self.service.recognize(pcm)
+                        if streaming:
+                            text,quality=streaming.finish()
+                            if quality.get('decision')=='clarify' and getattr(self.service,'recognize',None):
+                                text,quality=self.service.recognize(pcm)
+                                used_local = True
+                        else:
+                            text,quality=self.service.recognize(pcm)
+                            used_local = True
+                    if (not text or quality.get('decision') != 'accepted') and not used_local and getattr(self.service, 'recognize', None):
+                        control.check()
+                        local_text, local_quality = self.service.recognize(pcm)
+                        if local_text:
+                            text, quality = local_text, local_quality
                     control.check()
                     self.service.metrics['last_asr_ms']=round((time.monotonic()-began)*1000)
                     timing['transcription_ms']=self.service.metrics['last_asr_ms']
@@ -318,44 +361,53 @@ class StreamPhoneCall:
                         speech.finish(); output(b'', final=True)
                         return 'complete'
                     text = filtered
+                    already_extended = isinstance(audio, dict) and bool(audio.get('extended'))
                     if not text:
-                        if quality.get('decision')=='clarify': speak("I didn't catch that clearly. Could you repeat it?")
-                        else: return
-                    elif re.search(r'\b(and|because|but|if|with|to|the|my|a|an|or|about)\W*$',text,re.I):
-                        # Obvious unfinished clauses get one short opportunity
+                        now_mono = time.monotonic()
+                        if (quality.get('decision')=='clarify'
+                                and len(pcm) >= 16000 * 2 * 2.2
+                                and now_mono - self.last_speaking_end >= 2.5
+                                and now_mono - self.last_clarify_at >= 18.0):
+                            self.last_clarify_at = now_mono
+                            speak("Sorry, I missed that. Could you say that again?")
+                        else:
+                            return
+                    elif (not already_extended and not text.rstrip().endswith('?')
+                            and re.search(r'\b(and|because|but|if|with|to|the|my|a|an|or|about|so|well|like|um|uh|er|hmm|thinking)\W*$',text,re.I)):
+                        # Obvious unfinished clauses or hesitations get one short opportunity
                         # to continue, rather than dispatching a draft request.
                         return 'continue'
-                    from fish_conversation import is_goodbye_intent, is_casual_greeting_intent
+                    from fish_conversation import is_goodbye_intent
                     if is_goodbye_intent(text):
                         speak("Goodbye! Have a great day.")
                         speech.finish()
                         output(b'', final=True)
                         return 'goodbye'
                     else:
-                        if not is_casual_greeting_intent(text):
-                            # With direct native tools, confirmation belongs at
-                            # the input boundary, not only at a delegation tool.
-                            if cloud:
-                                verified, confirmation = confirm(quality.get('source'))
-                            else:
-                                verified, confirmation = self.service.recognize(pcm)
-                            verified = filter_playback_input(verified, [echo_text] if echo_text else [])
-                            if (confirmation.get('decision') != 'accepted' or not verified
-                                    or confirmed_text_key(verified) != confirmed_text_key(text)):
-                                timing['recognition_rejection']='independent_transcripts_disagree'
-                                speak("I didn't catch that consistently. Please repeat your request; no new work was started.")
-                                speech.finish(); output(b'', final=True)
-                                return 'complete'
                         with control.guard:
                             control.check()
                             if pending_input:pending_input['committed']=True
                         self.service.metrics['user_turns']=self.service.metrics.get('user_turns',0)+1
                         stage='hermes'
                         hermes_started=time.monotonic()
+                        conv = self.conversation or self._get_fallback_conversation()
                         try:
-                            self.conversation.reply(text,speak,control)
+                            conv.reply(text,speak,control)
+                        except TurnCancelled:
+                            raise
+                        except Exception as conv_exc:
+                            control.check()
+                            if first is None:
+                                fb = self._get_fallback_conversation()
+                                if fb is not conv:
+                                    fb.reply(text,speak,control)
+                                    conv = fb
+                                else:
+                                    raise conv_exc
+                            else:
+                                raise conv_exc
                         finally:
-                            self.service.metrics['last_conversation_timing']=self.conversation.last_timing
+                            self.service.metrics['last_conversation_timing']=getattr(conv,'last_timing',{})
                 stage='speech'
                 speech.finish()
                 output(b'',final=True)
@@ -391,7 +443,8 @@ class StreamPhoneCall:
                 return
             if result=='continue' and not self.closed and self.generation==generation:
                 self.capture=bytearray(audio['pcm'] if isinstance(audio,dict) else audio)+self.capture
-                self.asr=None;self.last_speech=time.monotonic()+.7;self.voiced=max(self.voiced,3)
+                self.capture_extended=True
+                self.asr=None;self.last_speech=time.monotonic()+.5;self.voiced=max(self.voiced,2)
                 if getattr(self.service,'streaming_asr',None):
                     self.asr=self.service.streaming_asr.new_turn();await asyncio.to_thread(self.asr.feed,bytes(self.capture))
             elif result=='complete' and notice and self.generation==generation:
@@ -439,12 +492,13 @@ class StreamPhoneCall:
                 framer.first_output=time.monotonic()
                 if framer.source_end:
                     self.service.metrics['last_reply_first_transport_ms_from_speech_end']=round((framer.first_output-framer.source_end)*1000)
-            self.playback_until=max(self.playback_until,time.monotonic())+.06
+            self.playback_until=max(self.playback_until,time.monotonic())+(.45 if final else .06)
             self.change_state('speaking')
 
     async def feed(self):
         while not self.closed:
             frame=await self.input.get()
+            self.received_input=True
             reverse=frame[0]==2
             filtered=self.audio_filter.process(frame[1:],reverse=reverse)
             if reverse:
@@ -453,7 +507,6 @@ class StreamPhoneCall:
                 if any(frame[1:]):
                     self.rendered_generation=self.generation;self.last_rendered=time.monotonic()
                 continue
-            self.received_input=True
             speaking,pcm=bool(filtered[0]),filtered[1:]
             self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
@@ -474,6 +527,8 @@ class StreamPhoneCall:
             else: self.speech_run=0
             if not self.capture:
                 if not speaking: self.pre.append(pcm);continue
+                if (self.state=='speaking' or time.monotonic()-self.last_rendered<.55 or time.monotonic()-self.last_speaking_end<.45) and self.speech_run<3:
+                    self.pre.append(pcm);continue
                 prefix=b''.join(self.pre);self.capture.extend(prefix);self.pre.clear()
                 self.capture_echo_text=self.spoken_text if self.state=='speaking' or time.monotonic()-self.last_rendered<.8 else ''
                 if getattr(self.service,'streaming_asr',None):
@@ -489,7 +544,7 @@ class StreamPhoneCall:
                 # Never dispatch a truncated turn that could lose its initial
                 # negation. The caller gets a fresh turn without any action.
                 self.close_asr(self.asr);self.asr=None
-                self.capture.clear();self.voiced=0
+                self.capture.clear();self.voiced=0;self.capture_extended=False
                 self.capture_rejected=True;self.pre.clear()
                 self.discard_early_asr()
                 self.service.metrics['rejected_capture_limit']=self.service.metrics.get('rejected_capture_limit',0)+1
@@ -500,18 +555,27 @@ class StreamPhoneCall:
             now=time.monotonic()
             busy=self.worker and not self.worker.done()
             if self.capture_rejected:
-                if self.silence_frames>=12 and now-self.last_speech>=.72:self.capture_rejected=False
+                if (self.silence_frames>=8 or now-self.last_speech>=.85) and now-self.last_speech>=.65:
+                    self.capture_rejected=False
                 continue
             if self.greeting_pending:
                 if self.connected and self.received_input and not busy:
                     self.greeting_pending=False;self.start_reply(greeting=True)
                 continue
-            # A network/decoder stall is not caller silence. Require 720ms of
-            # received quiet audio, and drain queued speech before finalizing.
-            if (self.capture and self.voiced>=3 and self.silence_frames>=12
-                    and now-self.last_speech>=.72 and self.input.empty() and not busy):
+            # Support both continuous silent RTP frames and WhatsApp Opus DTX
+            # silence suppression (where RTP packets stop arriving during quiet gaps).
+            quiet_enough = (self.silence_frames >= 10 and now - self.last_speech >= .78) or (now - self.last_speech >= 1.0)
+            if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
                 self.prepare_recognition()
-                audio={'pcm':bytes(self.capture),'stream':self.asr,'echo_text':self.capture_echo_text,'speech_ended':self.last_speech};self.asr=None
+                audio={
+                    'pcm':bytes(self.capture),
+                    'stream':self.asr,
+                    'echo_text':self.capture_echo_text,
+                    'speech_ended':self.last_speech,
+                    'extended':self.capture_extended,
+                }
+                self.asr=None
+                self.capture_extended=False
                 if self.early_asr:
                     early=self.early_asr;self.early_asr=None
                     if early['version']==self.capture_version and audio['pcm'].startswith(early['pcm']):
@@ -525,9 +589,8 @@ class StreamPhoneCall:
                 self.capture.clear();self.voiced=0
                 self.silence_frames=0
                 self.start_reply(audio=audio);continue
-            if (self.capture and self.voiced<3 and self.silence_frames>=14
-                    and now-self.last_speech>=.8 and self.input.empty()):
-                self.capture.clear();self.voiced=0;self.close_asr(self.asr);self.asr=None
+            if (self.capture and self.voiced<2 and now-self.last_speech>=.85 and self.input.empty()):
+                self.capture.clear();self.voiced=0;self.capture_extended=False;self.close_asr(self.asr);self.asr=None
                 self.discard_early_asr()
             if not busy and now>=self.playback_until and self.state not in {'listening','idle'}:
                 self.change_state('listening')
