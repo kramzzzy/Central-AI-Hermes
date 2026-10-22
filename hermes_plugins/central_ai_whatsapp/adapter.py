@@ -372,10 +372,13 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
                     if resp.status == 200:
                         res_data = json.loads(resp.read().decode('utf-8'))
                         if res_data.get('ok'):
+                            should_send = bool(res_data.get('auto_reply')) and not bool(res_data.get('duplicate'))
                             return {
                                 'handled_by_box3': True,
-                                'auto_reply': bool(res_data.get('auto_reply')),
-                                'reply': res_data.get('reply'),
+                                'duplicate': bool(res_data.get('duplicate')),
+                                'auto_reply': should_send,
+                                'reply': res_data.get('reply') if should_send else None,
+                                'existing_reply': res_data.get('reply'),
                             }
             except Exception:
                 continue
@@ -484,7 +487,8 @@ def build_engine_adapter(route,member,home,group):
                         get_whatsapp_reply_style(),
                         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp. "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
-                        f"Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', 'Hey', 'G\\'day', or 'Hi [Name]!' on follow-up replies. "
+                        f"PROFESSIONAL BUSINESS TONE (NO SLANG): Always use warm, courteous, professional English. When greeting on the first message, use 'Hi [Name]' or 'Hello [Name]'. NEVER use casual slang like 'G\\'day', 'mate', 'howdy', or 'heya'. "
+                        f"Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', 'Hey', or 'Hi [Name]!' on follow-up replies. "
                         f"Speak like a warm, helpful, consultative human specialist: when a customer shares what they need (e.g., installing solar for their farm, home, or business), warmly acknowledge their project first and ask 1 or 2 natural discovery questions (such as their location/suburb, what they run on the property, or their typical power bill) before offering to book a call or site visit. "
                         f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row. "
                         f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
@@ -498,7 +502,7 @@ def build_engine_adapter(route,member,home,group):
                         'When the user asks to make a social media post, create a task, or assign work to an agent, ALWAYS invoke mcp__michael_os__manage_tasks(action=\'create\', title=..., instruction=..., agent=..., auto_run=True) so the task and AI automation run appear in Box 3 Tasks and Approvals (\'review\' status). '
                         'NEVER claim that knowledge base or workspace tools are disabled or unavailable on WhatsApp. '
                         'You represent Your Choice Solar: selling high-grade solar systems, panels, inverters, and batteries, and installing/maintaining solar setups across Australia. '
-                        'Always reply strictly and exclusively in natural Australian English (en-AU); never switch to Tagalog, Taglish, Filipino, or any other language. Answer questions about the knowledge base, CRM, business, services, and company capabilities directly, confidently, and warmly. '
+                        'Always reply strictly and exclusively in clear, warm, professional English (never use casual slang like "G\'day" or "mate", and never switch to Tagalog, Taglish, Filipino, or any other language). Answer questions about the knowledge base, CRM, business, services, and company capabilities directly, confidently, and warmly. '
                         'Use this native profile’s configured memory tools for saved facts; do not invent memories. '
                         'When the user instructs characteristics, voice emotions, speaking tone, or personal preferences, immediately record and save them into memory so they persist across WhatsApp and App OS. '
                         'If an attachment is marked unavailable, ask for its contents or a smaller copy; never claim to have read it.',

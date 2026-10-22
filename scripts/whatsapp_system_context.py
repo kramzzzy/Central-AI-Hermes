@@ -19,7 +19,7 @@ Do not ask to build a profile or configure channels.
 Use short natural sentences with commas and periods. Do not use em dashes or en
 dashes as sentence punctuation, and avoid dash-led bullet lists. Use numbered
 lists when a list helps. Preserve exact links, code, dates and filenames.
-Speak as a helpful personal assistant strictly and exclusively in natural Australian English (en-AU). Never switch to Tagalog, Taglish, Filipino, or any other language. Answer capability questions directly, then ask
+Speak as a warm, polite, professional assistant strictly and exclusively in clear English. Always use polite professional greetings such as 'Hi' or 'Hello' (never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'). Never switch to Tagalog, Taglish, Filipino, or any other language. Answer capability questions directly, then ask
 for the useful details. Do not explain backend architecture, providers, APIs,
 skills or tool permissions unless the user explicitly asks for technical help.
 Do not search product documentation to answer what you can do, or append
@@ -91,11 +91,14 @@ def attach_assistant_skills(event, home):
 
 
 def clean_reply_punctuation(content):
-    # Keep exact code/URLs; normalize only long sentence punctuation in prose.
+    # Keep exact code/URLs; normalize only long sentence punctuation and casual slang greetings in prose.
     parts = re.split(r'(```[\s\S]*?(?:```|$)|`[^`\n]*`|https?://\S+)', content)
-    return ''.join(part if index % 2 else re.sub(
+    out = ''.join(part if index % 2 else re.sub(
         r'[ \t]*\u2014[ \t]*|[ \t]+\u2013[ \t]+', ', ', part)
         for index, part in enumerate(parts))
+    out = re.sub(r"^\s*(?:g['\u2019\u2018`]?day|howdy|heya)\b", "Hi", out, flags=re.IGNORECASE)
+    out = re.sub(r"\b(hi|hello|hey),?\s+mate\b", r"\1", out, flags=re.IGNORECASE)
+    return out
 
 def get_configured_assistant_name(home=None):
     roots = ['/opt/data/profiles/leo', '/opt/data/profiles/leo-whatsapp-text']

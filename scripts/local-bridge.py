@@ -380,6 +380,19 @@ class Handler(BaseHTTPRequestHandler):
       if cu and cu not in caller_urls:
        caller_urls.append(cu)
      import urllib.request, urllib.error
+     message_text=re.sub(r"^\s*(?:g['\u2019\u2018`]?day|howdy|heya)\b","Hi",message_text,flags=re.IGNORECASE)
+     reply_to_mid=str(body.get('reply_to_message_id') or '').strip()
+     if reply_to_mid:
+      with customer_wa_lock:
+       proc_map=_load_customer_processed()
+       pentry=proc_map.get(reply_to_mid)
+       if isinstance(pentry,dict) and (pentry.get('replied') or pentry.get('sending')):
+        return self.reply(200,{'ok':True,'deduped':True,'target':send_target,'recipient_name':target_name,'message':f'WhatsApp reply already sent for {reply_to_mid}.'})
+       if isinstance(pentry,dict):
+        pentry['sending']=True
+       else:
+        proc_map[reply_to_mid]={'message_id':reply_to_mid,'sending':True}
+       _save_customer_processed(proc_map)
      last_err=''
      for cu in caller_urls:
       for ct in candidate_targets:
@@ -387,20 +400,29 @@ class Handler(BaseHTTPRequestHandler):
         sreq=urllib.request.Request(f"{cu}/send",data=json.dumps({'target':ct,'message':message_text}).encode('utf-8'),headers={'Content-Type':'application/json'})
         with urllib.request.urlopen(sreq,timeout=15) as sresp:
          sdata=json.loads(sresp.read())
-         reply_to_mid=str(body.get('reply_to_message_id') or '').strip()
          if reply_to_mid:
           try:
            with customer_wa_lock:
             proc_map=_load_customer_processed()
-            if reply_to_mid in proc_map:
-             proc_map[reply_to_mid]['reply']=message_text
-             proc_map[reply_to_mid]['replied']=True
-             proc_map[reply_to_mid]['handled']=True
-             _save_customer_processed(proc_map)
+            if not isinstance(proc_map.get(reply_to_mid),dict):
+             proc_map[reply_to_mid]={'message_id':reply_to_mid}
+            proc_map[reply_to_mid]['reply']=message_text
+            proc_map[reply_to_mid]['replied']=True
+            proc_map[reply_to_mid]['sending']=False
+            proc_map[reply_to_mid]['handled']=True
+            _save_customer_processed(proc_map)
           except Exception:pass
          return self.reply(200,{'ok':True,'message_id':sdata.get('message_id',''),'target':ct,'recipient_name':target_name,'line':cu,'message':f'WhatsApp message delivered to {target_name} ({ct}).'})
        except Exception as err:
         last_err=str(err)
+     if reply_to_mid:
+      try:
+       with customer_wa_lock:
+        proc_map=_load_customer_processed()
+        if isinstance(proc_map.get(reply_to_mid),dict):
+         proc_map[reply_to_mid]['sending']=False
+         _save_customer_processed(proc_map)
+      except Exception:pass
      return self.reply(502,{'ok':False,'error':f'WhatsApp connector unavailable: {last_err}'})
     if self.path in {'/os/contacts','/os/company'}:
      c_name=body.get('company_name') or body.get('company')
@@ -1010,58 +1032,15 @@ def _handle_customer_sync_action(action,body):
  return {'ok':True,'action':action}
 
 def _collect_customer_sync_items():
- import urllib.request
  _ensure_customer_caller_enabled()
- caller_url=os.environ.get('CUSTOMER_CALLER_URL','http://customer-caller:8080').rstrip('/')
  items=[]
  seen_ids=set()
+ now_ts=int(time.time())
  with customer_wa_lock:
   proc_map=_load_customer_processed()
   for mid,info in proc_map.items():
    if isinstance(info,dict) and (info.get('dismissed') or info.get('synced_to_box3')):
     seen_ids.add(mid)
-  http_pkts,active_tok=_poll_customer_caller_http()
-  for hp in http_pkts:
-   if not isinstance(hp,dict):continue
-   mid=str(hp.get('messageId') or '').strip()
-   txt=str(hp.get('body') or '').strip()
-   sid=str(hp.get('senderId') or '').strip()
-   wchat=str(hp.get('wireChat') or hp.get('chatId') or '')
-   sname=str(hp.get('senderName') or '')
-   lease=str(hp.get('bridgeLease') or '')
-   cid=str(hp.get('chatId') or '')
-   if not mid or not txt or not sid:
-    continue
-   created_iso=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
-   if mid not in proc_map:
-    proc_map[mid]={
-     'sender_id':sid,
-     'sender_name':sname,
-     'wire_chat':wchat,
-     'message_id':mid,
-     'text':txt,
-     'reply':None,
-     'handled':False,
-     'replied':False,
-     'created_at':created_iso,
-    }
-    _save_customer_processed(proc_map)
-   if lease and active_tok:
-    try:
-     creq=urllib.request.Request(f"{caller_url}/text/complete",data=json.dumps({'chatId':cid,'bridgeLease':lease,'status':'complete'}).encode('utf-8'),headers={'Authorization':f'Bearer {active_tok}','X-Leo-Route':'owner','Content-Type':'application/json'},method='POST')
-     urllib.request.urlopen(creq,timeout=3).close()
-    except Exception:pass
-   if mid not in seen_ids and mid not in in_progress_customer_msgs:
-    seen_ids.add(mid)
-    items.append({
-     'sender_id':sid,
-     'sender_name':sname,
-     'wire_chat':wchat,
-     'message_id':mid,
-     'text':txt,
-     'reply':(proc_map.get(mid) or {}).get('reply'),
-     'created_at':created_iso,
-    })
   for qp in ['/data/customer/whatsapp_sessions_sync.json','/data/whatsapp_sessions_sync.json']:
    if os.path.exists(qp):
     try:
@@ -1072,8 +1051,9 @@ def _collect_customer_sync_items():
         mid=str(it.get('message_id') or '')
         if mid and (mid in seen_ids or mid in in_progress_customer_msgs):
          continue
-        if mid and mid in proc_map and proc_map[mid].get('reply') and not it.get('reply'):
-         it['reply']=proc_map[mid]['reply']
+        pinfo=proc_map.get(mid) if mid else None
+        if isinstance(pinfo,dict) and pinfo.get('reply') and not it.get('reply'):
+         it['reply']=pinfo['reply']
         if not mid or mid not in seen_ids:
          if mid:seen_ids.add(mid)
          items.append(it)
@@ -1082,9 +1062,12 @@ def _collect_customer_sync_items():
   for mid,info in proc_map.items():
    if not isinstance(info,dict) or mid in seen_ids or mid in in_progress_customer_msgs:
     continue
-   seen_ids.add(mid)
    if info.get('dismissed') or info.get('synced_to_box3'):
+    seen_ids.add(mid)
     continue
+   if not (info.get('replied') or info.get('handled') or info.get('reply')):
+    continue
+   seen_ids.add(mid)
    items.append({
     'sender_id':str(info.get('sender_id') or ''),
     'sender_name':str(info.get('sender_name') or ''),
@@ -1100,11 +1083,16 @@ def _collect_customer_sync_items():
    sid=str(pkt.get('senderId') or '').strip()
    if not mid or not txt or not sid or mid in seen_ids or mid in in_progress_customer_msgs:
     continue
-   seen_ids.add(mid)
    pinfo=proc_map.get(mid)
    if isinstance(pinfo,dict) and (pinfo.get('dismissed') or pinfo.get('synced_to_box3')):
+    seen_ids.add(mid)
     continue
    created_ts=pkt.get('_db_created')
+   has_finished_reply=isinstance(pinfo,dict) and bool(pinfo.get('replied') or pinfo.get('handled') or pinfo.get('reply'))
+   is_stale_unhandled=bool(created_ts and (now_ts-int(created_ts))>=45)
+   if not has_finished_reply and not is_stale_unhandled:
+    continue
+   seen_ids.add(mid)
    created_iso=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(int(created_ts))) if created_ts else time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
    items.append({
     'sender_id':sid,
@@ -1171,7 +1159,7 @@ def _start_customer_whatsapp_poller():
      with customer_wa_lock:
       proc_map=_load_customer_processed()
       existing_proc=proc_map.get(msg_id)
-      if isinstance(existing_proc,dict) and (existing_proc.get('dismissed') or existing_proc.get('replied') or outbox_sent or (existing_proc.get('handled') and not auto_reply_enabled)):
+      if msg_id in in_progress_customer_msgs or (isinstance(existing_proc,dict) and (existing_proc.get('dismissed') or existing_proc.get('replied') or existing_proc.get('sending') or outbox_sent or (existing_proc.get('handled') and not auto_reply_enabled))):
        continue
       in_progress_customer_msgs.add(msg_id)
      try:
@@ -1208,10 +1196,13 @@ def _start_customer_whatsapp_poller():
       has_prior_reply=any(m.get('role')=='assistant' for m in prior_chat_msgs)
       first_n=(sender_name.split()[0] if sender_name else '')
       reply_text=None
-      if box3_res.get('handled_by_box3') and box3_res.get('reply'):
-       reply_text=str(box3_res['reply']).strip()
-      elif box3_res.get('handled_by_box3') and (box3_res.get('customer_auto_reply') is False or box3_res.get('auto_reply') is False):
-       reply_text=None
+      existing_box3_reply=None
+      if box3_res.get('handled_by_box3'):
+       if box3_res.get('auto_reply') and not box3_res.get('duplicate') and box3_res.get('reply'):
+        reply_text=str(box3_res['reply']).strip()
+       else:
+        reply_text=None
+        existing_box3_reply=str(box3_res.get('existing_reply') or box3_res.get('reply') or '').strip() or None
       elif auto_reply_enabled and not outbox_sent:
        agent_name=live_cfg.get('customer_agent') or 'James'
        agent_role=live_cfg.get('customer_agent_role') or 'Customer Service & Solar Specialist'
@@ -1227,9 +1218,9 @@ def _start_customer_whatsapp_poller():
        sys_prompt='\n'.join(filter(None,[
         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
-        "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, markdown **bold**, or # headings). Always answer the customer's actual question directly and naturally first using your Agent Instructions and Knowledge Base below. Never repeat the same question twice in a row.",
+        "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, markdown **bold**, or # headings). Always use warm, courteous, professional English—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. Always answer the customer's actual question directly and naturally first using your Agent Instructions and Knowledge Base below. Never repeat the same question twice in a row.",
         "STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
-        "NO REPEATED GREETINGS: This conversation is already underway and you HAVE ALREADY greeted the customer. NEVER start your reply with 'Hi', 'Hello', 'Hey', or 'Hi " + (first_n or "there") + "!' again. Jump straight into answering their message." if has_prior_reply else f"Greet {first_n or 'the customer'} warmly once on this first reply.",
+        "NO REPEATED GREETINGS: This conversation is already underway and you HAVE ALREADY greeted the customer. NEVER start your reply with 'Hi', 'Hello', 'Hey', or 'Hi " + (first_n or "there") + "!' again. Jump straight into answering their message." if has_prior_reply else f"Greet {first_n or 'the customer'} politely and professionally once on this first reply using 'Hi {first_n or 'there'}' or 'Hello {first_n or 'there'}' (never use 'G\\'day').",
         f"Customer WhatsApp Name: {sender_name or 'Visitor'} (Phone: +{sender_id})",
         f"CONVERSATION HISTORY:\n{hist_str}",
         f"KNOWLEDGE BASE (FROM APP OS):\n{kb_text}" if kb_text else "",
@@ -1260,12 +1251,28 @@ def _start_customer_whatsapp_poller():
       if reply_text:
        reply_text=re.sub(r'\[\[\s*BOOK[\s\S]*?\]\]+','',reply_text,flags=re.IGNORECASE)
        reply_text=re.sub(r'^\s*\[+\s*|\s*\]+\s*$','',reply_text).strip()
-      if reply_text and has_prior_reply:
+       reply_text=re.sub(r"^\s*(?:g['\u2019\u2018`]?day|howdy|heya)\b","Hi",reply_text,flags=re.IGNORECASE)
+       reply_text=re.sub(r"\b(hi|hello|hey),?\s+mate\b",r"\1",reply_text,flags=re.IGNORECASE)
+      if reply_text and has_prior_reply and not box3_res.get('handled_by_box3'):
        stripped_re=re.sub(r"^(?:hi|hello|hey|g['\u2019\u2018`]?day|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|again|mate|folks|team))?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*","",reply_text,flags=re.IGNORECASE).strip()
        if len(stripped_re)>=8:
         reply_text=stripped_re[0].upper()+stripped_re[1:]
-      sent_ok=outbox_sent
+      sent_ok=outbox_sent or bool(existing_box3_reply)
+      can_send=False
       if reply_text and not outbox_sent:
+       with customer_wa_lock:
+        proc_map=_load_customer_processed()
+        cur_p=proc_map.get(msg_id)
+        if isinstance(cur_p,dict) and (cur_p.get('replied') or cur_p.get('sending')):
+         sent_ok=True
+         can_send=False
+        else:
+         if not isinstance(cur_p,dict):
+          proc_map[msg_id]={'message_id':msg_id}
+         proc_map[msg_id]['sending']=True
+         _save_customer_processed(proc_map)
+         can_send=True
+      if reply_text and can_send:
        history_by_sender.setdefault(sender_id,[]).extend([f"Customer: {msg_text}",f"James: {reply_text}"])
        for send_target in dict.fromkeys([t for t in [wire_chat,sender_id] if t]):
         try:
@@ -1288,15 +1295,17 @@ def _start_customer_whatsapp_poller():
         conn.commit()
         conn.close()
        except Exception:pass
+      recorded_reply=(reply_text if sent_ok else None) or existing_box3_reply
       entry_record={
        'sender_id':sender_id,
        'sender_name':sender_name,
        'wire_chat':wire_chat,
        'message_id':msg_id,
        'text':msg_text,
-       'reply':reply_text if sent_ok else None,
-       'handled':bool(sent_ok or not auto_reply_enabled),
+       'reply':recorded_reply,
+       'handled':bool(sent_ok or not auto_reply_enabled or box3_res.get('handled_by_box3')),
        'replied':bool(sent_ok),
+       'sending':False,
        'created_at':created_iso,
       }
       with customer_wa_lock:
