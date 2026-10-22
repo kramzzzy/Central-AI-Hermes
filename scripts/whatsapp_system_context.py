@@ -96,6 +96,18 @@ def clean_reply_punctuation(content):
     out = ''.join(part if index % 2 else re.sub(
         r'[ \t]*\u2014[ \t]*|[ \t]+\u2013[ \t]+', ', ', part)
         for index, part in enumerate(parts))
+    out = re.sub(
+        r'\s*[\(\[]\s*(?:next\s+step|step\s*\d|note|internal|checklist|qualification|follow[- ]?up|once\s+they|after\s+they|then\s+ask|ask\s+only)\b[\s\S]*?[\)\]]',
+        '',
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(
+        r'(?:^|\n)\s*(?:\(?\s*(?:next\s+step|step\s*\d+|internal\s+note|note)\s*[:\-][\s\S]*)$',
+        '',
+        out,
+        flags=re.IGNORECASE,
+    )
     out = re.sub(r"^\s*(?:g['\u2019\u2018`]?day|howdy|heya)\b", "Hi", out, flags=re.IGNORECASE)
     out = re.sub(r"\b(hi|hello|hey),?\s+mate\b", r"\1", out, flags=re.IGNORECASE)
     out = re.sub(

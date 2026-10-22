@@ -1024,6 +1024,20 @@ def _fast_draft_only_completion(body,settings_dict):
   content=str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
   if not content:
    return None
+  content=re.sub(
+   r'\s*[\(\[]\s*(?:next\s+step|step\s*\d|note|internal|checklist|qualification|follow[- ]?up|once\s+they|after\s+they|then\s+ask|ask\s+only)\b[\s\S]*?[\)\]]',
+   '',
+   content,
+   flags=re.IGNORECASE,
+  )
+  content=re.sub(
+   r'(?:^|\n)\s*(?:\(?\s*(?:next\s+step|step\s*\d+|internal\s+note|note)\s*[:\-][\s\S]*)$',
+   '',
+   content,
+   flags=re.IGNORECASE,
+  ).strip()
+  if not content:
+   return None
   if re.search(r'\[\[\s*(?:LEAD|BOOK)\s*:',content,flags=re.IGNORECASE):
    try:
     from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
@@ -1394,7 +1408,8 @@ def _start_customer_whatsapp_poller():
         sys_prompt='\n'.join(filter(None,[
          f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
          f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
-         "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, markdown **bold**, or # headings). Always use warm, courteous, professional English—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. Always answer the customer's actual question directly and naturally first using your Agent Instructions and Knowledge Base below. Never repeat the same question twice in a row.",
+         "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, '(Next step: ...)', '(Note: ...)', markdown **bold**, or # headings). Always use warm, courteous, professional English—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'.",
+         "GENUINELY EXPLAIN QUESTIONS FIRST: Never say 'I\\'d be happy to explain...' without actually explaining it right away! When a customer asks how solar works with their billing or house, explain it clearly in 1 to 2 simple sentences first (e.g., daytime solar panels power your home appliances directly first so you buy far less electricity from the grid, and excess solar can charge a battery or earn feed-in bill credits), and then ask your 1 simple follow-up question.",
          "SHORT, FRIENDLY & ONE QUESTION AT A TIME: Keep every reply brief, warm, and simple (1 to 2 short sentences maximum). NEVER dump paragraphs of information and NEVER ask two or more questions in the same message (never stack questions with 'Also, ...' or 'and what size/how old?'). Ask at most ONE simple question at a time.",
          f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): Speak like a real, natural human specialist texting on WhatsApp. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks {first_n or '[Name]'}', 'Got it, {first_n or '[Name]'}', 'Great, {first_n or '[Name]'}', or similar mechanical acknowledgements. Never repeat the customer's suburb/location in every message.",
          "STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
@@ -1459,6 +1474,8 @@ def _start_customer_whatsapp_poller():
        if not raw_tags:
         raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',reply_text,flags=re.IGNORECASE)
        reply_text=re.sub(r'\[\[\s*(?:BOOK|LEAD)[\s\S]*?\]\]+','',reply_text,flags=re.IGNORECASE)
+       reply_text=re.sub(r'\s*[\(\[]\s*(?:next\s+step|step\s*\d|note|internal|checklist|qualification|follow[- ]?up|once\s+they|after\s+they|then\s+ask|ask\s+only)\b[\s\S]*?[\)\]]','',reply_text,flags=re.IGNORECASE)
+       reply_text=re.sub(r'(?:^|\n)\s*(?:\(?\s*(?:next\s+step|step\s*\d+|internal\s+note|note)\s*[:\-][\s\S]*)$','',reply_text,flags=re.IGNORECASE)
        reply_text=re.sub(r'^\s*\[+\s*|\s*\]+\s*$','',reply_text).strip()
        reply_text=re.sub(r"^\s*(?:g['\u2019\u2018`]?day|howdy|heya)\b","Hi",reply_text,flags=re.IGNORECASE)
        reply_text=re.sub(r"\b(hi|hello|hey),?\s+mate\b",r"\1",reply_text,flags=re.IGNORECASE)
