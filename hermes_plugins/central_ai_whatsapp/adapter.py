@@ -367,12 +367,92 @@ def _format_natural_list(items: list) -> str:
     return f"{', '.join(items[:-1])}, and {items[-1]}"
 
 
+_BILL_OR_NOISE_IN_ADDRESS_RE = re.compile(
+    r'\b(paid|pay|paying|bill|bills|aud|dollars|bucks|kwh|kw|kwp|panel|panels|solar|battery|batteries|inverter|month|monthly|quarter|quarterly|year|yearly|annual|email|no\s+email|just\s+need|how\s+many|how\s+much|calculate|calculator|system|install|installation|setup|planning|quote|phone\s+consultation|website\s+property|street\s+name|first\s+last|not\s+yet|tell\s+me|use\s+first)\b|\$',
+    re.I,
+)
+_STREET_SUFFIX_IN_TEXT_RE = re.compile(
+    r'\b(street|st|road|rd|avenue|ave|drive|dr|court|ct|place|pl|lane|ln|way|circuit|cct|crescent|cres|boulevard|blvd|terrace|tce|highway|hwy|parade|pde|close|cl|esplanade|esp|grove|gr|mews|walk|rise|track|trail|loop|plaza|square|sq)\b',
+    re.I,
+)
+_AFFIRMATIVE_CONFIRM_RE = re.compile(
+    r'\b(yes|yeah|yep|yup|correct|that\'?s\s+(?:right|correct|all\s+correct|it|good|fine|accurate)|all\s+(?:correct|good|right|accurate)|confirmed|confirm|i\s+confirm|looks\s+good|sounds\s+good|spot\s+on|go\s+ahead|lock\s+it\s+in|book\s+it|please\s+do|sure\s+is|everything\s+is\s+correct)\b',
+    re.I,
+)
+_NEGATIVE_OR_CORRECTION_RE = re.compile(
+    r'\b(no\b|nope|nah|not\s+yet|wrong|incorrect|wait|hold\s+on|change|actually\s+(?:it\'?s|my)|instead)\b',
+    re.I,
+)
+
+
+def _is_valid_confirmed_street_address(val: str) -> bool:
+    raw = str(val or '').strip()
+    if len(raw) < 6 or len(raw) > 160:
+        return False
+    if '?' in raw or '@' in raw or '...' in raw:
+        return False
+    if _BILL_OR_NOISE_IN_ADDRESS_RE.search(raw):
+        return False
+    if re.search(r'\b\d{1,3},\d{3}\b', raw):
+        return False
+    if not re.search(r'(?:^|[\s,/])\d{1,5}[A-Za-z]?\b', raw):
+        return False
+    cleaned_alpha = re.sub(r'\b(?:unit|apt|suite|lot|level|flat|no|qld|nsw|vic|wa|sa|tas|act|nt)\b', ' ', raw, flags=re.I)
+    alpha_words = re.findall(r'[A-Za-z]{2,}', cleaned_alpha)
+    if not alpha_words:
+        return False
+    return bool(_STREET_SUFFIX_IN_TEXT_RE.search(raw) or len(alpha_words) >= 2)
+
+
+def _is_valid_confirmed_email(val: str) -> bool:
+    raw = str(val or '').strip().lower()
+    if not raw or '...' in raw:
+        return False
+    if not re.match(r'^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$', raw, re.I):
+        return False
+    if re.search(r'@(?:example\.com|test\.com|domain\.com|email\.com|sample\.com|yourcompany\.com)$', raw, re.I):
+        return False
+    return True
+
+
+def _has_customer_confirmed_details(turns: list) -> bool:
+    if not isinstance(turns, list) or len(turns) < 2:
+        return False
+    for idx in range(len(turns) - 1, 0, -1):
+        m = turns[idx]
+        if not isinstance(m, dict) or m.get('role') != 'user':
+            continue
+        user_txt = str(m.get('content') or '').strip()
+        if not user_txt or _NEGATIVE_OR_CORRECTION_RE.search(user_txt):
+            continue
+        if not _AFFIRMATIVE_CONFIRM_RE.search(user_txt):
+            continue
+        prev_asst = ''
+        for j in range(idx - 1, -1, -1):
+            if isinstance(turns[j], dict) and turns[j].get('role') == 'assistant':
+                prev_asst = str(turns[j].get('content') or '')
+                break
+        if not prev_asst:
+            continue
+        asks_confirm = bool(
+            re.search(r'\b(confirm|correct|right|accurate|check|details|summary|lodge|book|appointment)\b', prev_asst, re.I)
+            or '?' in prev_asst
+        )
+        has_details_readback = bool('@' in prev_asst or (re.search(r'\b(name|phone|email|address)\b', prev_asst, re.I) and re.search(r'\d', prev_asst)))
+        if asks_confirm and (has_details_readback or idx == len(turns) - 1):
+            return True
+    return False
+
+
 def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sender_id: str = '') -> dict:
-    name = (sender_name or '').strip()
+    hint_name = (sender_name or '').strip()
     digits = re.sub(r'\D', '', str(sender_id or ''))
-    phone = f"+{digits}" if len(digits) >= 7 else ''
+    hint_phone = f"+{digits}" if 8 <= len(digits) <= 15 else ''
+    name = ''
+    phone = ''
     email = ''
     address = ''
+    suburb = ''
     existing_solar = ''
     power_bill = ''
 
@@ -380,12 +460,13 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         if not isinstance(m, dict) or m.get('role') != 'user':
             continue
         text = str(m.get('content') or '').strip()
-        prev_asst = ''
+        prev_asst_raw = ''
         if idx > 0 and isinstance(turns[idx - 1], dict) and turns[idx - 1].get('role') == 'assistant':
-            prev_asst = str(turns[idx - 1].get('content') or '').lower()
+            prev_asst_raw = str(turns[idx - 1].get('content') or '')
+        prev_asst = prev_asst_raw.lower()
 
         if not existing_solar:
-            if re.search(r'\b(no\s+solar|don\'?t\s+have\s+solar|do\s+not\s+have\s+solar|no\s+existing\s+solar|brand[\s-]*new(?:\s+(?:solar|setup|system|install))?|new\s+(?:solar|setup|system|install|installation)|never\s+had\s+solar|none\s+yet)\b', text, re.I):
+            if re.search(r'\b(no\s+solar|don\'?t\s+have\s+solar|do\s+not\s+have\s+solar|no\s+existing\s+solar|brand[\s-]*new(?:\s+(?:solar|setup|system|install))?|new\s+(?:solar|setup|system|install|installation)|never\s+had\s+solar|none\s+yet|planning\s+to\s+setup\s+solar)\b', text, re.I):
                 existing_solar = 'No existing solar'
             elif re.search(r'\b(already\s+have\s+solar|got\s+solar|existing\s+solar|have\s+a\s+\d+(?:\.\d+)?\s*kw|old\s+solar|replace\s+my\s+solar|upgrade\s+my\s+solar|\d+\s*(?:year|yr)s?\s+old(?:\s+solar)?)\b', text, re.I):
                 existing_solar = text[:120]
@@ -409,22 +490,28 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
 
         if not email:
             em = re.search(r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', text, re.I)
-            if em:
+            if em and _is_valid_confirmed_email(em.group(0)):
                 email = em.group(0).lower()
         if not phone:
             ph = re.search(r'(?:\+?61[\s-]?|0)[2-478](?:[\s-]?\d){8}\b|\b\+?\d[\d\s-]{7,14}\d\b', text)
-            if ph:
+            if ph and not _BILL_OR_NOISE_IN_ADDRESS_RE.search(text):
                 phone = ph.group(0).strip()
+            elif (
+                hint_phone
+                and (hint_phone in prev_asst_raw or digits in prev_asst_raw or re.search(r'\b(phone|number|contact|whatsapp\s+number|reach\s+you)\b', prev_asst))
+                and re.search(r'\b(yes|yeah|yep|correct|that\'?s\s+(?:right|it|correct)|same\s+number|this\s+number|use\s+this)\b', text, re.I)
+                and not _NEGATIVE_OR_CORRECTION_RE.search(text)
+            ):
+                phone = hint_phone
 
-        has_street = bool(address and re.search(r'\d', address))
-        if not has_street:
+        if not _is_valid_confirmed_street_address(address):
             st = re.search(
-                r'\b(?:unit\s+\d+[A-Za-z]?\s*[/,]\s*|\d+[A-Za-z]?\s*/\s*)?\d{1,5}[A-Za-z]?\s+[A-Za-z0-9.\s]{2,35}\b(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Court|Ct|Place|Pl|Lane|Ln|Way|Circuit|Cct|Crescent|Cres|Boulevard|Blvd|Terrace|Tce|Highway|Hwy|Parade|Pde|Close|Cl|Esplanade|Esp)\b(?:[,.\s]+[A-Za-z\s]{2,25})?(?:\s+(?:QLD|NSW|VIC|WA|SA|TAS|ACT|NT))?(?:\s+\d{4})?',
+                r'\b(?:unit\s+\d+[A-Za-z]?\s*[/,]\s*|\d+[A-Za-z]?\s*/\s*)?\d{1,5}[A-Za-z]?\s+[A-Za-z0-9.\s]{2,35}\b(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Court|Ct|Place|Pl|Lane|Ln|Way|Circuit|Cct|Crescent|Cres|Boulevard|Blvd|Terrace|Tce|Highway|Hwy|Parade|Pde|Close|Cl|Esplanade|Esp|Grove|Gr|Mews|Walk|Rise|Track|Trail|Loop|Plaza|Square|Sq)\b(?:[,.\s]+[A-Za-z\s]{2,25})?(?:\s+(?:QLD|NSW|VIC|WA|SA|TAS|ACT|NT))?(?:\s+\d{4})?',
                 text,
                 re.I,
             )
             exp_addr = re.search(
-                r'(?:street address is|property address is|my address is|address is|live at|located at|property is at|property at|address\s*[:=-])\s*([^\n.?!]{4,90})',
+                r'(?:street address is|property address is|my address is|address is|live at|located at|property is at|property at|address\s*[:=-])\s*([^\n.?!]{6,110})',
                 text,
                 re.I,
             )
@@ -434,23 +521,23 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
                     text,
                     re.I,
                 )
-                if not address
+                if not suburb
                 else None
             )
-            if st:
+            if st and _is_valid_confirmed_street_address(st.group(0)):
                 address = st.group(0).strip()
-            elif exp_addr:
+            elif exp_addr and _is_valid_confirmed_street_address(exp_addr.group(1)):
                 address = exp_addr.group(1).strip()
             elif (
-                re.search(r'\b(address|street|suburb|postcode|where is the property|location)\b', prev_asst)
-                and 3 <= len(text) <= 90
+                re.search(r'\b(address|street|where is the property|property located)\b', prev_asst)
+                and 6 <= len(text) <= 120
                 and '?' not in text
             ):
                 cleaned_a = re.sub(r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '', text, flags=re.I).strip(' ,;')
-                if cleaned_a and (re.search(r'\d', cleaned_a) or not address):
+                if _is_valid_confirmed_street_address(cleaned_a):
                     address = cleaned_a
-            elif loc_match and not address:
-                address = loc_match.group(1).strip()
+            if loc_match and not suburb and not _BILL_OR_NOISE_IN_ADDRESS_RE.search(loc_match.group(1)):
+                suburb = loc_match.group(1).strip()
 
         has_full = len([w for w in name.split() if w]) >= 2
         if not has_full:
@@ -467,7 +554,16 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
                 ]
                 cand = ' '.join(cwords)
                 if _is_valid_person_name(cand) and (len(cwords) >= 2 or not name):
-                    name = cand
+                    name = ' '.join(w[0].upper() + w[1:] for w in cwords)
+            elif (
+                hint_name
+                and len(hint_name.split()) >= 2
+                and _is_valid_person_name(hint_name)
+                and hint_name.lower() in prev_asst
+                and re.search(r'\b(yes|yeah|yep|correct|that\'?s\s+(?:right|my\s+name|correct))\b', text, re.I)
+                and not _NEGATIVE_OR_CORRECTION_RE.search(text)
+            ):
+                name = hint_name
             else:
                 segs = [
                     re.sub(r'^(hi|hello|hey|it\'s|its|name is|my name is|full name)\s*[:=-]?\s*', '', s, flags=re.I).strip()
@@ -501,12 +597,14 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
                             name = wcap
                         break
 
-    has_full_name = len([w for w in name.split() if w]) >= 2
-    has_phone = len(re.sub(r'\D', '', phone)) >= 7
-    has_email = '@' in email
-    has_street_address = bool(address and re.search(r'\d', address) and len(address) >= 5)
+    has_full_name = len([w for w in name.split() if w]) >= 2 and _is_valid_person_name(name)
+    has_phone = 8 <= len(re.sub(r'\D', '', phone)) <= 15
+    has_email = _is_valid_confirmed_email(email)
+    has_street_address = _is_valid_confirmed_street_address(address)
     has_existing_solar = len(existing_solar) >= 2
     has_power_bill = len(power_bill) >= 2
+    all_four_collected = has_full_name and has_phone and has_email and has_street_address
+    customer_confirmed = all_four_collected and _has_customer_confirmed_details(turns)
 
     missing_natural = []
     if not has_existing_solar:
@@ -515,9 +613,9 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         missing_natural.append('how much your last power bill was ($$)')
     if not has_street_address:
         missing_natural.append(
-            f"the full street address of your property in {address}"
-            if address
-            else "your property's street address"
+            f"the full street address of your property in {suburb}"
+            if suburb
+            else "your property's full street address"
         )
     if not has_full_name:
         missing_natural.append('your last name (so we have your full name)' if name else 'your full name (first and last)')
@@ -525,6 +623,8 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         missing_natural.append('your best contact phone number')
     if not has_email:
         missing_natural.append('your email address')
+    if all_four_collected and not customer_confirmed:
+        missing_natural.append('your confirmation that all 4 details (Full Name, Phone, Email, and Property Street Address) are correct')
 
     if not has_existing_solar:
         next_single_question = "Ask ONLY this 1 simple question next: whether they already have solar on the property or if this is for a new setup (do NOT ask about their power bill or address yet)."
@@ -532,9 +632,9 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         next_single_question = "Ask ONLY this 1 simple question next: roughly how much their last power bill was (do NOT ask for their address or contact details yet)."
     elif not has_street_address:
         next_single_question = (
-            f"Ask ONLY this 1 simple question next: what the street address is for their property in {address}."
-            if address
-            else "Ask ONLY this 1 simple question next: what the property's street address is."
+            f"Ask ONLY this 1 simple question next: what the full street address (number and street name) is for their property in {suburb}."
+            if suburb
+            else "Ask ONLY this 1 simple question next: what the property's full street address (street number, street name, and suburb) is."
         )
     elif not has_full_name:
         next_single_question = (
@@ -546,17 +646,25 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         next_single_question = "Ask ONLY this 1 simple question next: what their best contact phone number is."
     elif not has_email:
         next_single_question = "Ask ONLY this 1 simple question next: what their best email address is."
+    elif not customer_confirmed:
+        next_single_question = (
+            f"All 4 contact & property details are collected, but NOT YET CONFIRMED by the customer. "
+            f"Read back their Full Name ({name}), Phone Number ({phone}), Email Address ({email}), and Property Street Address ({address}) "
+            f"clearly in 1-2 short sentences and ask them to confirm if all details are correct before lodging their inquiry "
+            f"(do NOT output [[LEAD:...]] or [[BOOK:...]] until AFTER they reply confirming)."
+        )
     else:
-        next_single_question = "All details are collected! Briefly confirm their collected details in 1-2 friendly sentences and append the [[LEAD:...]] tag."
+        next_single_question = "The customer has confirmed all 4 details! Thank them warmly in 1-2 friendly sentences, confirm their inquiry is now lodged with our team, and append the [[LEAD:...]] tag."
 
     checklist_lines = [
         'LIVE QUALIFICATION & CRM PROGRESS (ONE QUESTION AT A TIME — DO NOT STACK QUESTIONS):',
         f"- 1. Existing Solar: {'COLLECTED (' + existing_solar + ')' if has_existing_solar else 'Not asked yet'}",
         f"- 2. Last Power Bill ($$): {'COLLECTED (' + power_bill + ')' if has_power_bill else 'Not asked yet'}",
-        f"- 3. Property Street Address: {'COLLECTED (' + address + ')' if has_street_address else ('Partial (' + address + ' — need street address)' if address else 'Not asked yet')}",
+        f"- 3. Property Street Address: {'COLLECTED (' + address + ')' if has_street_address else ('Partial (' + suburb + ' — need street number & street name)' if suburb else 'Not asked yet')}",
         f"- 4. Full Name (First & Last): {'COLLECTED (' + name + ')' if has_full_name else ('Partial (First name: ' + name + ' — need last name)' if name else 'Not asked yet')}",
         f"- 5. Phone Number: {'COLLECTED (' + phone + ')' if has_phone else 'Not asked yet'}",
         f"- 6. Email Address: {'COLLECTED (' + email + ')' if has_email else 'Not asked yet'}",
+        f"- 7. Customer Confirmation of All 4 Details: {'CONFIRMED BY CUSTOMER' if customer_confirmed else ('AWAITING READ-BACK & CUSTOMER CONFIRMATION' if all_four_collected else 'Pending collection of items 3-6')}",
         f"NEXT SINGLE STEP FOR THIS TURN: {next_single_question}",
     ]
 
@@ -565,10 +673,10 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     is_simple_greeting = bool(not has_asst and len(user_turns) == 1 and _SIMPLE_GREETING_ONLY_RE.match(user_turns[0]))
 
     return {
-        'name': name,
-        'phone': phone,
-        'email': email,
-        'address': address,
+        'name': name if has_full_name else '',
+        'phone': phone if has_phone else '',
+        'email': email if has_email else '',
+        'address': address if has_street_address else '',
         'existing_solar': existing_solar,
         'power_bill': power_bill,
         'has_full_name': has_full_name,
@@ -577,6 +685,8 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         'has_street_address': has_street_address,
         'has_existing_solar': has_existing_solar,
         'has_power_bill': has_power_bill,
+        'customer_confirmed': customer_confirmed,
+        'is_complete': all_four_collected and customer_confirmed,
         'is_simple_greeting': is_simple_greeting,
         'next_single_question': next_single_question,
         'missing_natural': missing_natural,
@@ -803,9 +913,9 @@ def _calculate_solar_pre_assessment(text: str) -> str:
                 f"OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR (planning-v2) LIVE RESULT:\n"
                 f"- Summary: {res['summary_for_customer']}\n"
                 f"- Estimated Electricity Usage: {res['estimated_daily_kwh']} kWh/day (~{round(res['estimated_monthly_kwh']):,} kWh/month, {round(res['annual_usage_kwh']):,} kWh/year)\n"
-                f"- Starting Solar System Size to Explore: {res['recommended_kw']} kW of panels ({res['capacity_kwp']} kWp, generating ~{res['annual_generation_kwh']:,} kWh/year)\n"
+                f"- Starting Solar System Size to Explore: {res['recommended_kw']} kW of panels (~{res['estimated_panels']} x {res['panel_wattage_w']}W panels, {res['capacity_kwp']} kWp, generating ~{res['annual_generation_kwh']:,} kWh/year)\n"
                 f"- Estimated Bill Reduction: AUD ${res['estimated_annual_savings_aud']:,}/year (~AUD ${res['estimated_monthly_savings_aud']:,}/month)\n"
-                f"- CALCULATOR INSTRUCTION: Share these official starting figures clearly if the customer shared their usage or asked to calculate kWh/size."
+                f"- CALCULATOR INSTRUCTION: Share these official starting figures clearly (including ~{res['estimated_panels']} panels when asked how many panels) if the customer shared their usage or asked to calculate kWh/size."
             )
         except Exception:
             pass
@@ -859,9 +969,9 @@ def _calculate_solar_pre_assessment(text: str) -> str:
                 f"OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR (planning-v2) LIVE RESULT:\n"
                 f"- Summary: {res['summary_for_customer']}\n"
                 f"- Estimated Electricity Usage: {res['estimated_daily_kwh']} kWh/day (~{round(res['estimated_monthly_kwh']):,} kWh/month, {round(res['annual_usage_kwh']):,} kWh/year)\n"
-                f"- Starting Solar System Size to Explore: {res['recommended_kw']} kW of panels ({res['capacity_kwp']} kWp, generating ~{res['annual_generation_kwh']:,} kWh/year)\n"
+                f"- Starting Solar System Size to Explore: {res['recommended_kw']} kW of panels (~{res['estimated_panels']} x {res['panel_wattage_w']}W panels, {res['capacity_kwp']} kWp, generating ~{res['annual_generation_kwh']:,} kWh/year)\n"
                 f"- Estimated Bill Reduction: AUD ${res['estimated_annual_savings_aud']:,}/year (~AUD ${res['estimated_monthly_savings_aud']:,}/month)\n"
-                f"- CALCULATOR INSTRUCTION: Share these official starting figures clearly when the customer gives their bill or asks to calculate kWh/size."
+                f"- CALCULATOR INSTRUCTION: Share these official starting figures clearly (including ~{res['estimated_panels']} panels when asked how many panels) when the customer gives their bill or asks to calculate kWh/size."
             )
         except Exception:
             pass
@@ -967,7 +1077,7 @@ def build_engine_adapter(route,member,home,group):
                         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp, linked directly to the Process Knowledge Base ('YCS — customer-service drafting playbook'). "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
                         f"START SIMPLE & FRIENDLY (1 TO 2 SHORT SENTENCES MAX): Speak like a warm, friendly, real human texting on WhatsApp (1 to 2 short plain-text sentences max). NEVER output internal notes such as '(Next step: ...)', '(Step ...)', or '(Note: ...)'. When the customer simply says 'Hi' or 'Hello', reply ONLY with a warm, simple 1-sentence greeting introducing yourself and asking how you can help today—never dump company info or ask qualifying questions on an opening greeting. "
-                        f"GENUINELY EXPLAIN QUESTIONS & ASK ONE QUESTION AT A TIME: Never say 'I\\'d be happy to explain...' without actually explaining it right away! When a customer asks how solar works with their billing or house, explain it clearly in 1 to 2 simple sentences first (e.g., daytime solar panels power your home appliances directly first so you buy far less electricity from the grid, and excess solar can charge a battery or earn feed-in bill credits), and then ask ONLY ONE simple question per turn (never stack two questions with 'Also, ...'): (1) Do they already have solar on the property? (2) Roughly how much was their last power bill ($$)? (3) What is the property street address? (4) Full Name (first AND last name), Phone Number, and Email Address. Once collected, briefly confirm all details and append [[LEAD:{{\"name\":\"First Last\",\"phone\":\"{customer_phone_display}\",\"email\":\"...\",\"address\":\"...\",\"notes\":\"...\"}}]]. "
+                        f"GENUINELY EXPLAIN QUESTIONS & ASK ONE QUESTION AT A TIME: Never say 'I\\'d be happy to explain...' without actually explaining it right away! When a customer asks how solar works with their billing or house, explain it clearly in 1 to 2 simple sentences first (e.g., daytime solar panels power your home appliances directly first so you buy far less electricity from the grid, and excess solar can charge a battery or earn feed-in bill credits), and then ask ONLY ONE simple question per turn (never stack two questions with 'Also, ...'): (1) Do they already have solar on the property? (2) Roughly how much was their last power bill ($$)? (3) What is the property street address? (4) Full Name (first AND last name), Phone Number, and Email Address. Once all 4 details are collected, read back all 4 details (Full Name, Phone, Email, and Property Street Address) and ask the customer to confirm they are correct. NEVER append [[LEAD:...]] or [[BOOK:...]] until AFTER the customer explicitly confirms all 4 details, and NEVER use '...' or placeholder values. "
                         f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): NEVER start your replies with 'Thanks', 'Thank you', 'Thanks [Name]', 'Got it, [Name]', or 'Great, [Name]'. Greet once only on the first turn; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
                         f"STRICT SYSTEM DATA GROUNDING: Rely on your Agent Instructions, Knowledge Base, and Official Your Choice Solar Website Calculator (planning-v2) below. Always share the official calculator's starting kWh usage, kW panel size, and estimated bill reduction when available or requested; never invent unverified hardware brands, fixed package prices, rebate amounts, or warranty lengths.",
                         solar_calc,

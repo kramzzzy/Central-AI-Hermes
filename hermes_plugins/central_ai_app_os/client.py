@@ -784,6 +784,8 @@ def calculate_solar_planning_v2(arguments=None):
     quarterly_kwh = round(annual_usage / 4.0, 1)
     rec_kw = round(capacity, 1)
     cap_kwp = round(capacity, 2)
+    panel_wattage = 440
+    estimated_panels = max(4, round((capacity * 1000.0) / panel_wattage))
     annual_gen = round(generation)
     daily_gen = round(generation / 365.0, 1)
     annual_sav = round(bill_reduction)
@@ -793,15 +795,15 @@ def calculate_solar_planning_v2(arguments=None):
     if mode == "usage":
         summary_for_customer = (
             f"Based on your usage of around {daily_kwh} kWh/day (~{round(monthly_kwh):,} kWh/month or {round(annual_usage):,} kWh/year) in {city_raw}, "
-            f"our official solar calculator (planning-v2) shows a starting solar size to explore of {rec_kw} kW of panels "
-            f"(generating ~{annual_gen:,} kWh/year) and an estimated bill reduction of around AUD ${annual_sav:,}/year (~AUD ${monthly_sav:,}/month)."
+            f"our official solar calculator (planning-v2) shows a starting solar size to explore of {rec_kw} kW (~{estimated_panels} x {panel_wattage}W panels, "
+            f"generating ~{annual_gen:,} kWh/year) and an estimated bill reduction of around AUD ${annual_sav:,}/year (~AUD ${monthly_sav:,}/month)."
         )
     else:
         disp_bill = round(b_val if (b_val and b_val > 0) else consumption)
         summary_for_customer = (
             f"Based on your AUD ${disp_bill:,} {period_label} bill in {city_raw}, "
             f"our official solar calculator (planning-v2) estimates your electricity usage at around {daily_kwh} kWh/day (~{round(monthly_kwh):,} kWh/month or {round(annual_usage):,} kWh/year), "
-            f"with a starting solar size to explore of {rec_kw} kW of panels (generating ~{annual_gen:,} kWh/year) "
+            f"with a starting solar size to explore of {rec_kw} kW (~{estimated_panels} x {panel_wattage}W panels, generating ~{annual_gen:,} kWh/year) "
             f"and an estimated bill reduction of around AUD ${annual_sav:,}/year (~AUD ${monthly_sav:,}/month)."
         )
 
@@ -820,6 +822,8 @@ def calculate_solar_planning_v2(arguments=None):
         "annual_usage_kwh": round(annual_usage, 1),
         "recommended_kw": rec_kw,
         "capacity_kwp": cap_kwp,
+        "estimated_panels": estimated_panels,
+        "panel_wattage_w": panel_wattage,
         "daily_generation_kwh": daily_gen,
         "annual_generation_kwh": annual_gen,
         "self_consumed_kwh": round(self_consumed),
