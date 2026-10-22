@@ -254,6 +254,234 @@ def _load_live_customer_config():
     return cfg
 
 
+_NON_NAME_WORDS = {
+    'interested', 'looking', 'asking', 'wondering', 'here', 'good', 'fine', 'ready',
+    'booking', 'just', 'from', 'in', 'at', 'on', 'to', 'for', 'with', 'after', 'about',
+    'around', 'near', 'based', 'located', 'living', 'staying', 'moving', 'aiming',
+    'hoping', 'wanting', 'needing', 'thinking', 'keen', 'curious', 'happy', 'free',
+    'available', 'sure', 'okay', 'ok', 'not', 'also', 'currently', 'only', 'still',
+    'very', 'pretty', 'quite', 'getting', 'using', 'paying', 'spending', 'running',
+    'working', 'calling', 'texting', 'messaging', 'enquiring', 'inquiring', 'having',
+    'trying', 'building', 'planning', 'home', 'house', 'property', 'business',
+    'commercial', 'residential', 'solar', 'battery', 'batteries', 'system', 'package',
+    'packages', 'quote', 'consultation', 'inspection', 'visit', 'call', 'phone',
+    'email', 'address', 'suburb', 'gold', 'coast', 'brisbane', 'sydney', 'melbourne',
+    'perth', 'adelaide', 'queensland', 'qld', 'nsw', 'vic', 'wa', 'sa', 'tas', 'act',
+    'nt', 'hello', 'hi', 'hey', 'yes', 'yeah', 'yep', 'no', 'nah', 'thanks', 'thank',
+}
+_STREET_SUFFIX_RE = re.compile(
+    r'^(street|st|road|rd|avenue|ave|drive|dr|court|ct|place|pl|lane|ln|way|circuit|cct|crescent|cres|boulevard|blvd|terrace|tce|highway|hwy|parade|pde|close|cl|esplanade|esp)$',
+    re.I,
+)
+_PREMATURE_HANDOFF_RE = re.compile(
+    r"\b(specialist will (?:reach out|contact|call|be in touch|get in touch)|team will (?:reach out|contact|call|be in touch|get in touch)|i(?:'ll| will) arrange (?:an?|your)\s+(?:on-site|site|free|solar)?\s*(?:consultation|visit|inspection|quote)|we(?:'ll| will) (?:reach out|be in touch|contact you)\s+shortly|someone will (?:reach out|contact|call))\b",
+    re.I,
+)
+
+
+def _is_valid_person_name(cand: str) -> bool:
+    words = [w for w in cand.strip().split() if w]
+    if not (1 <= len(words) <= 3):
+        return False
+    return all(
+        re.match(r"^[A-Za-z][a-zA-Z'-]{1,24}$", w)
+        and w.lower() not in _NON_NAME_WORDS
+        and not _STREET_SUFFIX_RE.match(w)
+        for w in words
+    )
+
+
+def _format_natural_list(items: list) -> str:
+    if not items:
+        return ''
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
+def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sender_id: str = '') -> dict:
+    name = (sender_name or '').strip()
+    digits = re.sub(r'\D', '', str(sender_id or ''))
+    phone = f"+{digits}" if len(digits) >= 7 else ''
+    email = ''
+    address = ''
+
+    for idx, m in enumerate(turns or []):
+        if not isinstance(m, dict) or m.get('role') != 'user':
+            continue
+        text = str(m.get('content') or '').strip()
+        prev_asst = ''
+        if idx > 0 and isinstance(turns[idx - 1], dict) and turns[idx - 1].get('role') == 'assistant':
+            prev_asst = str(turns[idx - 1].get('content') or '').lower()
+
+        if not email:
+            em = re.search(r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', text, re.I)
+            if em:
+                email = em.group(0).lower()
+        if not phone:
+            ph = re.search(r'(?:\+?61[\s-]?|0)[2-478](?:[\s-]?\d){8}\b|\b\+?\d[\d\s-]{7,14}\d\b', text)
+            if ph:
+                phone = ph.group(0).strip()
+
+        has_street = bool(address and re.search(r'\d', address))
+        if not has_street:
+            st = re.search(
+                r'\b(?:unit\s+\d+[A-Za-z]?\s*[/,]\s*|\d+[A-Za-z]?\s*/\s*)?\d{1,5}[A-Za-z]?\s+[A-Za-z0-9.\s]{2,35}\b(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Court|Ct|Place|Pl|Lane|Ln|Way|Circuit|Cct|Crescent|Cres|Boulevard|Blvd|Terrace|Tce|Highway|Hwy|Parade|Pde|Close|Cl|Esplanade|Esp)\b(?:[,.\s]+[A-Za-z\s]{2,25})?(?:\s+(?:QLD|NSW|VIC|WA|SA|TAS|ACT|NT))?(?:\s+\d{4})?',
+                text,
+                re.I,
+            )
+            exp_addr = re.search(
+                r'(?:street address is|property address is|my address is|address is|live at|located at|property is at|property at|address\s*[:=-])\s*([^\n.?!]{4,90})',
+                text,
+                re.I,
+            )
+            loc_match = (
+                re.search(
+                    r"\b(?:i am in|i'm in|im in|located in|based in|live in|living in|property in|home in|house in)\s+([A-Za-z][A-Za-z\s]{2,30}?)(?=[,.!?]|$|\s+(?:and|looking|aiming|wanting|hoping|for|to)\b)",
+                    text,
+                    re.I,
+                )
+                if not address
+                else None
+            )
+            if st:
+                address = st.group(0).strip()
+            elif exp_addr:
+                address = exp_addr.group(1).strip()
+            elif (
+                re.search(r'\b(address|street|suburb|postcode|where is the property|location)\b', prev_asst)
+                and 3 <= len(text) <= 90
+                and '?' not in text
+            ):
+                cleaned_a = re.sub(r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', '', text, flags=re.I).strip(' ,;')
+                if cleaned_a and (re.search(r'\d', cleaned_a) or not address):
+                    address = cleaned_a
+            elif loc_match and not address:
+                address = loc_match.group(1).strip()
+
+        has_full = len([w for w in name.split() if w]) >= 2
+        if not has_full:
+            exp_name = re.search(
+                r'(?:my full name is|full name is|my name is|name is|this is|call me|full name\s*[:=-]|name\s*[:=-])\s*([A-Za-z][a-zA-Z\'-]+(?:\s+[A-Za-z][a-zA-Z\'-]+){0,2})',
+                text,
+                re.I,
+            )
+            if exp_name:
+                cwords = [
+                    w
+                    for w in exp_name.group(1).strip().split()
+                    if w.lower() not in _NON_NAME_WORDS and not _STREET_SUFFIX_RE.match(w)
+                ]
+                cand = ' '.join(cwords)
+                if _is_valid_person_name(cand) and (len(cwords) >= 2 or not name):
+                    name = cand
+            else:
+                segs = [
+                    re.sub(r'^(hi|hello|hey|it\'s|its|name is|my name is|full name)\s*[:=-]?\s*', '', s, flags=re.I).strip()
+                    for s in re.split(r'[\n,;]+', text)
+                ]
+                segs = [s for s in segs if s]
+                for seg in segs:
+                    if '@' in seg or re.search(r'\d', seg):
+                        continue
+                    words = seg.split()
+                    if 2 <= len(words) <= 3 and _is_valid_person_name(seg):
+                        if (
+                            re.search(r'\b(name|full name|surname|last name|details|confirm|who am i speaking)\b', prev_asst)
+                            or len(segs) >= 2
+                            or (name and words[0].lower() == name.split()[0].lower())
+                        ):
+                            name = ' '.join(w[0].upper() + w[1:] for w in words)
+                            break
+                    elif (
+                        len(words) == 1
+                        and _is_valid_person_name(seg)
+                        and re.search(
+                            r'\b(last name|surname|family name|full name|your name|who am i speaking|may i have your name|what\'s your name|what is your name)\b',
+                            prev_asst,
+                        )
+                    ):
+                        wcap = words[0][0].upper() + words[0][1:]
+                        if name and name.lower() != wcap.lower() and re.search(r'\b(last name|surname|family name|full name)\b', prev_asst):
+                            name = f"{name} {wcap}"
+                        elif not name:
+                            name = wcap
+                        break
+
+    has_full_name = len([w for w in name.split() if w]) >= 2
+    has_phone = len(re.sub(r'\D', '', phone)) >= 7
+    has_email = '@' in email
+    has_street_address = bool(address and re.search(r'\d', address) and len(address) >= 5)
+
+    missing_natural = []
+    if not has_full_name:
+        missing_natural.append('your last name (so we have your full name)' if name else 'your full name (first and last)')
+    if not has_phone:
+        missing_natural.append('your best contact phone number')
+    if not has_email:
+        missing_natural.append('your email address')
+    if not has_street_address:
+        missing_natural.append(
+            f"the street address of your property in {address}"
+            if address
+            else "your property's street address and suburb"
+        )
+
+    name_status = (
+        f"COLLECTED ({name})"
+        if has_full_name
+        else (
+            f'INCOMPLETE — only first name "{name}" is known (MUST ask for their full name / last name)'
+            if name
+            else "MISSING (MUST ask for their full name: first and last)"
+        )
+    )
+    phone_status = f"COLLECTED ({phone})" if has_phone else "MISSING (MUST ask for their phone number)"
+    email_status = f"COLLECTED ({email})" if has_email else "MISSING (MUST ask for their email address)"
+    addr_status = (
+        f"COLLECTED ({address})"
+        if has_street_address
+        else (
+            f'INCOMPLETE — only general area "{address}" is known (MUST ask for their full street address)'
+            if address
+            else "MISSING (MUST ask for their property street address and suburb)"
+        )
+    )
+
+    checklist_lines = [
+        'LIVE CRM LEAD CHECKLIST (REQUIRED FOR NEW LEAD PIPELINE EVEN WITHOUT CALENDAR BOOKING):',
+        f"- Full Name (First & Last): {name_status}",
+        f"- Phone Number: {phone_status}",
+        f"- Email Address: {email_status}",
+        f"- Property Street Address: {addr_status}",
+    ]
+
+    return {
+        'name': name,
+        'phone': phone,
+        'email': email,
+        'address': address,
+        'has_full_name': has_full_name,
+        'has_phone': has_phone,
+        'has_email': has_email,
+        'has_street_address': has_street_address,
+        'missing_natural': missing_natural,
+        'missing_str': _format_natural_list(missing_natural),
+        'checklist_prompt': '\n'.join(checklist_lines),
+    }
+
+
+def _guard_premature_lead_handoff(reply_text: str, missing_natural: list) -> str:
+    if not reply_text or not missing_natural:
+        return reply_text
+    if not _PREMATURE_HANDOFF_RE.search(reply_text):
+        return reply_text
+    needed = _format_natural_list(missing_natural)
+    return f"I'd be happy to set up your solar and battery consultation with our team. Before I register your inquiry in our CRM, could you please share {needed} so I can confirm all your details?"
+
+
 def _append_customer_sync_queue(item: dict):
     import os, time
     entry = {
@@ -487,9 +715,9 @@ def build_engine_adapter(route,member,home,group):
                         get_whatsapp_reply_style(),
                         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp. "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
-                        f"PROFESSIONAL BUSINESS TONE (NO SLANG): Always use warm, courteous, professional English. When greeting on the first message, use 'Hi [Name]' or 'Hello [Name]'. NEVER use casual slang like 'G\\'day', 'mate', 'howdy', or 'heya'. "
-                        f"Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', 'Hey', or 'Hi [Name]!' on follow-up replies. "
-                        f"Speak like a warm, helpful, consultative human specialist: when a customer shares what they need (e.g., installing solar for their farm, home, or business), warmly acknowledge their project first and ask 1 or 2 natural discovery questions (such as their location/suburb, what they run on the property, or their typical power bill) before offering to book a call or site visit. "
+                        f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): Speak like a real, natural human specialist texting on WhatsApp. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks [Name]', 'Got it, [Name]', or 'Great, [Name]'. Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. "
+                        "PROFESSIONAL BUSINESS TONE (NO SLANG): Always use warm, courteous, professional English. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
+                        f"MANDATORY FULL LEAD COLLECTION & DATA CONFIRMATION (EVEN WITHOUT A CALENDAR BOOKING): Every inquiry must be added to the Central OS CRM New Lead pipeline so our team is notified. NEVER close the conversation or say 'A specialist will reach out shortly' or 'I will arrange a consultation' while Full Name (first AND last name), Phone Number, Email Address, or Property Street Address are still missing. Once all 4 details are collected, read back and confirm all collected details with the customer and append [[LEAD:{{\"name\":\"First Last\",\"phone\":\"{customer_phone_display}\",\"email\":\"...\",\"address\":\"...\",\"notes\":\"...\"}}]]. "
                         f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row. "
                         f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
                         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
@@ -665,21 +893,23 @@ def build_engine_adapter(route,member,home,group):
         async def send(self,chat_id,content,reply_to=None,metadata=None):
             if _is_non_conversational(content, metadata):
                 return SendResult(success=True)
+            raw_tags = re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]', content or '', flags=re.IGNORECASE)
             cleaned = clean_reply_punctuation(content)
             if cleaned:
-                cleaned = re.sub(r'\[\[\s*BOOK[\s\S]*?\]\]+', '', cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r'\[\[\s*(?:BOOK|LEAD)[\s\S]*?\]\]+', '', cleaned, flags=re.IGNORECASE)
                 cleaned = re.sub(r'^\s*\[+\s*|\s*\]+\s*$', '', cleaned).strip()
             if not cleaned or not cleaned.strip():
                 return SendResult(success=True)
             raw_bound = binding.get()
             if isinstance(raw_bound, dict) and (is_customer_line or not bool(raw_bound.get('isGroup'))):
+                sync_reply = (cleaned + (' ' + ' '.join(raw_tags) if raw_tags else '')).strip()
                 asyncio.create_task(asyncio.to_thread(_append_customer_sync_queue, {
                     'sender_id': raw_bound.get('senderId'),
                     'sender_name': raw_bound.get('senderName'),
                     'wire_chat': raw_bound.get('wireChat') or raw_bound.get('chatId'),
                     'message_id': raw_bound.get('messageId'),
                     'text': raw_bound.get('body'),
-                    'reply': cleaned,
+                    'reply': sync_reply,
                 }))
             asyncio.create_task(asyncio.to_thread(_retain_memory_item, cleaned, 'Leo', route))
             return await super().send(chat_id,cleaned,reply_to=None,metadata=metadata)

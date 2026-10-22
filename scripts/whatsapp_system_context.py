@@ -98,6 +98,14 @@ def clean_reply_punctuation(content):
         for index, part in enumerate(parts))
     out = re.sub(r"^\s*(?:g['\u2019\u2018`]?day|howdy|heya)\b", "Hi", out, flags=re.IGNORECASE)
     out = re.sub(r"\b(hi|hello|hey),?\s+mate\b", r"\1", out, flags=re.IGNORECASE)
+    out = re.sub(
+        r"^\s*(?:many\s+thanks|thanks\s+so\s+much|thanks\s+a\s+lot|thanks|thank\s+you|appreciate\s+(?:that|it|the\s+info))(?:\s+for\s+[^.!?\n,]{2,45})?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*",
+        "",
+        out,
+        flags=re.IGNORECASE,
+    ).strip()
+    if out and out[0].islower():
+        out = out[0].upper() + out[1:]
     return out
 
 def get_configured_assistant_name(home=None):

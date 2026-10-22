@@ -1121,6 +1121,8 @@ def _start_customer_whatsapp_poller():
      _append_customer_sync_queue,
      _retain_memory_item,
      _fetch_live_box3_context,
+     _extract_and_analyze_customer_lead,
+     _guard_premature_lead_handoff,
     )
     from whatsapp_system_context import clean_reply_punctuation
     _ensure_customer_caller_enabled()
@@ -1195,7 +1197,9 @@ def _start_customer_whatsapp_poller():
          prior_chat_msgs.append({'role':'assistant','content':hline[7:]})
       has_prior_reply=any(m.get('role')=='assistant' for m in prior_chat_msgs)
       first_n=(sender_name.split()[0] if sender_name else '')
+      lead_info=_extract_and_analyze_customer_lead([*prior_chat_msgs,{'role':'user','content':msg_text}],sender_name,sender_id)
       reply_text=None
+      raw_tags=[]
       existing_box3_reply=None
       if box3_res.get('handled_by_box3'):
        if box3_res.get('auto_reply') and not box3_res.get('duplicate') and box3_res.get('reply'):
@@ -1219,9 +1223,15 @@ def _start_customer_whatsapp_poller():
         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
         "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, markdown **bold**, or # headings). Always use warm, courteous, professional English—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. Always answer the customer's actual question directly and naturally first using your Agent Instructions and Knowledge Base below. Never repeat the same question twice in a row.",
+        f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): Speak like a real, natural human specialist texting on WhatsApp. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks {first_n or '[Name]'}', 'Got it, {first_n or '[Name]'}', 'Great, {first_n or '[Name]'}', or similar mechanical acknowledgements. Never repeat the customer's suburb/location in every message.",
         "STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
-        "NO REPEATED GREETINGS: This conversation is already underway and you HAVE ALREADY greeted the customer. NEVER start your reply with 'Hi', 'Hello', 'Hey', or 'Hi " + (first_n or "there") + "!' again. Jump straight into answering their message." if has_prior_reply else f"Greet {first_n or 'the customer'} politely and professionally once on this first reply using 'Hi {first_n or 'there'}' or 'Hello {first_n or 'there'}' (never use 'G\\'day').",
-        f"Customer WhatsApp Name: {sender_name or 'Visitor'} (Phone: +{sender_id})",
+        "NO REPEATED GREETINGS OR NAME REPETITION: This conversation is already underway. NEVER start your reply with 'Hi', 'Hello', 'Hey', 'Thanks', 'Thank you', or the customer's name ('" + (first_n or "there") + "'). Do NOT use the customer's first name again on follow-up replies—jump straight into a natural, helpful response." if has_prior_reply else ("Greet " + (first_n or "the customer") + " politely and professionally once on this first reply using 'Hi " + (first_n or "there") + "' or 'Hello " + (first_n or "there") + "' (never use 'G'day')."),
+        lead_info['checklist_prompt'],
+        "MANDATORY FULL LEAD COLLECTION & DATA CONFIRMATION (EVEN WITHOUT A CALENDAR BOOKING):\n"
+        "1. Every solar inquiry must be added to the Central OS CRM New Lead pipeline so our team is notified—even if the customer does not pick a specific calendar time.\n"
+        "2. NEVER close the conversation or say 'A specialist will reach out shortly' or 'I\\'ll arrange a consultation' while Full Name (first AND last name), Phone Number, Email Address, or Property Street Address are still MISSING or INCOMPLETE in the checklist above.\n"
+        f"3. When a customer wants a quote, package pricing, consultation, or site visit (or says 'Yes' to proceeding), check the LIVE CRM LEAD CHECKLIST above and politely ask for any missing details ({lead_info['missing_str'] or 'all collected'}).\n"
+        f"4. Once Full Name (first & last), Phone Number, Email Address, and Property Street Address are collected, explicitly read back and confirm all collected data with the customer in your message (Full Name, Phone, Email, Property Street Address, and Solar/Battery Inquiry), and append the hidden CRM lead tag at the very end of your message:\n[[LEAD:{{\"name\":\"{lead_info['name'] or 'First Last'}\",\"phone\":\"{lead_info['phone'] or '+' + sender_id}\",\"email\":\"{lead_info['email'] or 'name@example.com'}\",\"address\":\"{lead_info['address'] or '123 Street Name, Suburb'}\",\"notes\":\"Summary of solar/battery inquiry\"}}]]",
         f"CONVERSATION HISTORY:\n{hist_str}",
         f"KNOWLEDGE BASE (FROM APP OS):\n{kb_text}" if kb_text else "",
        ]))
@@ -1232,7 +1242,7 @@ def _start_customer_whatsapp_poller():
          'session_id':str(UUID(int=int(time.time()*1000)%((1<<128)-1))),
          'runtime_profile':settings['HERMES_PROFILE'],
          'execution_mode':'draft-only',
-         'max_tokens':260,
+         'max_tokens':320,
          'stream':False,
          'messages':[{'role':'system','content':sys_prompt},*prior_chat_msgs[-10:],{'role':'user','content':msg_text}],
         }
@@ -1240,6 +1250,7 @@ def _start_customer_whatsapp_poller():
         if proc.returncode==0 and proc.stdout:
          jout=json.loads(proc.stdout)
          raw_content=((jout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
+         raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',raw_content,flags=re.IGNORECASE)
          reply_text=clean_reply_punctuation(raw_content).strip()
        except Exception:
         reply_text=None
@@ -1249,14 +1260,23 @@ def _start_customer_whatsapp_poller():
         else:
          reply_text=f"Hi {first_n or 'there'}, I'm {agent_name} from {company_name}. How can I help with your solar plans today?"
       if reply_text:
-       reply_text=re.sub(r'\[\[\s*BOOK[\s\S]*?\]\]+','',reply_text,flags=re.IGNORECASE)
+       if not raw_tags:
+        raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',reply_text,flags=re.IGNORECASE)
+       reply_text=re.sub(r'\[\[\s*(?:BOOK|LEAD)[\s\S]*?\]\]+','',reply_text,flags=re.IGNORECASE)
        reply_text=re.sub(r'^\s*\[+\s*|\s*\]+\s*$','',reply_text).strip()
        reply_text=re.sub(r"^\s*(?:g['\u2019\u2018`]?day|howdy|heya)\b","Hi",reply_text,flags=re.IGNORECASE)
        reply_text=re.sub(r"\b(hi|hello|hey),?\s+mate\b",r"\1",reply_text,flags=re.IGNORECASE)
+       reply_text=re.sub(r"^\s*(?:many\s+thanks|thanks\s+so\s+much|thanks\s+a\s+lot|thanks|thank\s+you|appreciate\s+(?:that|it|the\s+info))(?:\s+for\s+[^.!?\n,]{2,45})?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*","",reply_text,flags=re.IGNORECASE).strip()
       if reply_text and has_prior_reply and not box3_res.get('handled_by_box3'):
-       stripped_re=re.sub(r"^(?:hi|hello|hey|g['\u2019\u2018`]?day|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|again|mate|folks|team))?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*","",reply_text,flags=re.IGNORECASE).strip()
+       stripped_re=re.sub(r"^(?:(?:hi|hello|hey|g['\u2019\u2018`]?day|good\s+(?:morning|afternoon|evening)|many\s+thanks|thanks\s+so\s+much|thanks\s+a\s+lot|thanks|thank\s+you|appreciate\s+(?:that|it)|got\s+it|great|perfect|wonderful|lovely|sure\s+thing|no\s+problem|certainly|of\s+course)(?:\s+(?:there|again|mate|folks|team|for\s+[^.!?\n,]{2,45}))?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*)+","",reply_text,flags=re.IGNORECASE).strip()
+       if first_n:
+        esc_fn=re.escape(first_n)
+        stripped_re=re.sub(rf"^{esc_fn}\s*[!,.\u2014:-]+\s*","",stripped_re,flags=re.IGNORECASE).strip()
+        stripped_re=re.sub(rf",\s*{esc_fn}(?=[,.!?]|$)","",stripped_re,flags=re.IGNORECASE).strip()
        if len(stripped_re)>=8:
         reply_text=stripped_re[0].upper()+stripped_re[1:]
+      if reply_text and not box3_res.get('handled_by_box3'):
+       reply_text=_guard_premature_lead_handoff(reply_text,lead_info['missing_natural'])
       sent_ok=outbox_sent or bool(existing_box3_reply)
       can_send=False
       if reply_text and not outbox_sent:
@@ -1295,7 +1315,7 @@ def _start_customer_whatsapp_poller():
         conn.commit()
         conn.close()
        except Exception:pass
-      recorded_reply=(reply_text if sent_ok else None) or existing_box3_reply
+      recorded_reply=((reply_text + (' ' + ' '.join(raw_tags) if raw_tags else '')).strip() if sent_ok and reply_text else None) or existing_box3_reply
       entry_record={
        'sender_id':sender_id,
        'sender_name':sender_name,
