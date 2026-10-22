@@ -238,8 +238,9 @@ class FishRestSpeech:
 
     def _drain_ready_clauses(self):
         while self.pending:
-            m = re.search(r'^(\s*.+?(?<!\d)[.!?]\s+)', self.pending, re.S)
-            if not m or len(m.group(1).strip()) < 12:
+            min_len = 10 if self.first_flush is None else 90
+            m = re.search(rf'^(\s*.{{{min_len},}}?(?<!\d)[.!?]\s+)', self.pending, re.S)
+            if not m:
                 break
             clause = m.group(1).strip()
             self.pending = self.pending[m.end():]
@@ -517,21 +518,26 @@ class FreeSpeech:
 
 
 def openrouter_stream(config, messages, tools, control):
-    try:
-        custom = conversation_llm(config)['custom']
-    except ValueError:
-        custom = None
+    import os
+    custom = None
+    key = (config.get('OPENROUTER_API_KEY') or os.environ.get('OPENROUTER_API_KEY') or '').strip()
+    agent_model = (config.get('AGENT_MODEL') or os.environ.get('HERMES_VOICE_MODEL') or config.get('HERMES_VOICE_MODEL') or '').strip()
+    if agent_model and agent_model != 'workspace-default' and key:
+        custom = {'base_url': 'https://openrouter.ai/api/v1', 'model': agent_model, 'api_key': key}
     if not custom:
-        import os
-        key = (config.get('OPENROUTER_API_KEY') or os.environ.get('OPENROUTER_API_KEY') or '').strip()
-        model = (os.environ.get('HERMES_VOICE_MODEL') or config.get('HERMES_VOICE_MODEL') or config.get('FISH_LLM_MODEL') or 'openai/gpt-4o-mini').strip()
-        if not model:
+        try:
+            custom = conversation_llm(config)['custom']
+        except ValueError:
+            custom = None
+    if not custom:
+        model = (os.environ.get('WHATSAPP_CHAT_MODEL') or os.environ.get('HERMES_CHAT_MODEL') or config.get('FISH_LLM_MODEL') or 'openai/gpt-4o-mini').strip()
+        if not model or model == 'workspace-default':
             model = 'openai/gpt-4o-mini'
         if key:
             custom = {'base_url': 'https://openrouter.ai/api/v1', 'model': model, 'api_key': key}
     if not custom: raise ValueError('A configured economical conversation model is required')
     payload = {'model': custom['model'], 'messages': messages, 'stream': True,
-               'max_tokens': 450, 'temperature': .4,
+               'max_tokens': 900, 'temperature': .4,
                'provider':{'sort':'latency','allow_fallbacks':True}}
     if custom['model'] in {'openai/gpt-4o-mini','openai/gpt-4.1-mini'}:
         fallback='openai/gpt-4.1-mini' if custom['model']=='openai/gpt-4o-mini' else 'openai/gpt-4o-mini'

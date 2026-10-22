@@ -55,7 +55,7 @@ class StreamPhoneCall:
         self.service, self.call = service, call
         self.member = member or service.members[routing()['owner']]
         self.jobs = self.member['jobs']
-        self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=64)
+        self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=512)
         self.closed = self.connected = False
         self.state, self.generation = 'initializing', 1
         self.tasks, self.worker = set(), None
@@ -89,55 +89,197 @@ class StreamPhoneCall:
         self.callback_new_tasks_since = time.time() if callback_notice else None
         self.conversation = None
         self.fallback_conversation = None
+        self._agent_conv_mtime = None
 
     def _get_fallback_conversation(self):
-        if self.fallback_conversation is not None:
+        from pathlib import Path
+        snap_paths = (
+            Path('/data/box3_snapshot.json'),
+            Path('/opt/data/box3_snapshot.json'),
+            Path('/opt/os-adapter/.runtime/box3_snapshot.json'),
+        )
+        profile_slug = str(self.member.get('profile') or 'leo').strip()
+        if profile_slug in {'owner-profile', 'assistant', ''}:
+            profile_slug = 'leo'
+        profile_dir = Path('/opt/data/profiles') / profile_slug
+        if not profile_dir.is_dir():
+            profile_dir = Path('/opt/data/profiles/leo')
+        soul_path = profile_dir / 'SOUL.md'
+        cfg_path = profile_dir / 'config.yaml'
+
+        mtimes = []
+        for p in (*snap_paths, soul_path, cfg_path):
+            try:
+                if p.is_file():
+                    mtimes.append((str(p), p.stat().st_mtime))
+            except Exception:
+                pass
+        mtime_key = tuple(mtimes)
+        if self.fallback_conversation is not None and self._agent_conv_mtime == mtime_key:
             return self.fallback_conversation
+
         try:
             from central_ai_identity import central_ai_identity, get_company_name
             company = get_company_name()
         except Exception:
             def central_ai_identity(x): return x
             company = ""
-        company_str = f" representing {company}" if company else ""
-        caller_name = self.member.get('name', '') or 'the caller'
-        prompt = central_ai_identity(
-            f"You are Leo, the personal assistant{company_str}, speaking with {caller_name} on a live WhatsApp voice call.\n"
-            "Speak naturally, warmly, and concisely in 1 to 2 short sentences, like an attentive human on a phone call. No markdown or bullet lists.\n"
-            "Use brief, natural conversational acknowledgments ('Got it', 'No worries at all', 'Right, that makes sense') when appropriate, "
-            "and before running a tool, give a quick natural heads-up ('All right, let me check that for you now')."
-        )
-        try:
-            from pathlib import Path
-            from hermes_plugins.central_ai_app_os.client import _DEFAULT_YCS_SNAPSHOT
-            snap = None
-            for candidate in (
-                Path('/data/box3_snapshot.json'),
-                Path('/opt/data/box3_snapshot.json'),
-                Path('/opt/os-adapter/.runtime/box3_snapshot.json'),
-            ):
+
+        snap = None
+        for candidate in snap_paths:
+            try:
                 if candidate.is_file():
                     data = json.loads(candidate.read_text(encoding='utf-8'))
-                    if isinstance(data, dict) and ('knowledge' in data or 'counts' in data):
+                    if isinstance(data, dict) and ('knowledge' in data or 'counts' in data or 'agents' in data):
                         snap = data
                         break
+            except Exception:
+                pass
+        try:
+            from hermes_plugins.central_ai_app_os.client import _DEFAULT_YCS_SNAPSHOT
             if not snap:
                 snap = dict(_DEFAULT_YCS_SNAPSHOT)
-            counts = snap.get('counts') or _DEFAULT_YCS_SNAPSHOT['counts']
-            cards = snap.get('knowledge') or _DEFAULT_YCS_SNAPSHOT['knowledge']
-            titles = [str(c.get('title') or '') for c in cards[:12] if isinstance(c, dict) and c.get('title')]
-            prompt += (
-                f"\n\n[Live Workspace Summary: {counts.get('knowledge_sources', len(titles))} knowledge cards "
-                f"({', '.join(titles[:8])}), {counts.get('available_skills', 60)} skills, "
-                "and full Box 3 tools (inspect_workspace, manage_crm, manage_tasks, search_knowledge, "
-                "get_knowledge, add_knowledge, get_workspace_overview, get_live_weather, send_whatsapp_message, "
-                "call_whatsapp_contact) are active. Call tools only when specific workspace data or actions are needed.]"
-            )
+        except Exception:
+            if not snap:
+                snap = {'counts': {}, 'knowledge': [], 'agents': []}
+
+        # Resolve the assigned Agent Profile dynamically from Box 2 / Box 3 (agent_profiles)
+        agents = snap.get('agents') if isinstance(snap.get('agents'), list) else []
+        target_pref = str(self.member.get('assigned_assistant') or self.member.get('profile') or '').strip().lower()
+        assigned_agent = None
+        if target_pref and target_pref not in {'owner-profile', 'assistant', 'leo'}:
+            for a in agents:
+                if isinstance(a, dict) and (
+                    str(a.get('id') or '').lower() == target_pref
+                    or str(a.get('name') or '').strip().lower() == target_pref
+                    or str(a.get('app_role') or '').strip().lower() == target_pref
+                ):
+                    assigned_agent = a
+                    break
+        if not assigned_agent:
+            for a in agents:
+                if isinstance(a, dict) and a.get('is_main'):
+                    assigned_agent = a
+                    break
+        if not assigned_agent and agents:
+            assigned_agent = agents[0] if isinstance(agents[0], dict) else None
+
+        agent_name = str((assigned_agent or {}).get('name') or '').strip()
+        if not agent_name:
+            try:
+                name_file = profile_dir / '.assistant-name.json'
+                if name_file.is_file():
+                    agent_name = str(json.loads(name_file.read_text(encoding='utf-8')).get('name') or '').strip()
+            except Exception:
+                pass
+        agent_role = str((assigned_agent or {}).get('role') or '').strip()
+        agent_desc = str((assigned_agent or {}).get('description') or '').strip()
+        agent_instructions = str((assigned_agent or {}).get('instructions') or '').strip()
+        agent_model = str((assigned_agent or {}).get('model') or '').strip()
+
+        soul_text = ''
+        cfg_prompt = ''
+        cfg_model = ''
+        try:
+            if soul_path.is_file():
+                soul_text = soul_path.read_text(encoding='utf-8').strip()
         except Exception:
             pass
+        try:
+            if cfg_path.is_file():
+                import yaml
+                cfg_data = yaml.safe_load(cfg_path.read_text(encoding='utf-8')) or {}
+                raw_sp = str((cfg_data.get('agent') or {}).get('system_prompt') or '').strip()
+                if raw_sp:
+                    for label in ('Central OS integration', 'Michael OS integration', 'Central AI identity'):
+                        raw_sp = re.sub(r'\s*\[' + re.escape(label) + r'\].*?\[/' + re.escape(label) + r'\]\s*', '\n\n', raw_sp, flags=re.S)
+                    cfg_prompt = raw_sp.strip()
+                m_cfg = cfg_data.get('model')
+                if isinstance(m_cfg, dict) and m_cfg.get('default'):
+                    cfg_model = str(m_cfg.get('default')).strip()
+        except Exception:
+            pass
+
+        caller_name = self.member.get('name', '') or 'the caller'
+        company_str = f" for {company}" if company else ""
+        identity_parts = []
+        if agent_name or agent_role:
+            role_part = f", {agent_role}" if agent_role else ""
+            identity_parts.append(f"You are {agent_name or 'the configured assistant'}{role_part}{company_str}, speaking with {caller_name} on a live WhatsApp voice call.")
+        if agent_desc:
+            identity_parts.append(agent_desc)
+        if soul_text:
+            identity_parts.append(soul_text)
+        elif cfg_prompt:
+            identity_parts.append(cfg_prompt)
+        if agent_instructions and agent_instructions not in soul_text and agent_instructions not in cfg_prompt:
+            identity_parts.append(f"[Agent Profile Instructions]\n{agent_instructions}\n[/Agent Profile Instructions]")
+
+        try:
+            from hermes_voice import voice_call_note
+            identity_parts.append(voice_call_note('en'))
+        except Exception:
+            pass
+
+        # Attach assigned Knowledge Base cards (full content, not just titles)
+        cards = snap.get('knowledge') if isinstance(snap.get('knowledge'), list) else []
+        assigned_kb_ids = set(str(x) for x in ((assigned_agent or {}).get('knowledge_ids') or []) if x)
+        if assigned_kb_ids and not (assigned_agent or {}).get('is_main', True):
+            selected_cards = [c for c in cards if isinstance(c, dict) and str(c.get('id') or '') in assigned_kb_ids]
+            if not selected_cards:
+                selected_cards = [c for c in cards if isinstance(c, dict)]
+        else:
+            selected_cards = [c for c in cards if isinstance(c, dict)]
+
+        if selected_cards:
+            kb_lines = []
+            for c in selected_cards[:15]:
+                title = str(c.get('title') or '').strip()
+                cat = str(c.get('category') or 'General').strip()
+                content = str(c.get('content') or c.get('summary') or '').strip()[:1200]
+                if title or content:
+                    kb_lines.append(f"- [{cat}] {title}: {content}")
+            if kb_lines:
+                identity_parts.append("[Assigned Knowledge Base]\n" + "\n".join(kb_lines) + "\n[/Assigned Knowledge Base]")
+
+        counts = snap.get('counts') if isinstance(snap.get('counts'), dict) else {}
+        identity_parts.append(
+            f"[Live Box 3 Workspace Summary: {counts.get('knowledge_sources', len(selected_cards))} knowledge sources, "
+            f"{counts.get('available_skills', 60)} skills, {counts.get('tasks', len(snap.get('tasks') or []))} tasks, "
+            f"{counts.get('crm_clients', len(snap.get('crm') or []))} CRM clients, and "
+            f"{counts.get('whatsapp_contacts', len(snap.get('contacts') or []))} WhatsApp contacts. "
+            "All live tools (inspect_workspace, manage_crm, manage_tasks, search_knowledge, get_knowledge, "
+            "add_knowledge, get_workspace_overview, get_live_weather, send_whatsapp_message, call_whatsapp_contact, "
+            "control_widget, end_call) are active.]"
+        )
+
+        prompt = central_ai_identity("\n\n".join(p for p in identity_parts if p))
+        conv_config = dict(self.service.config or {})
+        resolved_model = ''
+        for candidate_model in (
+            agent_model if agent_model and agent_model != 'workspace-default' else '',
+            os.environ.get('HERMES_VOICE_MODEL', ''),
+            conv_config.get('HERMES_VOICE_MODEL', ''),
+            os.environ.get('WHATSAPP_CHAT_MODEL', ''),
+            cfg_model if cfg_model and not any(bad in cfg_model for bad in ('glm-5', 'hermes-4', 'deepseek-v4.1-flash')) else '',
+            os.environ.get('HERMES_CHAT_MODEL', ''),
+        ):
+            m = str(candidate_model or '').strip()
+            if m and m != 'workspace-default':
+                resolved_model = m
+                break
+        if resolved_model:
+            conv_config['AGENT_MODEL'] = resolved_model
+
         def dispatch_tool(event, caller_text):
             return self.jobs.handle(self.call, event, self.service.allowed)
-        self.fallback_conversation = Conversation(self.service.config, prompt, dispatch_tool)
+
+        if self.fallback_conversation is not None:
+            self.fallback_conversation.prompt = prompt
+            self.fallback_conversation.config = conv_config
+        else:
+            self.fallback_conversation = Conversation(conv_config, prompt, dispatch_tool)
+        self._agent_conv_mtime = mtime_key
         return self.fallback_conversation
 
     def task(self, coroutine):
@@ -308,7 +450,7 @@ class StreamPhoneCall:
         def output(data,final=False):
             control.check()
             future=asyncio.run_coroutine_threadsafe(self.enqueue(data,generation,control,framer,final),loop)
-            try:future.result(timeout=3)
+            try:future.result(timeout=30)
             except Exception:future.cancel();raise TurnCancelled()
         speech=FreeSpeech(self.service.config,output,control,rate=16000)
         self.prepared_speech=(control,speech,framer,output)
@@ -345,7 +487,7 @@ class StreamPhoneCall:
         def output(data,final=False):
             control.check()
             future=asyncio.run_coroutine_threadsafe(self.enqueue(data,generation,control,framer,final),loop)
-            try: future.result(timeout=3)
+            try: future.result(timeout=30)
             except Exception: future.cancel();raise TurnCancelled()
         def run():
             nonlocal framer,output,speculative,stage
@@ -605,10 +747,14 @@ class StreamPhoneCall:
                     self.rendered_generation=self.generation;self.last_rendered=time.monotonic()
                 continue
             speaking,pcm=bool(filtered[0]),filtered[1:]
-            if speaking and self.capture and len(pcm) == 1920:
+            now_mono=time.monotonic()
+            is_playing=(self.state=='speaking' or self.playback_until>now_mono or (now_mono-self.last_rendered)<.6)
+            if speaking and len(pcm) == 1920:
                 samples = struct.unpack('<960h', pcm)
                 rms = (sum(s * s for s in samples) / 960) ** 0.5 / 32768.0
-                if rms < 0.0025 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.006):
+                if is_playing and rms < 0.015:
+                    speaking = False
+                elif self.capture and (rms < 0.0025 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.006)):
                     speaking = False
             self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
@@ -621,15 +767,16 @@ class StreamPhoneCall:
                 if self.speculative:self.speculative.cancel();self.speculative=None
                 self.speech_run+=1;self.last_user_activity=self.last_speech=time.monotonic();self.voiced+=1
                 # Resume before committing a prepared final turn, even if the
-                # caller has only just resumed. The three-frame threshold still
-                # applies to interrupting speech that was already committed.
+                # caller has only just resumed. During active speech playback,
+                # require 4 strong frames (240ms) so speaker echo cannot cut off Leo.
                 if self.state=='thinking' and self.pending_input:self.resume_input()
-                if self.speech_run>=2 and (self.state in {'speaking','thinking'} or self.playback_until>time.monotonic()):
+                barge_frames = 4 if is_playing else 2
+                if self.speech_run>=barge_frames and (self.state in {'speaking','thinking'} or self.playback_until>time.monotonic()):
                     if not self.resume_input():self.flush()
             else: self.speech_run=0
             if not self.capture:
                 if not speaking: self.pre.append(pcm);continue
-                if (self.state=='speaking' or time.monotonic()-self.last_rendered<.55 or time.monotonic()-self.last_speaking_end<.45) and self.speech_run<3:
+                if (is_playing or now_mono-self.last_speaking_end<.45) and self.speech_run<4:
                     self.pre.append(pcm);continue
                 prefix=b''.join(self.pre);self.capture.extend(prefix);self.pre.clear()
                 self.capture_echo_text=self.spoken_text if self.state=='speaking' or time.monotonic()-self.last_rendered<.8 else ''
