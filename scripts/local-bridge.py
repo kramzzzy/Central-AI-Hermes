@@ -862,11 +862,22 @@ class Handler(BaseHTTPRequestHandler):
   try:length=int(self.headers.get('Content-Length','0'))
   except ValueError:return self.reply(400,{'error':'Invalid length'})
   if not 0<length<=23068672:return self.reply(413,{'error':'Request too large'})
-  if not lock.acquire(timeout=120):return self.reply(429,{'error':'Agent busy'})
   try:
-   body=json.loads(self.rfile.read(length));env=profile_environment(settings)
+   body=json.loads(self.rfile.read(length))
    if body.get('runtime_profile') and body['runtime_profile']!=settings['HERMES_PROFILE']:
     return self.reply(409,{'error':'Hermes profile changed; start a new interaction'})
+   if body.get('execution_mode')=='draft-only' and not body.get('task_files'):
+    try:
+     fast_res=_fast_draft_only_completion(body,settings)
+     if fast_res:
+      return self.reply(200,fast_res)
+    except Exception:
+     pass
+  except Exception:
+   return self.reply(400,{'error':'Invalid request body'})
+  if not lock.acquire(timeout=120):return self.reply(429,{'error':'Agent busy'})
+  try:
+   env=profile_environment(settings)
    run_id=str(UUID(body.get('session_id','')))
    with task_file_context(body, ROOT/'.runtime') as prepared:
     process=processes.run(run_id,[settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],json.dumps(prepared),env=env,cwd=ROOT)
@@ -880,6 +891,61 @@ class Handler(BaseHTTPRequestHandler):
   finally:lock.release()
 customer_wa_lock=threading.Lock()
 in_progress_customer_msgs=set()
+
+def _fast_draft_only_completion(body,settings_dict):
+ if not isinstance(body,dict) or body.get('execution_mode')!='draft-only' or body.get('task_files'):
+  return None
+ msgs=body.get('messages')
+ if not isinstance(msgs,list) or not msgs:
+  return None
+ for m in msgs:
+  if not isinstance(m,dict) or not isinstance(m.get('content'),str):
+   return None
+ import urllib.request
+ api_key=(os.environ.get('OPENROUTER_API_KEY') or settings_dict.get('OPENROUTER_API_KEY') or '').strip().strip('\'"')
+ if not api_key:
+  return None
+ base_url=(os.environ.get('OPENROUTER_BASE_URL') or settings_dict.get('OPENROUTER_BASE_URL') or 'https://openrouter.ai/api/v1').rstrip('/')
+ req_model=str(body.get('model') or '').strip()
+ raw_default=(
+  os.environ.get('WHATSAPP_CHAT_MODEL')
+  or settings_dict.get('WHATSAPP_CHAT_MODEL')
+  or os.environ.get('HERMES_CHAT_MODEL')
+  or settings_dict.get('HERMES_CHAT_MODEL')
+  or 'deepseek/deepseek-chat-v3-0324'
+ ).strip()
+ model=req_model if req_model and req_model not in {'workspace-default','hermes'} else raw_default
+ if 'deepseek-v4.1-flash' in model or 'glm-5.2' in model:
+  model='deepseek/deepseek-chat-v3-0324'
+ payload=json.dumps({
+  'model':model,
+  'messages':[{'role':str(m.get('role') or 'user'),'content':m['content']} for m in msgs],
+  'max_tokens':int(body.get('max_tokens') or 180),
+  'temperature':0.3,
+ }).encode('utf-8')
+ req=urllib.request.Request(
+  f"{base_url}/chat/completions",
+  data=payload,
+  headers={
+   'Authorization':f'Bearer {api_key}',
+   'Content-Type':'application/json',
+   'HTTP-Referer':'https://central-ai.local',
+   'X-Title':'Central AI',
+  },
+  method='POST',
+ )
+ with urllib.request.urlopen(req,timeout=25) as resp:
+  if resp.status!=200:
+   return None
+  data=json.loads(resp.read().decode('utf-8'))
+  content=str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+  if not content:
+   return None
+  return {
+   'model':model,
+   'runtime_profile':settings_dict.get('HERMES_PROFILE','leo'),
+   'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':content}}],
+  }
 
 def _ensure_customer_caller_enabled():
  import sqlite3
@@ -1220,73 +1286,82 @@ def _start_customer_whatsapp_poller():
       elif auto_reply_enabled and not outbox_sent:
        agent_name=live_cfg.get('customer_agent') or 'James'
        agent_role=live_cfg.get('customer_agent_role') or 'Customer Service & Solar Specialist'
-       agent_instr=live_cfg.get('customer_agent_instructions') or ''
-       agent_kb=live_cfg.get('customer_agent_knowledge') or []
-       sorted_kb=sorted([c for c in agent_kb if isinstance(c,dict) and c.get('content')],key=lambda x:0 if str(x.get('category') or '').lower()=='process' else 1)
-       kb_text='\n\n'.join(f"[{c.get('title','')}{' (' + str(c.get('category')) + ')' if c.get('category') else ''}]\n{c.get('content','')}" for c in sorted_kb)
-       if not kb_text:
-        kb_text=_fetch_live_box3_context(msg_text,ROOT)
        company_name=live_cfg.get('company_name') or 'Your Choice Solar'
-       solar_calc=_calculate_solar_pre_assessment(msg_text)
-       prior_turns=history_by_sender.get(sender_id,[])[-8:]
-       hist_str='\n'.join(prior_turns) if prior_turns else '(No prior messages yet)'
-       sys_prompt='\n'.join(filter(None,[
-        f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
-        f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
-        "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, markdown **bold**, or # headings). Always use warm, courteous, professional English—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. Always answer the customer's actual question directly and naturally first using your Agent Instructions and Knowledge Base below. Never repeat the same question twice in a row.",
-        f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): Speak like a real, natural human specialist texting on WhatsApp. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks {first_n or '[Name]'}', 'Got it, {first_n or '[Name]'}', 'Great, {first_n or '[Name]'}', or similar mechanical acknowledgements. Never repeat the customer's suburb/location in every message.",
-        "STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
-        "NO REPEATED GREETINGS OR NAME REPETITION: This conversation is already underway. NEVER start your reply with 'Hi', 'Hello', 'Hey', 'Thanks', 'Thank you', or the customer's name ('" + (first_n or "there") + "'). Do NOT use the customer's first name again on follow-up replies—jump straight into a natural, helpful response." if has_prior_reply else ("Greet " + (first_n or "the customer") + " politely and professionally once on this first reply using 'Hi " + (first_n or "there") + "' or 'Hello " + (first_n or "there") + "' (never use 'G'day')."),
-        lead_info['checklist_prompt'],
-        "MANDATORY FULL LEAD COLLECTION & DATA CONFIRMATION (EVEN WITHOUT A CALENDAR BOOKING):\n"
-        "1. Every solar inquiry must be added to the Central OS CRM New Lead pipeline so our team is notified—even if the customer does not pick a specific calendar time.\n"
-        "2. NEVER close the conversation or say 'A specialist will reach out shortly' or 'I\\'ll arrange a consultation' while Full Name (first AND last name), Phone Number, Email Address, or Property Street Address are still MISSING or INCOMPLETE in the checklist above.\n"
-        f"3. When a customer wants a quote, package pricing, consultation, or site visit (or says 'Yes' to proceeding), check the LIVE CRM LEAD CHECKLIST above and politely ask for any missing details ({lead_info['missing_str'] or 'all collected'}).\n"
-        f"4. Once Full Name (first & last), Phone Number, Email Address, and Property Street Address are collected, explicitly read back and confirm all collected data with the customer in your message (Full Name, Phone, Email, Property Street Address, and Solar/Battery Inquiry), and append the hidden CRM lead tag at the very end of your message:\n[[LEAD:{{\"name\":\"{lead_info['name'] or 'First Last'}\",\"phone\":\"{lead_info['phone'] or '+' + sender_id}\",\"email\":\"{lead_info['email'] or 'name@example.com'}\",\"address\":\"{lead_info['address'] or '123 Street Name, Suburb'}\",\"notes\":\"Summary of solar/battery inquiry\"}}]]",
-        f"CONVERSATION HISTORY:\n{hist_str}",
-        f"KNOWLEDGE BASE (FROM APP OS):\n{kb_text}" if kb_text else "",
-       ]))
-       try:
-        env=profile_environment(settings)
-        job_in={
-         'model':'workspace-default',
-         'session_id':str(UUID(int=int(time.time()*1000)%((1<<128)-1))),
-         'runtime_profile':settings['HERMES_PROFILE'],
-         'execution_mode':'draft-only',
-         'max_tokens':320,
-         'stream':False,
-         'messages':[{'role':'system','content':sys_prompt},*prior_chat_msgs[-10:],{'role':'user','content':msg_text}],
-        }
-        proc=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],input=json.dumps(job_in),capture_output=True,text=True,encoding='utf-8',timeout=35,env=env,cwd=ROOT)
-        if proc.returncode==0 and proc.stdout:
-         jout=json.loads(proc.stdout)
-         raw_content=((jout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
-         raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',raw_content,flags=re.IGNORECASE)
-         reply_text=clean_reply_punctuation(raw_content).strip()
-         if reply_text and _is_premature_lead_handoff(reply_text,lead_info['missing_natural']):
-          retry_job={
-           **job_in,
-           'session_id':str(UUID(int=(int(time.time()*1000)+1)%((1<<128)-1))),
-           'messages':[
-            *job_in['messages'],
-            {'role':'assistant','content':reply_text},
-            {'role':'user','content':f"[PROCESS PLAYBOOK SELF-CORRECTION: Your draft reply above tried to hand off or close the conversation before completing the Process Knowledge Base qualification and CRM checklist. Still missing: {lead_info['missing_str']}. Rewrite your reply in your natural human voice (no 'Thanks' or greeting prefixes) to warmly ask for the next missing detail(s) instead of closing.]"},
-           ],
-          }
-          rproc=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],input=json.dumps(retry_job),capture_output=True,text=True,encoding='utf-8',timeout=30,env=env,cwd=ROOT)
-          if rproc.returncode==0 and rproc.stdout:
-           rjout=json.loads(rproc.stdout)
-           rraw=((rjout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
-           if rraw.strip():
-            raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',rraw,flags=re.IGNORECASE) or raw_tags
-            reply_text=clean_reply_punctuation(rraw).strip()
-       except Exception:
-        reply_text=None
-       if not reply_text:
-        if has_prior_reply:
-         reply_text="To calculate a tailored solar quote and pre-assessment for you, what is your typical monthly or quarterly electricity bill, and which city or suburb are you in?"
-        else:
-         reply_text=f"Hi {first_n or 'there'}, I'm {agent_name} from {company_name}. How can I help with your solar plans today?"
+       if lead_info.get('is_simple_greeting'):
+        reply_text=(f"Hi {first_n or 'there'}! How can I help you today?" if has_prior_reply else f"Hi {first_n or 'there'}! I'm {agent_name} from {company_name}. How can I help you today?")
+       else:
+        agent_instr=live_cfg.get('customer_agent_instructions') or ''
+        agent_kb=live_cfg.get('customer_agent_knowledge') or []
+        sorted_kb=sorted([c for c in agent_kb if isinstance(c,dict) and c.get('content')],key=lambda x:0 if str(x.get('category') or '').lower()=='process' else 1)
+        kb_text='\n\n'.join(f"[{c.get('title','')}{' (' + str(c.get('category')) + ')' if c.get('category') else ''}]\n{c.get('content','')}" for c in sorted_kb)
+        if not kb_text:
+         kb_text=_fetch_live_box3_context(msg_text,ROOT)
+        prior_turns=history_by_sender.get(sender_id,[])[-8:]
+        hist_str='\n'.join(prior_turns) if prior_turns else '(No prior messages yet)'
+        sys_prompt='\n'.join(filter(None,[
+         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
+         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
+         "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, markdown **bold**, or # headings). Always use warm, courteous, professional English—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. Always answer the customer's actual question directly and naturally first using your Agent Instructions and Knowledge Base below. Never repeat the same question twice in a row.",
+         "SHORT, FRIENDLY & ONE QUESTION AT A TIME: Keep every reply brief, warm, and simple (1 to 2 short sentences maximum). NEVER dump paragraphs of information and NEVER ask two or more questions in the same message (never stack questions with 'Also, ...' or 'and what size/how old?'). Ask at most ONE simple question at a time.",
+         f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): Speak like a real, natural human specialist texting on WhatsApp. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks {first_n or '[Name]'}', 'Got it, {first_n or '[Name]'}', 'Great, {first_n or '[Name]'}', or similar mechanical acknowledgements. Never repeat the customer's suburb/location in every message.",
+         "STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
+         "NO REPEATED GREETINGS OR NAME REPETITION: This conversation is already underway. NEVER start your reply with 'Hi', 'Hello', 'Hey', 'Thanks', 'Thank you', or the customer's name ('" + (first_n or "there") + "'). Do NOT use the customer's first name again on follow-up replies—jump straight into a natural, helpful response." if has_prior_reply else ("Greet " + (first_n or "the customer") + " warmly and simply once on this first reply using 'Hi " + (first_n or "there") + "' (never use 'G'day')."),
+         lead_info['checklist_prompt'],
+         "MANDATORY FULL LEAD COLLECTION & DATA CONFIRMATION (ONE STEP AT A TIME):\n"
+         "1. Every solar inquiry must be added to the Central OS CRM New Lead pipeline so our team is notified—even if the customer does not pick a specific calendar time.\n"
+         "2. NEVER close the conversation or say 'A specialist will reach out shortly' or 'I\\'ll arrange a consultation' while Full Name (first AND last name), Phone Number, Email Address, or Property Street Address are still MISSING or INCOMPLETE in the checklist above.\n"
+         f"3. Guide the conversation one simple step at a time. Right now, ask ONLY for the NEXT SINGLE QUESTION shown in the checklist above ({lead_info.get('next_single_question') or 'confirm all details'}). Do NOT combine multiple questions into one message.\n"
+         f"4. Once Full Name (first & last), Phone Number, Email Address, and Property Street Address are collected, explicitly read back and confirm all collected data with the customer in your message (Full Name, Phone, Email, Property Street Address, and Solar/Battery Inquiry), and append the hidden CRM lead tag at the very end of your message:\n[[LEAD:{{\"name\":\"{lead_info['name'] or 'First Last'}\",\"phone\":\"{lead_info['phone'] or '+' + sender_id}\",\"email\":\"{lead_info['email'] or 'name@example.com'}\",\"address\":\"{lead_info['address'] or '123 Street Name, Suburb'}\",\"notes\":\"Summary of solar/battery inquiry\"}}]]",
+         f"CONVERSATION HISTORY:\n{hist_str}",
+         f"KNOWLEDGE BASE (FROM APP OS):\n{kb_text}" if kb_text else "",
+        ]))
+        try:
+         env=profile_environment(settings)
+         job_in={
+          'model':'workspace-default',
+          'session_id':str(UUID(int=int(time.time()*1000)%((1<<128)-1))),
+          'runtime_profile':settings['HERMES_PROFILE'],
+          'execution_mode':'draft-only',
+          'max_tokens':180,
+          'stream':False,
+          'messages':[{'role':'system','content':sys_prompt},*prior_chat_msgs[-10:],{'role':'user','content':msg_text}],
+         }
+         jout=_fast_draft_only_completion(job_in,settings)
+         if not jout:
+          proc=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],input=json.dumps(job_in),capture_output=True,text=True,encoding='utf-8',timeout=35,env=env,cwd=ROOT)
+          if proc.returncode==0 and proc.stdout:
+           jout=json.loads(proc.stdout)
+         if jout:
+          raw_content=((jout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
+          raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',raw_content,flags=re.IGNORECASE)
+          reply_text=clean_reply_punctuation(raw_content).strip()
+          if reply_text and _is_premature_lead_handoff(reply_text,lead_info['missing_natural']):
+           retry_job={
+            **job_in,
+            'session_id':str(UUID(int=(int(time.time()*1000)+1)%((1<<128)-1))),
+            'messages':[
+             *job_in['messages'],
+             {'role':'assistant','content':reply_text},
+             {'role':'user','content':f"[PROCESS PLAYBOOK SELF-CORRECTION: Your draft reply above tried to hand off or close the conversation before completing the Process Knowledge Base qualification and CRM checklist. Rewrite your reply in 1-2 short sentences (no 'Thanks' or greeting prefixes) to warmly ask ONLY this single next question: {lead_info.get('next_single_question')}]"},
+            ],
+           }
+           rjout=_fast_draft_only_completion(retry_job,settings)
+           if not rjout:
+            rproc=subprocess.run([settings.get('HERMES_PYTHON',sys.executable),str(ROOT/'scripts'/'hermes-job.py')],input=json.dumps(retry_job),capture_output=True,text=True,encoding='utf-8',timeout=30,env=env,cwd=ROOT)
+            if rproc.returncode==0 and rproc.stdout:
+             rjout=json.loads(rproc.stdout)
+           if rjout:
+            rraw=((rjout.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
+            if rraw.strip():
+             raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',rraw,flags=re.IGNORECASE) or raw_tags
+             reply_text=clean_reply_punctuation(rraw).strip()
+        except Exception:
+         reply_text=None
+        if not reply_text:
+         if has_prior_reply:
+          reply_text="Are you looking for a brand new solar setup, or do you already have panels on the property?"
+         else:
+          reply_text=f"Hi {first_n or 'there'}! I'm {agent_name} from {company_name}. How can I help you today?"
       if reply_text:
        if not raw_tags:
         raw_tags=re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]',reply_text,flags=re.IGNORECASE)

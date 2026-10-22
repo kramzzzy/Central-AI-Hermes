@@ -338,6 +338,11 @@ _PREMATURE_HANDOFF_RE = re.compile(
     r"\b(specialist will (?:reach out|contact|call|be in touch|get in touch)|team will (?:reach out|contact|call|be in touch|get in touch)|i(?:'ll| will) arrange (?:an?|your)\s+(?:on-site|site|free|solar)?\s*(?:consultation|visit|inspection|quote)|we(?:'ll| will) (?:reach out|be in touch|contact you)\s+shortly|someone will (?:reach out|contact|call))\b",
     re.I,
 )
+_SIMPLE_GREETING_ONLY_RE = re.compile(
+    r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|greetings|hi\s+there|hello\s+there|hey\s+there)(?:[\s,!?.]+(?:[a-z]{2,20}|how\s+are\s+you|how's\s+it\s+going|how\s+is\s+it\s+going))*[\s!?.]*$",
+    re.I,
+)
+_LAST_WORKING_BOX3_URL = ''
 
 
 def _is_valid_person_name(cand: str) -> bool:
@@ -380,12 +385,12 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
             prev_asst = str(turns[idx - 1].get('content') or '').lower()
 
         if not existing_solar:
-            if re.search(r'\b(no\s+solar|don\'?t\s+have\s+solar|do\s+not\s+have\s+solar|no\s+existing\s+solar|brand\s+new\s+solar|new\s+solar\s+install|never\s+had\s+solar|none\s+yet)\b', text, re.I):
+            if re.search(r'\b(no\s+solar|don\'?t\s+have\s+solar|do\s+not\s+have\s+solar|no\s+existing\s+solar|brand[\s-]*new(?:\s+(?:solar|setup|system|install))?|new\s+(?:solar|setup|system|install|installation)|never\s+had\s+solar|none\s+yet)\b', text, re.I):
                 existing_solar = 'No existing solar'
             elif re.search(r'\b(already\s+have\s+solar|got\s+solar|existing\s+solar|have\s+a\s+\d+(?:\.\d+)?\s*kw|old\s+solar|replace\s+my\s+solar|upgrade\s+my\s+solar|\d+\s*(?:year|yr)s?\s+old(?:\s+solar)?)\b', text, re.I):
                 existing_solar = text[:120]
-            elif re.search(r'\b(have you got solar|do you have solar|existing solar|solar already)\b', prev_asst) and re.match(r'^(no|nah|nope|not yet|none|yes|yeah|yep)\b', text, re.I):
-                existing_solar = 'No existing solar' if re.match(r'^(no|nah|nope|not yet|none)\b', text, re.I) else text[:120]
+            elif re.search(r'\b(have you got solar|do you have solar|already have solar|existing solar|solar already|solar on your roof|solar on the property)\b', prev_asst) and re.match(r'^(no|nah|nope|not yet|none|new|brand new|yes|yeah|yep)\b', text, re.I):
+                existing_solar = 'No existing solar' if re.match(r'^(no|nah|nope|not yet|none|new|brand new)\b', text, re.I) else text[:120]
 
         if not power_bill:
             bm = (
@@ -519,38 +524,43 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     if not has_email:
         missing_natural.append('your email address')
 
-    solar_status = f"COLLECTED ({existing_solar})" if has_existing_solar else "MISSING (Ask: have you got solar already, and if yes how old and what size?)"
-    bill_status = f"COLLECTED ({power_bill})" if has_power_bill else "MISSING (Ask: how much was your last power bill?)"
-    name_status = (
-        f"COLLECTED ({name})"
-        if has_full_name
-        else (
-            f'INCOMPLETE — only first name "{name}" is known (MUST ask for their full name / last name)'
-            if name
-            else "MISSING (MUST ask for their full name: first and last)"
-        )
-    )
-    phone_status = f"COLLECTED ({phone})" if has_phone else "MISSING (MUST ask for their phone number)"
-    email_status = f"COLLECTED ({email})" if has_email else "MISSING (MUST ask for their email address)"
-    addr_status = (
-        f"COLLECTED ({address})"
-        if has_street_address
-        else (
-            f'INCOMPLETE — only general area "{address}" is known (MUST ask for their full street address)'
+    if not has_existing_solar:
+        next_single_question = "Ask ONLY this 1 simple question next: whether they already have solar on the property or if this is for a new setup (do NOT ask about their power bill or address yet)."
+    elif not has_power_bill:
+        next_single_question = "Ask ONLY this 1 simple question next: roughly how much their last power bill was (do NOT ask for their address or contact details yet)."
+    elif not has_street_address:
+        next_single_question = (
+            f"Ask ONLY this 1 simple question next: what the street address is for their property in {address}."
             if address
-            else "MISSING (MUST ask for their property street address)"
+            else "Ask ONLY this 1 simple question next: what the property's street address is."
         )
-    )
+    elif not has_full_name:
+        next_single_question = (
+            f"Ask ONLY this 1 simple question next: what their last name is so we have their full name ({name} ...)."
+            if name
+            else "Ask ONLY this 1 simple question next: what their full name (first and last) is."
+        )
+    elif not has_phone:
+        next_single_question = "Ask ONLY this 1 simple question next: what their best contact phone number is."
+    elif not has_email:
+        next_single_question = "Ask ONLY this 1 simple question next: what their best email address is."
+    else:
+        next_single_question = "All details are collected! Briefly confirm their collected details in 1-2 friendly sentences and append the [[LEAD:...]] tag."
 
     checklist_lines = [
-        'LIVE QUALIFICATION & CRM LEAD CHECKLIST (FROM PROCESS KNOWLEDGE BASE PLAYBOOK):',
-        f"- 1. Existing Solar Check (Have you got solar already? If yes, how old & how big?): {solar_status}",
-        f"- 2. Last Power Bill ($$): {bill_status}",
-        f"- 3. Property Street Address: {addr_status}",
-        f"- 4. Full Name (First & Last): {name_status}",
-        f"- 5. Phone Number: {phone_status}",
-        f"- 6. Email Address: {email_status}",
+        'LIVE QUALIFICATION & CRM PROGRESS (ONE QUESTION AT A TIME — DO NOT STACK QUESTIONS):',
+        f"- 1. Existing Solar: {'COLLECTED (' + existing_solar + ')' if has_existing_solar else 'Not asked yet'}",
+        f"- 2. Last Power Bill ($$): {'COLLECTED (' + power_bill + ')' if has_power_bill else 'Not asked yet'}",
+        f"- 3. Property Street Address: {'COLLECTED (' + address + ')' if has_street_address else ('Partial (' + address + ' — need street address)' if address else 'Not asked yet')}",
+        f"- 4. Full Name (First & Last): {'COLLECTED (' + name + ')' if has_full_name else ('Partial (First name: ' + name + ' — need last name)' if name else 'Not asked yet')}",
+        f"- 5. Phone Number: {'COLLECTED (' + phone + ')' if has_phone else 'Not asked yet'}",
+        f"- 6. Email Address: {'COLLECTED (' + email + ')' if has_email else 'Not asked yet'}",
+        f"NEXT SINGLE STEP FOR THIS TURN: {next_single_question}",
     ]
+
+    user_turns = [str(m.get('content') or '').strip() for m in (turns or []) if isinstance(m, dict) and m.get('role') == 'user']
+    has_asst = any(isinstance(m, dict) and m.get('role') == 'assistant' for m in (turns or []))
+    is_simple_greeting = bool(not has_asst and len(user_turns) == 1 and _SIMPLE_GREETING_ONLY_RE.match(user_turns[0]))
 
     return {
         'name': name,
@@ -565,6 +575,8 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         'has_street_address': has_street_address,
         'has_existing_solar': has_existing_solar,
         'has_power_bill': has_power_bill,
+        'is_simple_greeting': is_simple_greeting,
+        'next_single_question': next_single_question,
         'missing_natural': missing_natural,
         'missing_str': _format_natural_list(missing_natural),
         'checklist_prompt': '\n'.join(checklist_lines),
@@ -619,6 +631,7 @@ def _append_customer_sync_queue(item: dict):
 
 
 def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool) -> dict:
+    global _LAST_WORKING_BOX3_URL
     try:
         import os, socket, time, urllib.parse, urllib.request
         msg_text = str(data.get('body') or '').strip()
@@ -627,6 +640,8 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
             return {'handled_by_box3': False}
 
         urls = []
+        if _LAST_WORKING_BOX3_URL:
+            urls.append(_LAST_WORKING_BOX3_URL)
         for p in ('/data/app_os_url.json', '/opt/data/app_os_url.json', '/opt/os-adapter/.runtime/app_os_url.json'):
             f = Path(p)
             if f.is_file():
@@ -676,11 +691,12 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
                 port = parsed.port or (443 if parsed.scheme == 'https' else 80)
                 if not host:
                     continue
-                try:
-                    with socket.create_connection((host, port), timeout=1.5):
-                        pass
-                except Exception:
-                    continue
+                if base_url != _LAST_WORKING_BOX3_URL:
+                    try:
+                        with socket.create_connection((host, port), timeout=0.8):
+                            pass
+                    except Exception:
+                        continue
                 req = urllib.request.Request(
                     f'{base_url}/api/connections/whatsapp/webhook',
                     data=payload,
@@ -695,6 +711,7 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
                     if resp.status == 200:
                         res_data = json.loads(resp.read().decode('utf-8'))
                         if res_data.get('ok'):
+                            _LAST_WORKING_BOX3_URL = base_url
                             should_send = bool(res_data.get('auto_reply')) and not bool(res_data.get('duplicate'))
                             return {
                                 'handled_by_box3': True,
@@ -706,6 +723,8 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
                                 'existing_reply': res_data.get('reply'),
                             }
             except Exception:
+                if base_url == _LAST_WORKING_BOX3_URL:
+                    _LAST_WORKING_BOX3_URL = ''
                 continue
     except Exception as exc:
         logging.error('Box 3 customer WhatsApp forward error: %s', exc)
@@ -797,7 +816,6 @@ def build_engine_adapter(route,member,home,group):
             event=await super()._build_message_event(data)
             if event is not None:
                 msg_text = getattr(event, 'text', '') or ''
-                live_box3 = await asyncio.to_thread(_fetch_live_box3_context, msg_text, home)
                 solar_calc = _calculate_solar_pre_assessment(msg_text)
                 treat_as_customer_inquiry = is_customer_line or (not member['group'] and not is_owner_sender)
 
@@ -805,6 +823,11 @@ def build_engine_adapter(route,member,home,group):
                     agent_name = live_cfg['customer_agent'] or 'James'
                     agent_role = live_cfg.get('customer_agent_role') or 'Customer Service & Solar Specialist'
                     agent_instr = live_cfg.get('customer_agent_instructions') or ''
+                    agent_kb = live_cfg.get('customer_agent_knowledge') or []
+                    sorted_kb = sorted([c for c in agent_kb if isinstance(c, dict) and c.get('content')], key=lambda x: 0 if str(x.get('category') or '').lower() == 'process' else 1)
+                    kb_str = '\n\n'.join(f"[{c.get('title', '')}{' (' + str(c.get('category')) + ')' if c.get('category') else ''}]\n{c.get('content', '')}" for c in sorted_kb)
+                    if not kb_str:
+                        kb_str = await asyncio.to_thread(_fetch_live_box3_context, msg_text, home)
                     company_name = live_cfg['company_name'] or 'Your Choice Solar'
                     customer_phone_display = f'+{sender_digits}' if sender_digits else 'their WhatsApp number'
                     event.channel_prompt = '\n\n'.join(filter(None, [
@@ -812,15 +835,15 @@ def build_engine_adapter(route,member,home,group):
                         get_whatsapp_reply_style(),
                         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp, linked directly to the Process Knowledge Base ('YCS — customer-service drafting playbook'). "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
-                        f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): Speak like a real, natural human specialist texting on WhatsApp. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks [Name]', 'Got it, [Name]', or 'Great, [Name]'. Greet the customer only once at the start of a new conversation; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. "
-                        "PROFESSIONAL BUSINESS TONE (NO SLANG): Always use warm, courteous, professional English. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
-                        f"MANDATORY SOLAR QUALIFICATION & CRM NEW LEAD CONFIRMATION (FROM PROCESS PLAYBOOK): Every inquiry must be qualified and added to the Central OS CRM New Lead pipeline so our team is notified: (1) Have you got solar already (if yes, how old and how big in kW)? (2) How much was your last power bill ($$)? (3) What is your property street address? (4) Full Name (first AND last name), Phone Number, and Email Address. NEVER close the conversation or say 'A specialist will reach out shortly' while any of these details are still missing. Once collected, read back and confirm all collected details with the customer and append [[LEAD:{{\"name\":\"First Last\",\"phone\":\"{customer_phone_display}\",\"email\":\"...\",\"address\":\"...\",\"notes\":\"...\"}}]]. "
-                        f"Always answer the customer's actual question directly first using your Agent Instructions and Knowledge Base below, and never repeat the same question twice in a row. "
-                        f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent, recreate, estimate, or quote data that does not exist in the system (such as fixed package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths).",
+                        f"START SIMPLE & FRIENDLY (1 TO 2 SHORT SENTENCES MAX): Speak like a warm, friendly, real human texting on WhatsApp (1 to 2 short plain-text sentences max). When the customer simply says 'Hi' or 'Hello', reply ONLY with a warm, simple 1-sentence greeting introducing yourself and asking how you can help today—never dump company info or ask qualifying questions on an opening greeting. "
+                        f"ONE QUESTION AT A TIME: Never stack two questions in the same message (never say 'Also, ...'). Once the customer shares what they need, answer their question simply in 1 short sentence and ask ONLY ONE simple question per turn: (1) Do they already have solar on the property (and if yes, how old and what size)? (2) Roughly how much was their last power bill ($$)? (3) What is the property street address? (4) Full Name (first AND last name), Phone Number, and Email Address. Once collected, briefly confirm all details and append [[LEAD:{{\"name\":\"First Last\",\"phone\":\"{customer_phone_display}\",\"email\":\"...\",\"address\":\"...\",\"notes\":\"...\"}}]]. "
+                        f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): NEVER start your replies with 'Thanks', 'Thank you', 'Thanks [Name]', 'Got it, [Name]', or 'Great, [Name]'. Greet once only on the first turn; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
+                        f"STRICT SYSTEM DATA GROUNDING: Rely exclusively on the facts present in your Agent Instructions and Knowledge Base below. Never invent package sizes/kW tiers, panel wattages, hardware brands, prices, dollar/percentage bill savings, payback periods, rebate amounts, or warranty lengths.",
                         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
-                        live_box3,
+                        f"KNOWLEDGE BASE (FROM APP OS):\n{kb_str}" if kb_str else "",
                     ]))
                 else:
+                    live_box3 = await asyncio.to_thread(_fetch_live_box3_context, msg_text, home)
                     event.channel_prompt='\n\n'.join(filter(None,[event.channel_prompt,get_whatsapp_reply_style(),
                         'You are fully connected to the Central AI knowledge base (8 Knowledge Base sources and 60 Available skills) and persistent Hindsight memory (\'michael-os-leo\'). '
                         'All Box 3 tools (mcp__michael_os__inspect_workspace, mcp__michael_os__manage_crm, mcp__michael_os__manage_tasks, mcp__michael_os__create_task, mcp__michael_os__search_knowledge, mcp__michael_os__get_knowledge, mcp__michael_os__add_knowledge, mcp__michael_os__get_workspace_overview) are enabled on this WhatsApp connection. '
