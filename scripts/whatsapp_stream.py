@@ -18,7 +18,7 @@ from whatsapp_audio import PhoneAudioFilter
 class PhonePCM:
     """Keep provider chunks continuous; pad only the final transport frame."""
     frame_bytes = 1920
-    prefill_frames = 2
+    prefill_frames = 1
     single_burst_frames = 4
 
     def __init__(self):
@@ -192,26 +192,58 @@ class StreamPhoneCall:
 
     def discard_early_asr(self):
         if self.early_asr:
-            self.close_asr(self.early_asr['recognizer'])
+            self.close_asr(self.early_asr.get('recognizer'))
             self.close_asr(self.early_asr.get('confirmation'))
+            if self.early_asr.get('control'):
+                self.early_asr['control'].cancel()
             self.early_asr=None
 
     def prepare_recognition(self):
+        if self.early_asr:return
         cloud=getattr(self.service,'cloud_asr',None)
-        if self.early_asr or not hasattr(cloud,'prepare'):return
+        local_fn=getattr(self.service,'recognize',None)
+        if not hasattr(cloud,'prepare') and not local_fn:return
         generation=self.generation
+        version=self.capture_version
         control=TurnControl(lambda:not self.closed and self.generation==generation
                             and self.service.allowed(self.call))
         pcm=bytes(self.capture)
         remote=getattr(self.asr,'remote',False)
-        source=self.asr.recognizer.source if remote else cloud.primary
-        recognizer=None if remote else cloud.prepare(pcm,control)
-        if recognizer:
-            self.early_asr={'recognizer':recognizer,'confirmation':None,
-                            'confirmation_source':source,'version':self.capture_version,'pcm':pcm}
-            self.service.metrics['early_recognitions_started']=self.service.metrics.get('early_recognitions_started',0)+1
+        source=self.asr.recognizer.source if remote else (cloud.primary if cloud else 'local')
+        recognizer=None if (remote or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
+        local_done=asyncio.Event()
+        early_entry={'recognizer':recognizer,'confirmation':None,
+                     'confirmation_source':source,'version':version,'pcm':pcm,
+                     'control':control,'local_result':None,'local_done':None}
+        if local_fn and not remote:
+            import threading
+            done_evt=threading.Event()
+            early_entry['local_done']=done_evt
+            def _run_early_local():
+                try:
+                    res=local_fn(pcm)
+                    early_entry['local_result']=res
+                    l_text,l_qual=res
+                    if (l_text and l_qual.get('decision')=='accepted'
+                            and not control.cancelled.is_set()
+                            and self.generation==generation
+                            and self.capture_version==version):
+                        conv=self._get_fallback_conversation()
+                        if conv and not self.speculative:
+                            self.speculative=conv.prefetch(l_text,control)
+                except Exception:
+                    pass
+                finally:
+                    done_evt.set()
+            threading.Thread(target=_run_early_local,daemon=True).start()
+        self.early_asr=early_entry
+        self.service.metrics['early_recognitions_started']=self.service.metrics.get('early_recognitions_started',0)+1
 
     async def _warm_native_conversation(self):
+        try:
+            await asyncio.to_thread(self._get_fallback_conversation)
+        except Exception:
+            pass
         if not getattr(self.service, 'native_conversation', None):
             return
         try:
@@ -309,38 +341,57 @@ class StreamPhoneCall:
                     confirmation_asr=audio.get('confirmation_asr') if isinstance(audio,dict) else None
                     if confirmation_asr:control.track(confirmation_asr)
                     used_local = False
+                    text, quality = '', {'decision': 'clarify', 'source': 'local'}
+                    early = audio.get('prepared_asr') if isinstance(audio, dict) else None
                     if streaming and getattr(streaming,'remote',False):
                         text,quality=streaming.finish(control)
                         if (not text or quality.get('fallback_allowed')) and cloud:
                             text,quality=cloud.recognize(pcm,control)
+                    elif getattr(self.service, 'recognize', None):
+                        # Fast path (~100ms, or 0ms if completed during early_quiet pause):
+                        early_local_done = audio.get('early_local_done') if isinstance(audio, dict) else None
+                        early_entry = audio.get('early_entry') if isinstance(audio, dict) else None
+                        if early_local_done is not None and early_entry is not None:
+                            early_local_done.wait(timeout=0.35)
+                        if early_entry and early_entry.get('local_result') is not None:
+                            local_text, local_quality = early_entry['local_result']
+                        else:
+                            local_text, local_quality = self.service.recognize(pcm)
+                        used_local = True
+                        confident_local = (
+                            bool(local_text)
+                            and local_quality.get('decision') == 'accepted'
+                            and local_quality.get('avg_logprob', -2.0) >= -0.85
+                            and local_quality.get('no_speech_prob', 1.0) <= 0.45
+                        )
+                        if confident_local or not cloud:
+                            text, quality = local_text, local_quality
+                            if early:
+                                self.close_asr(early)
+                        else:
+                            if early:
+                                control.track(early)
+                                try:
+                                    text, quality = early.finish(control)
+                                    self.service.metrics['early_recognitions_used'] = self.service.metrics.get('early_recognitions_used', 0) + 1
+                                except Exception:
+                                    control.check()
+                                    text, quality = cloud.recognize(pcm, control)
+                            else:
+                                text, quality = cloud.recognize(pcm, control)
+                            if (not text or quality.get('decision') != 'accepted') and local_text:
+                                text, quality = local_text, local_quality
                     elif cloud:
-                        early=audio.get('prepared_asr') if isinstance(audio,dict) else None
                         if early:
                             control.track(early)
                             try:
                                 text,quality=early.finish(control)
                                 self.service.metrics['early_recognitions_used']=self.service.metrics.get('early_recognitions_used',0)+1
-                            except TurnCancelled:
-                                control.check()
-                                text,quality=cloud.recognize(pcm,control)
                             except Exception:
                                 control.check()
                                 text,quality=cloud.recognize(pcm,control)
-                        else:text,quality=cloud.recognize(pcm,control)
-                    else:
-                        if streaming:
-                            text,quality=streaming.finish()
-                            if quality.get('decision')=='clarify' and getattr(self.service,'recognize',None):
-                                text,quality=self.service.recognize(pcm)
-                                used_local = True
                         else:
-                            text,quality=self.service.recognize(pcm)
-                            used_local = True
-                    if (not text or quality.get('decision') != 'accepted') and not used_local and getattr(self.service, 'recognize', None):
-                        control.check()
-                        local_text, local_quality = self.service.recognize(pcm)
-                        if local_text:
-                            text, quality = local_text, local_quality
+                            text,quality=cloud.recognize(pcm,control)
                     control.check()
                     self.service.metrics['last_asr_ms']=round((time.monotonic()-began)*1000)
                     timing['transcription_ms']=self.service.metrics['last_asr_ms']
@@ -388,20 +439,27 @@ class StreamPhoneCall:
                         self.service.metrics['user_turns']=self.service.metrics.get('user_turns',0)+1
                         stage='hermes'
                         hermes_started=time.monotonic()
-                        conv = self.conversation or self._get_fallback_conversation()
+                        # Use ultra-low-latency direct streaming Conversation (~220ms first token)
+                        # as primary for live phone turn-taking, falling back to native_conversation if needed.
+                        conv = self._get_fallback_conversation() or self.conversation
+                        def _on_tool_pending(tool_name, caller_text, need_ack):
+                            if need_ack and first is None:
+                                ack = "All right, let me check that for you now. "
+                                speak(ack)
+                                return ack
+                            return None
                         try:
-                            conv.reply(text,speak,control)
+                            if isinstance(conv, Conversation):
+                                conv.reply(text,speak,control,speculative=speculative,on_tool_pending=_on_tool_pending)
+                            else:
+                                conv.reply(text,speak,control)
                         except TurnCancelled:
                             raise
                         except Exception as conv_exc:
                             control.check()
-                            if first is None:
-                                fb = self._get_fallback_conversation()
-                                if fb is not conv:
-                                    fb.reply(text,speak,control)
-                                    conv = fb
-                                else:
-                                    raise conv_exc
+                            if first is None and self.conversation and self.conversation is not conv:
+                                self.conversation.reply(text,speak,control)
+                                conv = self.conversation
                             else:
                                 raise conv_exc
                         finally:
@@ -560,9 +618,14 @@ class StreamPhoneCall:
                 if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .45)) and not busy:
                     self.greeting_pending=False;self.start_reply(greeting=True)
                 continue
+            # Start background cloud recognition early (~300ms into a pause) so it is
+            # already in flight if local Whisper needs fallback at the endpoint.
+            early_quiet = (self.silence_frames >= 5 and now - self.last_speech >= .30) or (now - self.last_speech >= .40)
+            if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
+                self.prepare_recognition()
             # Support both continuous silent RTP frames and WhatsApp Opus DTX
             # silence suppression (where RTP packets stop arriving during quiet gaps).
-            quiet_enough = (self.silence_frames >= 10 and now - self.last_speech >= .78) or (now - self.last_speech >= 1.0)
+            quiet_enough = (self.silence_frames >= 8 and now - self.last_speech >= .52) or (now - self.last_speech >= .68)
             if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
                 self.prepare_recognition()
                 audio={
@@ -576,13 +639,21 @@ class StreamPhoneCall:
                 self.capture_extended=False
                 if self.early_asr:
                     early=self.early_asr;self.early_asr=None
-                    if early['version']==self.capture_version and audio['pcm'].startswith(early['pcm']):
-                        audio['prepared_asr']=early['recognizer']
+                    if early['version']==self.capture_version and audio['pcm']==early['pcm']:
+                        audio['prepared_asr']=early.get('recognizer')
+                        audio['confirmation_asr']=early.get('confirmation')
+                        audio['confirmation_source']=early.get('confirmation_source')
+                        audio['early_local_done']=early.get('local_done')
+                        audio['early_entry']=early
+                    elif early['version']==self.capture_version and audio['pcm'].startswith(early['pcm']):
+                        audio['prepared_asr']=early.get('recognizer')
                         audio['confirmation_asr']=early.get('confirmation')
                         audio['confirmation_source']=early.get('confirmation_source')
                     else:
-                        self.close_asr(early['recognizer'])
+                        self.close_asr(early.get('recognizer'))
                         self.close_asr(early.get('confirmation'))
+                        if early.get('control'):
+                            early['control'].cancel()
                 self.capture_echo_text=''
                 self.capture.clear();self.voiced=0
                 self.silence_frames=0

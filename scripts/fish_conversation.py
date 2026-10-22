@@ -619,16 +619,19 @@ def fish_api(config, path, body=None, method=None):
 
 def conversation_llm(config):
     """Explicit low-cost voice routing; reject arbitrary models and expensive fallbacks."""
-    model = (os.environ.get('HERMES_VOICE_MODEL') or config.get('HERMES_VOICE_MODEL') or config.get('FISH_LLM_MODEL') or 'meta-llama/llama-3.3-70b-instruct').strip()
-    if not model or model == 'openai/gpt-4.1-mini':
-        model = 'meta-llama/llama-3.3-70b-instruct'
+    model = (config.get('FISH_LLM_MODEL') or '').strip()
     if not model:
         return {'custom': None}
-    openai_key = (config.get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
-    if openai_key.startswith('sk-') and not openai_key.startswith('sk-or-') and model.startswith('openai/') and model != '@preset/leo-live-voice-20261003':
-        openai_model = model.replace('openai/', '')
-        return {'custom': {'base_url': 'https://api.openai.com/v1', 'model': openai_model, 'api_key': openai_key}}
-    key = (config.get('OPENROUTER_API_KEY') or os.environ.get('OPENROUTER_API_KEY') or '').strip()
-    if not key.startswith('sk-or-') and not key and not openai_key:
+    approved = {
+        'openai/gpt-4o-mini',
+        'openai/gpt-4.1-mini',
+        'google/gemini-2.5-flash',
+        'meta-llama/llama-3.3-70b-instruct',
+        '@preset/leo-live-voice-20261003',
+    }
+    if model not in approved:
+        raise ValueError('Unsupported voice conversation model')
+    key = (config.get('OPENROUTER_API_KEY') or '').strip()
+    if not key.startswith('sk-or-'):
         raise ValueError('OpenRouter conversation credential is missing')
-    return {'custom': {'base_url': 'https://openrouter.ai/api/v1', 'model': model, 'api_key': key or openai_key}}
+    return {'custom': {'base_url': 'https://openrouter.ai/api/v1', 'model': model, 'api_key': key}}

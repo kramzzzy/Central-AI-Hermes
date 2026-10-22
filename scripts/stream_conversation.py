@@ -342,9 +342,10 @@ class FreeSpeech:
         if not self.fallback:
             # Flush the first usable phrase while subsequent model words arrive.
             first_phrase = (self.first_flush is None and 
-                            len(self.unflushed.strip()) >= 18 and 
-                            len(self.unflushed.split()) >= 4)
-            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed))
+                            len(self.unflushed.strip()) >= 10 and 
+                            len(self.unflushed.split()) >= 2)
+            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed) or
+                                  (self.first_flush is None and re.search(r',\s*$', self.unflushed) and len(self.unflushed.split()) >= 2))
             overflow = len(self.unflushed) >= 80
 
             if punct_boundary or first_phrase or overflow:
@@ -403,15 +404,27 @@ class FreeSpeech:
 
 
 def openrouter_stream(config, messages, tools, control):
-    custom = conversation_llm(config)['custom']
+    try:
+        custom = conversation_llm(config)['custom']
+    except ValueError:
+        custom = None
+    if not custom:
+        import os
+        key = (config.get('OPENROUTER_API_KEY') or os.environ.get('OPENROUTER_API_KEY') or '').strip()
+        model = (os.environ.get('HERMES_VOICE_MODEL') or config.get('HERMES_VOICE_MODEL') or config.get('FISH_LLM_MODEL') or 'openai/gpt-4o-mini').strip()
+        if not model:
+            model = 'openai/gpt-4o-mini'
+        if key:
+            custom = {'base_url': 'https://openrouter.ai/api/v1', 'model': model, 'api_key': key}
     if not custom: raise ValueError('A configured economical conversation model is required')
     payload = {'model': custom['model'], 'messages': messages, 'stream': True,
-               'max_tokens': 1500, 'temperature': .4,
+               'max_tokens': 450, 'temperature': .4,
                'provider':{'sort':'latency','allow_fallbacks':True}}
     if custom['model'] in {'openai/gpt-4o-mini','openai/gpt-4.1-mini'}:
         fallback='openai/gpt-4.1-mini' if custom['model']=='openai/gpt-4o-mini' else 'openai/gpt-4o-mini'
         payload['models']=[custom['model'],fallback]
-    else:payload['reasoning']={'effort':'none'}
+    elif any(k in custom['model'] for k in ('gemini', 'claude', 'o1', 'o3', 'gpt-5')):
+        payload['reasoning']={'effort':'none'}
     if tools:
         payload['tools'] = tools
         # One admitted operation per model step. A batch report is one job;
@@ -445,7 +458,10 @@ class Conversation:
     def __init__(self, config, prompt, tool, names=None, stream=None):
         self.config, self.prompt, self.tool = config, prompt, tool
         # Reuse the owned preset with its existing cheap model/fallback policy.
-        conversation_llm(config)
+        try:
+            conversation_llm(config)
+        except ValueError:
+            pass
         self.names = names or {
             'native_leo', 'task_status', 'cancel_task', 'send_whatsapp_message',
             'call_whatsapp_contact', 'get_live_weather', 'control_widget',

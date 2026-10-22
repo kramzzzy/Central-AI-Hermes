@@ -52,7 +52,9 @@ class CloudRecognizer:
         chat_payload = {
             'model': chat_model,
             'temperature': 0,
-            'max_tokens': 400,
+            'max_tokens': 250,
+            'reasoning': {'effort': 'none'},
+            'provider': {'sort': 'latency', 'allow_fallbacks': True},
             'messages': [{
                 'role': 'user',
                 'content': [
