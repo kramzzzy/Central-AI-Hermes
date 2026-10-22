@@ -236,7 +236,9 @@ class StreamPhoneCall:
         pcm=bytes(self.capture)
         remote=getattr(self.asr,'remote',False)
         source=self.asr.recognizer.source if remote else (cloud.primary if cloud else 'local')
-        recognizer=None if (remote or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
+        # Run local Whisper first (~110ms) and immediately prefetch LLM; only start
+        # cloud ASR if local Whisper is unavailable or did not accept the utterance.
+        recognizer=None if (remote or local_fn or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
         early_entry={'recognizer':recognizer,'confirmation':None,
                      'confirmation_source':source,'version':version,'pcm':pcm,
                      'control':control,'local_result':None,'local_done':None,'speculative':None}
@@ -250,8 +252,6 @@ class StreamPhoneCall:
                     early_entry['local_result']=res
                     l_text,l_qual=res
                     if (l_text and l_qual.get('decision')=='accepted'
-                            and l_qual.get('avg_logprob', -2.0) >= -1.05
-                            and l_qual.get('no_speech_prob', 1.0) <= 0.50
                             and not control.cancelled.is_set()
                             and self.generation==generation
                             and self.capture_version==version):
@@ -261,6 +261,10 @@ class StreamPhoneCall:
                                 spec=conv.prefetch(l_text,control)
                                 early_entry['speculative']=spec
                                 self.speculative=spec
+                    elif (hasattr(cloud,'prepare')
+                            and not control.cancelled.is_set()
+                            and self.generation==generation):
+                        early_entry['recognizer']=cloud.prepare(pcm,control)
                 except Exception:
                     pass
                 finally:
@@ -400,8 +404,6 @@ class StreamPhoneCall:
                         confident_local = (
                             bool(local_text)
                             and local_quality.get('decision') == 'accepted'
-                            and local_quality.get('avg_logprob', -2.0) >= -1.05
-                            and local_quality.get('no_speech_prob', 1.0) <= 0.50
                         )
                         if confident_local or not cloud:
                             text, quality = local_text, local_quality
@@ -603,6 +605,11 @@ class StreamPhoneCall:
                     self.rendered_generation=self.generation;self.last_rendered=time.monotonic()
                 continue
             speaking,pcm=bool(filtered[0]),filtered[1:]
+            if speaking and self.capture and len(pcm) == 1920:
+                samples = struct.unpack('<960h', pcm)
+                rms = (sum(s * s for s in samples) / 960) ** 0.5 / 32768.0
+                if rms < 0.0025 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.006):
+                    speaking = False
             self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
             if self.capture_rejected:
@@ -657,14 +664,14 @@ class StreamPhoneCall:
                 if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .45)) and not busy:
                     self.greeting_pending=False;self.start_reply(greeting=True)
                 continue
-            # Start background cloud + local recognition early (~240ms into a pause) so both
-            # ASR and speculative LLM prefetch are already in flight at the endpoint.
-            early_quiet = (self.silence_frames >= 4 and now - self.last_speech >= .24) or (now - self.last_speech >= .34)
+            # Start background local recognition + LLM prefetch early (~180ms into a pause)
+            # so both ASR and speculative tokens are already in flight at the endpoint.
+            early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .18) or (now - self.last_speech >= .28)
             if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
                 self.prepare_recognition()
             # Support both continuous silent RTP frames and WhatsApp Opus DTX
             # silence suppression (where RTP packets stop arriving during quiet gaps).
-            quiet_enough = (self.silence_frames >= 8 and now - self.last_speech >= .48) or (now - self.last_speech >= .62)
+            quiet_enough = (self.silence_frames >= 7 and now - self.last_speech >= .42) or (now - self.last_speech >= .55)
             if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
                 self.prepare_recognition()
                 audio={
