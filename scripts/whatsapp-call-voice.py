@@ -253,20 +253,6 @@ def native_conversation(call_id, member):
     if not configured:
         configured = {**(member or {}), 'calls': True, 'profile': (member or {}).get('profile') or 'leo'}
     configured = private_phone_member(configured)
-    if configured.get('number') == OWNER_MEMBER.get('number') and chat and chat.voice_call is None and not chat.info.get('running'):
-        actor = 'whatsapp:' + configured['number']
-        try:
-            chat.handle_voice({'action': 'voice_start', 'actor': actor, 'call_id': call_id})
-            def dispatch_owner(action, call, **extra):
-                return chat.handle_voice({'action': action, 'actor': actor, 'call_id': call_id, **extra})
-            def close_owner():
-                try:
-                    chat.handle_voice({'action': 'voice_end', 'actor': actor, 'call_id': call_id})
-                except Exception:
-                    pass
-            return NativeVoiceConversation(dispatch_owner, close_owner, call_id, admitted=lambda: allowed_audio_call(call_id))
-        except Exception:
-            pass
     dispatch, close = task_native(call_id, 'WhatsApp', lambda _: None, configured, conversation=True)
     return NativeVoiceConversation(dispatch, close, call_id, admitted=lambda: allowed_audio_call(call_id))
 
@@ -919,8 +905,6 @@ try:
         chat.connect()
         if business_chat:
             business_chat.connect()
-    else:
-        threading.Thread(target=lambda: (chat.connect(), business_chat and business_chat.connect()), daemon=True).start()
 except Exception as e:
     import traceback
     traceback.print_exc()
@@ -956,10 +940,13 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
         cloud_asr=None
         recognition_mode=os.environ.get('WHATSAPP_ASR_MODE', 'auto')
         if recognition_mode in {'cloud', 'auto'} and config.get('OPENROUTER_API_KEY'):
-            from phone_cloud_asr import CloudRecognizer
-            cloud_asr=CloudRecognizer(config,
-                primary=os.environ.get('WHATSAPP_ASR_MODEL','google/gemini-2.5-flash'),
-                fallback=os.environ.get('WHATSAPP_ASR_FALLBACK','openai/gpt-4o-audio-preview'))
+            try:
+                from phone_cloud_asr import CloudRecognizer
+                cloud_asr=CloudRecognizer(config,
+                    primary=os.environ.get('WHATSAPP_ASR_MODEL','openai/gpt-4o-mini-transcribe'),
+                    fallback=os.environ.get('WHATSAPP_ASR_FALLBACK','deepgram/nova-3'))
+            except Exception as e:
+                print(f'[voice] CloudRecognizer setup fallback to local Whisper: {e}', flush=True)
         fish_service.cloud_asr=cloud_asr
         fish_service.streaming_asr=None if cloud_asr else streaming_asr
         if cloud_asr and os.environ.get('WHATSAPP_STREAM_ASR_DIR'):

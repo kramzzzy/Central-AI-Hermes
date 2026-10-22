@@ -316,6 +316,7 @@ func main() {
 		current.activeHangup = call.Hangup
 		current.Unlock()
 		call.OnPeerAccept(func() {
+			voice.markReady()
 			current.Lock()
 			current.Answered = true
 			current.AnsweredAt = time.Now().UTC().Format(time.RFC3339)

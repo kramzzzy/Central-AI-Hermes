@@ -260,6 +260,7 @@ func (v *voiceAudio) ReadFrame() ([]float32, error) {
 }
 
 func (v *voiceAudio) Receive(frame []float32) {
+	v.markReady()
 	current.Lock()
 	current.Received++
 	current.Unlock()

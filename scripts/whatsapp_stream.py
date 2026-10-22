@@ -73,6 +73,7 @@ class StreamPhoneCall:
         self.callback_notice = callback_notice
         self.greeting_pending = True
         self.received_input = False
+        self.connected_at = 0.
         self.rendered_generation, self.last_rendered = None, 0.
         self.last_recovery = 0.
         self.last_clarify_at = 0.
@@ -182,6 +183,7 @@ class StreamPhoneCall:
         self.change_state('reconnecting')
 
     def transport_ready(self):
+        self.connected_at=time.monotonic()
         if not self.greeting_pending:self.change_state('listening')
 
     @staticmethod
@@ -222,11 +224,7 @@ class StreamPhoneCall:
             print(f"[StreamPhoneCall] native_conversation init fallback to fast stream: {exc}", flush=True)
 
     async def start(self):
-        warm_task = self.task(self._warm_native_conversation())
-        try:
-            await asyncio.wait({warm_task}, timeout=2.5)
-        except Exception:
-            pass
+        self.task(self._warm_native_conversation())
         self.task(self.feed());self.task(self.tick())
         # A paired-device socket can connect while the handset is still
         # ringing. Wait for real media before producing the greeting.
@@ -559,7 +557,7 @@ class StreamPhoneCall:
                     self.capture_rejected=False
                 continue
             if self.greeting_pending:
-                if self.connected and self.received_input and not busy:
+                if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .45)) and not busy:
                     self.greeting_pending=False;self.start_reply(greeting=True)
                 continue
             # Support both continuous silent RTP frames and WhatsApp Opus DTX

@@ -13,7 +13,12 @@ import wave
 from stream_conversation import TurnCancelled
 from voice_http import open_request
 
-MODELS = ('openai/gpt-4o-mini-transcribe', 'deepgram/nova-3')
+MODELS = (
+    'openai/gpt-4o-mini-transcribe',
+    'deepgram/nova-3',
+    'google/gemini-2.5-flash',
+    'openai/gpt-4o-audio-preview',
+)
 
 
 class CloudRecognizer:
