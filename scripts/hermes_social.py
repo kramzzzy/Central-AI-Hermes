@@ -760,7 +760,7 @@ class SocialWorkspace:
         cfg = self.get_config(platform)
         if not cfg or not cfg.get("client_id") or not cfg.get("client_secret"):
             raise SocialError(
-                "Facebook sign-in is not set up yet. Add the Meta App ID and App Secret once (Box 1 env FACEBOOK_APP_ID / FACEBOOK_APP_SECRET or the setup step in Settings → Connection).",
+                "Facebook sign-in is not configured. Add FACEBOOK_APP_ID and FACEBOOK_APP_SECRET to the Box 1 environment and redeploy.",
                 400,
             )
         callback = redirect_uri or cfg.get("redirect_uri")
