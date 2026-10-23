@@ -1,4 +1,4 @@
-"""Local-only authenticated adapter for the installed Hermes and Laya runtimes.
+﻿"""Local-only authenticated adapter for the installed Hermes and Laya runtimes.
 
 This Windows development bridge is not a public production gateway.
 """
@@ -1026,7 +1026,7 @@ def _fast_draft_only_completion(body,settings_dict):
  payload=json.dumps({
   'model':model,
   'messages':out_msgs,
-  'max_tokens':int(body.get('max_tokens') or 180),
+  'max_tokens':max(int(body.get('max_tokens') or 180),1200),
   'temperature':0.3,
  }).encode('utf-8')
  req=urllib.request.Request(
@@ -1433,12 +1433,12 @@ def _start_customer_whatsapp_poller():
         sys_prompt='\n'.join(filter(None,[
          f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
          f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
-         "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, '(Next step: ...)', '(Note: ...)', markdown **bold**, or # headings). Always use warm, courteous, professional English—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'.",
+         "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, '(Next step: ...)', '(Note: ...)', markdown **bold**, or # headings). Always use warm, courteous, professional Englishâ€”never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'.",
          "GENUINELY EXPLAIN QUESTIONS FIRST: Never say 'I\\'d be happy to explain...' without actually explaining it right away! When a customer asks how solar works with their billing or house, explain it clearly in 1 to 2 simple sentences first (e.g., daytime solar panels power your home appliances directly first so you buy far less electricity from the grid, and excess solar can charge a battery or earn feed-in bill credits), and then ask your 1 simple follow-up question.",
          "SHORT, FRIENDLY & ONE QUESTION AT A TIME: Keep every reply brief, warm, and simple (1 to 2 short sentences maximum). NEVER dump paragraphs of information and NEVER ask two or more questions in the same message (never stack questions with 'Also, ...' or 'and what size/how old?'). Ask at most ONE simple question at a time.",
          f"NATURAL HUMAN CONVERSATION (NO 'THANKS [NAME]' OR ROBOTIC FILLER): Speak like a real, natural human specialist texting on WhatsApp. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks {first_n or '[Name]'}', 'Got it, {first_n or '[Name]'}', 'Great, {first_n or '[Name]'}', or similar mechanical acknowledgements. Never repeat the customer's suburb/location in every message.",
          "STRICT SYSTEM DATA GROUNDING: Rely on your Agent Instructions, Knowledge Base, and Official Your Choice Solar Website Calculator (planning-v2) LIVE RESULT below. Always share the official calculator's starting kWh usage, kW panel size (and ~number of 440W panels), and estimated bill reduction when the customer gives their bill/usage or asks to calculate; never invent unverified hardware brands, fixed package prices, rebate amounts, or warranty lengths.",
-         "NO REPEATED GREETINGS OR NAME REPETITION: This conversation is already underway. NEVER start your reply with 'Hi', 'Hello', 'Hey', 'Thanks', 'Thank you', or the customer's name ('" + (first_n or "there") + "'). Do NOT use the customer's first name again on follow-up replies—jump straight into a natural, helpful response." if has_prior_reply else ("Greet " + (first_n or "the customer") + " warmly and simply once on this first reply using 'Hi " + (first_n or "there") + "' (never use 'G'day')."),
+         "NO REPEATED GREETINGS OR NAME REPETITION: This conversation is already underway. NEVER start your reply with 'Hi', 'Hello', 'Hey', 'Thanks', 'Thank you', or the customer's name ('" + (first_n or "there") + "'). Do NOT use the customer's first name again on follow-up repliesâ€”jump straight into a natural, helpful response." if has_prior_reply else ("Greet " + (first_n or "the customer") + " warmly and simply once on this first reply using 'Hi " + (first_n or "there") + "' (never use 'G'day')."),
          solar_calc_prompt or "OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR (planning-v2): Ready. If the customer asks to calculate their kWh usage, solar panel size (kW), or savings before giving a bill amount, ask for their typical monthly or quarterly electricity bill (in AUD) or kWh usage so you can calculate it for them immediately.",
          lead_info['checklist_prompt'],
          "MANDATORY FULL LEAD COLLECTION & DATA CONFIRMATION (ONE STEP AT A TIME):\n"
