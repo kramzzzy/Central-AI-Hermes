@@ -282,21 +282,47 @@ class SocialWorkspace:
                 }
         return None
 
+    def _is_valid_config(self, platform, cfg):
+        if not isinstance(cfg, dict):
+            return False
+        cid = str(cfg.get("client_id") or "").strip()
+        csec = str(cfg.get("client_secret") or "").strip()
+        if not cid or not csec:
+            return False
+        if platform in ("facebook", "instagram") and not cid.isdigit():
+            return False
+        return True
+
     def get_config(self, platform):
+        env_cfg = self._env_config(platform)
+        if env_cfg and self._is_valid_config(platform, env_cfg):
+            return env_cfg
         with self.database() as db:
             row = db.execute(
                 "SELECT encrypted FROM platform_config WHERE platform=?", (platform,)
             ).fetchone()
         if row:
-            return self.decrypt(row["encrypted"])
+            cfg = self.decrypt(row["encrypted"])
+            if self._is_valid_config(platform, cfg):
+                return cfg
+            with self.database() as db:
+                db.execute(
+                    "DELETE FROM platform_config WHERE platform=?", (platform,)
+                )
         if platform == "instagram":
             with self.database() as db:
                 fb_row = db.execute(
                     "SELECT encrypted FROM platform_config WHERE platform='facebook'"
                 ).fetchone()
             if fb_row:
-                return self.decrypt(fb_row["encrypted"])
-        return self._env_config(platform)
+                fb_cfg = self.decrypt(fb_row["encrypted"])
+                if self._is_valid_config("facebook", fb_cfg):
+                    return fb_cfg
+                with self.database() as db:
+                    db.execute(
+                        "DELETE FROM platform_config WHERE platform='facebook'"
+                    )
+        return env_cfg
 
     def save_config(self, platform, cfg):
         with self.database() as db:
@@ -424,6 +450,10 @@ class SocialWorkspace:
             500,
         )
         if client_id and client_secret:
+            if platform in ("facebook", "instagram") and not client_id.isdigit():
+                raise SocialError(
+                    "Facebook App ID must be numeric (e.g. 2677185012736427), not an email address."
+                )
             cfg = {
                 "client_id": client_id,
                 "client_secret": client_secret,
