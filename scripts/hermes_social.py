@@ -1494,8 +1494,9 @@ class SocialWorkspace:
             profile = self.transport(f"{GRAPH_BASE}/{sender}?fields={fields}", token=page["access_token"], timeout=4)
             if isinstance(profile, dict):
                 name = re.sub(r"\s+", " ", str(profile.get("name") or profile.get("username") or "")).strip()[:120]
-        except Exception:
+        except Exception as exc:
             name = ""
+            print(f"[social] sender name lookup failed ({platform}): {str(exc)[:200]}", flush=True)
         if len(self._names) > 2000:
             self._names.clear()
         # Keep real names a day; retry misses (privacy-restricted profiles, outages) after 15 minutes.
