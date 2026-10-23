@@ -79,7 +79,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def provider_request(url, method="GET", data=None, token=None, form=False, headers_extra=None):
+def provider_request(url, method="GET", data=None, token=None, form=False, headers_extra=None, timeout=25):
     payload = None
     if data is not None:
         payload = (
@@ -98,7 +98,7 @@ def provider_request(url, method="GET", data=None, token=None, form=False, heade
         headers.update(headers_extra)
     req = urllib.request.Request(url, data=payload, headers=headers, method=method)
     try:
-        with urllib.request.build_opener(NoRedirect()).open(req, timeout=25) as resp:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as resp:
             content = resp.read(2 * 1024 * 1024 + 1)
             if len(content) > 2 * 1024 * 1024:
                 raise SocialError("Platform returned too much content.", 413)
@@ -166,6 +166,8 @@ class SocialWorkspace:
         self.transport = transport
         self.clock = clock
         self.lock = threading.RLock()
+        # (org, platform, account, sender) -> (display name, expiry). Name lookups are best-effort.
+        self._names = {}
 
         from cryptography.fernet import Fernet
 
@@ -1470,6 +1472,36 @@ class SocialWorkspace:
             return {**receipt, **reaction}
         return {**receipt, "liked": False, "reaction_state": "not_requested" if not body.get("like") else "permission_setup_required"}
 
+    def _profile_name(self, org, event):
+        """Best-effort display name for a Messenger/Instagram DM sender via the Graph User Profile API.
+
+        Meta's DM webhook carries only the sender ID. Never raises: a missing name just stays unnamed.
+        """
+        platform = event.get("platform")
+        account = str(event.get("account_id") or "")
+        sender = str(event.get("sender_id") or "")
+        if platform not in ("facebook", "instagram") or not account or not sender.isdigit():
+            return ""
+        key = (org, platform, account, sender)
+        now = self.clock()
+        hit = self._names.get(key)
+        if hit and hit[1] > now:
+            return hit[0]
+        name = ""
+        try:
+            page = self.account_page(org, platform, account)
+            fields = "name,username" if platform == "instagram" else "name"
+            profile = self.transport(f"{GRAPH_BASE}/{sender}?fields={fields}", token=page["access_token"], timeout=4)
+            if isinstance(profile, dict):
+                name = re.sub(r"\s+", " ", str(profile.get("name") or profile.get("username") or "")).strip()[:120]
+        except Exception:
+            name = ""
+        if len(self._names) > 2000:
+            self._names.clear()
+        # Keep real names a day; retry misses (privacy-restricted profiles, outages) after 15 minutes.
+        self._names[key] = (name, now + (86400 if name else 900))
+        return name
+
     def claim_message(self, org):
         with self.database() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -1480,7 +1512,13 @@ class SocialWorkspace:
             if not row:
                 return {"event": None}
             db.execute("UPDATE social_inbox SET lease=? WHERE id=?", (self.clock() + 180, row["id"]))
-            return {"event": self.decrypt(row["encrypted"])}
+            event = self.decrypt(row["encrypted"])
+        # Comments already carry the commenter's name; DMs only carry an ID, so look the name up here.
+        if not event.get("kind") and not event.get("sender_name"):
+            name = self._profile_name(org, event)
+            if name:
+                event = {**event, "sender_name": name}
+        return {"event": event}
 
     def deliver_once(self, org, body, send):
         identity = clean_str(body.get("delivery_id"), "delivery ID", 200)

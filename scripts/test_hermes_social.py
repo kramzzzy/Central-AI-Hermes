@@ -73,6 +73,27 @@ class SocialTests(unittest.TestCase):
         self.social.handle({"action":"inbox_done","org":ORG,"id":first["id"]})
         self.assertNotEqual(first["id"],self.social.claim_message(ORG)["event"]["id"])
 
+    def test_dm_sender_name_lookup_is_cached(self):
+        calls=[]
+        def provider(url, **kw):
+            calls.append((url, kw))
+            return {"name": "  Jamie   Rivera "} if "?fields=name" in url else {"id": "x"}
+        self.social.transport=provider
+        self.ingest()
+        self.assertEqual("Jamie Rivera",self.social.claim_message(ORG)["event"]["sender_name"])
+        self.now+=181
+        self.assertEqual("Jamie Rivera",self.social.claim_message(ORG)["event"]["sender_name"])
+        lookups=[c for c in calls if "/999?fields=name" in c[0]]
+        self.assertEqual(1,len(lookups))
+        self.assertEqual("token-A",lookups[0][1]["token"])
+
+    def test_dm_sender_name_failure_does_not_block_message(self):
+        self.ingest()
+        self.social.transport=lambda *a, **kw: (_ for _ in ()).throw(SocialError("denied",403,rejected=True))
+        event=self.social.claim_message(ORG)["event"]
+        self.assertEqual("Hello",event["text"])
+        self.assertNotIn("sender_name",event)
+
     def test_reply_receipt_and_cross_tenant(self):
         self.ingest()
         self.assertEqual(self.send(),self.send())
