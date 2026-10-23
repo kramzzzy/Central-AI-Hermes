@@ -8,6 +8,8 @@ Supports:
 - YouTube & Google Business (Channel & Brand Account Linker)
 """
 import contextlib
+import base64
+import hmac
 import hashlib
 import json
 import os
@@ -33,12 +35,10 @@ FACEBOOK_SCOPES = [
     "pages_read_engagement",
     "pages_manage_posts",
     "pages_manage_metadata",
-    "pages_read_user_content",
-    "business_management",
+    "pages_messaging",
     "instagram_basic",
     "instagram_content_publish",
-    "instagram_manage_comments",
-    "instagram_manage_insights",
+    "instagram_manage_messages",
 ]
 
 TIKTOK_SCOPES = [
@@ -204,6 +204,15 @@ class SocialWorkspace:
                     created REAL NOT NULL,
                     encrypted TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS social_inbox (
+                    id TEXT PRIMARY KEY, org TEXT NOT NULL, thread TEXT NOT NULL,
+                    received REAL NOT NULL, lease REAL NOT NULL DEFAULT 0,
+                    done INTEGER NOT NULL DEFAULT 0, encrypted TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS social_deliveries (
+                    org TEXT NOT NULL, id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                    encrypted TEXT, PRIMARY KEY(org,id)
+                );
                 """
             )
         try:
@@ -339,12 +348,7 @@ class SocialWorkspace:
             ).fetchone()
         if row:
             return self.decrypt(row["encrypted"])
-        with self.database() as db:
-            any_row = db.execute(
-                "SELECT encrypted FROM connections WHERE platform=? LIMIT 1",
-                (platform,),
-            ).fetchone()
-        return self.decrypt(any_row["encrypted"]) if any_row else None
+        return None
 
     def save_connection(self, org, platform, value):
         with self.database() as db:
@@ -393,6 +397,7 @@ class SocialWorkspace:
                         "followers_count": p.get("followers_count") or p.get("fan_count"),
                         "picture_url": p.get("picture_url"),
                         "has_instagram": bool(ig_obj),
+                        "messaging_state": p.get("messaging_state", "reconnect_required"),
                         "instagram_username": (ig_obj or {}).get("username") if isinstance(ig_obj, dict) else None,
                         "instagram_name": (ig_obj or {}).get("name") if isinstance(ig_obj, dict) else None,
                     }
@@ -473,49 +478,67 @@ class SocialWorkspace:
     def _discover_facebook_pages(self, token, preferred_page_id=None):
         """Inspect a Facebook User or Page token and return (pages_list, active_page, ig_account)."""
         pages = []
-        try:
-            acct_resp = self.transport(
-                f"{GRAPH_BASE}/me/accounts?"
-                + urllib.parse.urlencode(
-                    {
-                        "fields": "id,name,access_token,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
-                        "limit": "50",
-                        "access_token": token,
-                    }
-                )
-            )
-            for item in acct_resp.get("data") or []:
-                if isinstance(item, dict) and item.get("id"):
-                    pic = (
-                        ((item.get("picture") or {}).get("data") or {}).get("url")
-                        if isinstance(item.get("picture"), dict)
-                        else None
-                    )
-                    pages.append(
+        field_sets = [
+            "id,name,access_token,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
+            "id,name,access_token,category,fan_count,picture{url}",
+            "id,name,access_token,category",
+        ]
+        for fields in field_sets:
+            try:
+                acct_resp = self.transport(
+                    f"{GRAPH_BASE}/me/accounts?"
+                    + urllib.parse.urlencode(
                         {
-                            "id": str(item["id"]),
-                            "name": str(item.get("name") or "Facebook Page"),
-                            "access_token": str(item.get("access_token") or token),
-                            "category": item.get("category") or "Business Page",
-                            "followers_count": item.get("followers_count") or item.get("fan_count"),
-                            "picture_url": pic,
-                            "instagram_business_account": item.get("instagram_business_account"),
+                            "fields": fields,
+                            "limit": "50",
+                            "access_token": token,
                         }
                     )
-        except Exception:
-            pass
+                )
+                for item in acct_resp.get("data") or []:
+                    if isinstance(item, dict) and item.get("id"):
+                        pic = (
+                            ((item.get("picture") or {}).get("data") or {}).get("url")
+                            if isinstance(item.get("picture"), dict)
+                            else None
+                        )
+                        pages.append(
+                            {
+                                "id": str(item["id"]),
+                                "name": str(item.get("name") or "Facebook Page"),
+                                "access_token": str(item.get("access_token") or token),
+                                "category": item.get("category") or "Business Page",
+                                "followers_count": item.get("followers_count") or item.get("fan_count"),
+                                "picture_url": pic,
+                                "instagram_business_account": item.get("instagram_business_account"),
+                            }
+                        )
+                break
+            except Exception:
+                continue
 
         if not pages:
-            me = self.transport(
-                f"{GRAPH_BASE}/me?"
-                + urllib.parse.urlencode(
-                    {
-                        "fields": "id,name,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
-                        "access_token": token,
-                    }
-                )
-            )
-            if not isinstance(me, dict) or not me.get("id"):
+            me = None
+            for me_fields in [
+                "id,name,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
+                "id,name,picture{url}",
+                "id,name",
+            ]:
+                try:
+                    me = self.transport(
+                        f"{GRAPH_BASE}/me?"
+                        + urllib.parse.urlencode(
+                            {
+                                "fields": me_fields,
+                                "access_token": token,
+                            }
+                        )
+                    )
+                    if isinstance(me, dict) and me.get("id"):
+                        break
+                except Exception:
+                    continue
+            if not isinstance(me, dict) or not me.get("id") or not me.get("category"):
                 raise SocialError("Facebook did not return a valid Page or account for this token.", 401)
             pic = (
                 ((me.get("picture") or {}).get("data") or {}).get("url")
@@ -541,14 +564,19 @@ class SocialWorkspace:
                     selected = p
                     break
         ig = selected.get("instagram_business_account")
-        if not ig:
-            for p in pages:
-                if isinstance(p.get("instagram_business_account"), dict):
-                    ig = p["instagram_business_account"]
-                    break
         return pages, selected, ig
 
     def _save_facebook_and_instagram(self, org, pages, selected, ig, user_token=None, auth_mode="oauth"):
+        for page in pages:
+            for platform, account in self._page_accounts(page):
+                if any(owner != org for owner, _ in self._account_owners(platform, account)):
+                    raise SocialError("This account is already connected to another workspace.", 409)
+            try:
+                result = self.transport(f"{GRAPH_BASE}/{page['id']}/subscribed_apps", method="POST",
+                    data={"subscribed_fields": "messages", "access_token": page["access_token"]}, form=True)
+                page["messaging_state"] = "subscribed" if result.get("success") else "reconnect_required"
+            except SocialError:
+                page["messaging_state"] = "reconnect_required"
         now = self.clock()
         fb_conn = {
             "platform": "facebook",
@@ -570,6 +598,14 @@ class SocialWorkspace:
         }
         self.save_connection(org, "facebook", fb_conn)
 
+        ig_page = selected
+        if not isinstance(ig, dict) or not ig.get("id"):
+            ig_page = next((p for p in pages if isinstance(p.get("instagram_business_account"), dict) and p["instagram_business_account"].get("id")), selected)
+            ig = ig_page.get("instagram_business_account")
+        if not isinstance(ig, dict) or not ig.get("id"):
+            with self.database() as db:
+                db.execute("DELETE FROM connections WHERE org=? AND platform='instagram'", (org,))
+
         if isinstance(ig, dict) and ig.get("id"):
             ig_username = ig.get("username") or ig.get("name") or ig["id"]
             ig_conn = {
@@ -581,9 +617,9 @@ class SocialWorkspace:
                 "category": "Instagram Business",
                 "followers_count": ig.get("followers_count"),
                 "picture_url": ig.get("profile_picture_url"),
-                "access_token": selected.get("access_token") or user_token or "",
-                "linked_page_id": selected["id"],
-                "linked_page_name": selected["name"],
+                "access_token": ig_page.get("access_token") or "",
+                "linked_page_id": ig_page["id"],
+                "linked_page_name": ig_page["name"],
                 "capabilities": DEFAULT_CAPABILITIES["instagram"],
                 "connected_at": now,
                 "checked_at": now,
@@ -688,11 +724,8 @@ class SocialWorkspace:
             normalized_pages = [real_pages[pid] for pid in wanted]
             chosen = real_pages.get(selected_page_id) if selected_page_id in wanted else normalized_pages[0]
             ig_chosen = chosen.get("instagram_business_account") if link_instagram else None
-            if link_instagram and not isinstance(ig_chosen, dict):
-                for p in normalized_pages:
-                    if isinstance(p.get("instagram_business_account"), dict):
-                        ig_chosen = p["instagram_business_account"]
-                        break
+            if not link_instagram:
+                normalized_pages = [{**p, "instagram_business_account": None} for p in normalized_pages]
             self._save_facebook_and_instagram(
                 org,
                 normalized_pages,
@@ -701,7 +734,7 @@ class SocialWorkspace:
                 user_token=existing.get("user_access_token") or chosen.get("access_token"),
                 auth_mode=existing.get("auth_mode") or "oauth",
             )
-            if not link_instagram or not isinstance(ig_chosen, dict):
+            if not link_instagram:
                 with self.database() as db:
                     db.execute("DELETE FROM connections WHERE org=? AND platform='instagram'", (org,))
             return self.status(org)
@@ -970,47 +1003,19 @@ class SocialWorkspace:
                 break
         if not chosen:
             raise SocialError("Selected Page was not found in your connected Facebook account.", 404)
-        conn["selected_page_id"] = chosen["id"]
-        conn["account_id"] = chosen["id"]
-        conn["account_name"] = chosen["name"]
-        conn["handle"] = chosen.get("handle") or f"fb.com/{chosen['id']}"
-        conn["category"] = chosen.get("category") or "Business Page"
-        conn["followers_count"] = chosen.get("followers_count")
-        conn["picture_url"] = chosen.get("picture_url")
-        conn["access_token"] = chosen.get("access_token") or conn.get("access_token")
-        conn["checked_at"] = self.clock()
-        self.save_connection(org, "facebook", conn)
-
-        ig = chosen.get("instagram_business_account")
-        if isinstance(ig, dict) and ig.get("id"):
-            ig_username = ig.get("username") or ig.get("name") or ig["id"]
-            self.save_connection(
-                org,
-                "instagram",
-                {
-                    "platform": "instagram",
-                    "auth_mode": conn.get("auth_mode") or "oauth",
-                    "account_id": str(ig["id"]),
-                    "account_name": str(ig.get("name") or f"@{ig_username}"),
-                    "handle": f"@{ig_username}".replace("@@", "@"),
-                    "category": "Instagram Business",
-                    "followers_count": ig.get("followers_count"),
-                    "picture_url": ig.get("profile_picture_url"),
-                    "access_token": chosen.get("access_token") or "",
-                    "linked_page_id": chosen["id"],
-                    "linked_page_name": chosen["name"],
-                    "capabilities": DEFAULT_CAPABILITIES["instagram"],
-                    "connected_at": self.clock(),
-                    "checked_at": self.clock(),
-                    "revoked": False,
-                },
-            )
+        self._save_facebook_and_instagram(org, pages, chosen, chosen.get("instagram_business_account"),
+            user_token=conn.get("user_access_token"), auth_mode=conn.get("auth_mode") or "oauth")
         return self.status(org)
 
     def disconnect(self, org, body):
         platform = clean_str(body.get("platform"), "platform", 40).lower()
         if platform not in PLATFORMS:
             raise SocialError("Unsupported social platform.")
+        if platform == "instagram":
+            fb = self.get_connection(org, "facebook")
+            if fb:
+                fb["pages"] = [{**p, "instagram_business_account": None} for p in fb.get("pages", [])]
+                self.save_connection(org, "facebook", fb)
         with self.database() as db:
             if platform == "facebook":
                 db.execute(
@@ -1062,7 +1067,7 @@ class SocialWorkspace:
 
     def execute_tool(self, org, body):
         operation = clean_str(body.get("operation") or "status", "operation", 80).lower()
-        args = body.get("args") if isinstance(body.get("args"), dict) else {}
+        args = body.get("args") if isinstance(body.get("args"), dict) else body
 
         if operation in ("status", "list_pages", "connections"):
             return self.status(org)
@@ -1137,21 +1142,23 @@ class SocialWorkspace:
                 1000,
                 empty=True,
             )
-            conn = self.get_connection(org, platform) or self.get_connection(org, "facebook")
-            if not conn:
-                raise SocialError(f"{platform.capitalize()} is not linked yet. Connect it in Settings -> Connection.", 409)
-            token = conn.get("access_token") or ""
-            page_id = args.get("page_id") or conn.get("selected_page_id") or conn.get("account_id")
+            if platform not in ("facebook", "instagram"):
+                raise SocialError("Only Facebook and Instagram publishing is supported.")
+            conn = self.get_connection(org, platform) or {}
+            account = str(args.get("account_id") or conn.get("account_id") or "")
+            page = self.account_page(org, platform, account)
+            token = page["access_token"]
+            page_id = page["id"]
 
             if token and token != "box1_managed_session":
                 if platform == "instagram":
-                    ig_conn = self.get_connection(org, "instagram")
+                    ig_conn = page.get("instagram_business_account")
                     if not ig_conn:
                         raise SocialError("Instagram Business is not linked.", 409)
                     if not image_url:
                         raise SocialError("Instagram publishing requires an image_url.", 400)
-                    ig_id = ig_conn["account_id"]
-                    ig_token = ig_conn["access_token"]
+                    ig_id = ig_conn["id"]
+                    ig_token = token
                     container = self.transport(
                         f"{GRAPH_BASE}/{urllib.parse.quote(str(ig_id))}/media",
                         method="POST",
@@ -1163,12 +1170,16 @@ class SocialWorkspace:
                         form=True,
                     )
                     creation_id = container.get("id")
+                    if not creation_id:
+                        raise SocialError("Meta did not create the media container.", 502)
                     published = self.transport(
                         f"{GRAPH_BASE}/{urllib.parse.quote(str(ig_id))}/media_publish",
                         method="POST",
                         data={"creation_id": creation_id, "access_token": ig_token},
                         form=True,
                     )
+                    if not published.get("id"):
+                        raise SocialError("Meta did not confirm publication.", 502)
                     return {
                         "ok": True,
                         "platform": "instagram",
@@ -1193,6 +1204,8 @@ class SocialWorkspace:
                         data=payload,
                         form=True,
                     )
+                if not (res.get("id") or res.get("post_id")):
+                    raise SocialError("Meta did not confirm publication.", 502)
                 return {
                     "ok": True,
                     "platform": "facebook",
@@ -1201,32 +1214,7 @@ class SocialWorkspace:
                     "post_id": res.get("id") or res.get("post_id"),
                 }
 
-            post_id = f"{page_id}_{int(self.clock())}"
-            entry = {
-                "id": post_id,
-                "platform": platform,
-                "page_id": page_id,
-                "page_name": conn.get("account_name"),
-                "message": message,
-                "link": link or None,
-                "image_url": image_url or None,
-                "created_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.clock())),
-                "likes": 0,
-                "comments": 0,
-                "shares": 0,
-            }
-            with self.database() as db:
-                db.execute(
-                    "INSERT OR REPLACE INTO posts_log VALUES(?,?,?,?,?)",
-                    (post_id, org, platform, self.clock(), self.encrypt(entry)),
-                )
-            return {
-                "ok": True,
-                "platform": platform,
-                "page_id": page_id,
-                "page_name": conn.get("account_name"),
-                "post_id": post_id,
-            }
+            raise SocialError("Reconnect this account before publishing.", 409)
 
         if operation in ("reply_comment", "comment"):
             conn = self.get_connection(org, "facebook")
@@ -1247,17 +1235,37 @@ class SocialWorkspace:
                     form=True,
                 )
                 return {"ok": True, "comment_id": res.get("id"), "target_id": target_id}
-            return {"ok": True, "comment_id": f"c_{int(self.clock())}", "target_id": target_id}
+            raise SocialError("Reconnect Facebook before replying.", 409)
 
         raise SocialError(f"Unsupported social operation: {operation}")
 
     def handle(self, body):
         if not isinstance(body, dict):
             raise SocialError("Invalid social request body.")
+        if body.get("action") == "webhook_verify":
+            expected = os.environ.get("META_WEBHOOK_VERIFY_TOKEN", "")
+            if not expected or not hmac.compare_digest(expected, str(body.get("token") or "")):
+                raise SocialError("Invalid webhook verification token.", 403)
+            return {"ok": True}
+        if body.get("action") == "webhook_ingest":
+            with self.lock:
+                return self.ingest_webhook(body)
         org = validate_org(body.get("org"))
         user = str(body.get("user") or "owner")
         action = str(body.get("action") or "status").strip().lower()
         with self.lock:
+            if action == "inbox_claim":
+                return self.claim_message(org)
+            if action == "inbox_done":
+                with self.database() as db:
+                    db.execute("UPDATE social_inbox SET done=1 WHERE id=? AND org=?", (body.get("id"), org))
+                return {"ok": True}
+            if action == "send_message":
+                return self.send_message(org, body)
+            if action == "accounts":
+                return {"accounts": self.accounts(org)}
+            if action == "publish_approved":
+                return self.deliver_once(org, body, lambda: self.execute_tool(org, {**body, "operation": "publish_post"}))
             if action == "status":
                 return self.status(org)
             if action == "discover_pages":
@@ -1282,3 +1290,132 @@ class SocialWorkspace:
                 op = body.get("operation") or (action if action != "tool" else "status")
                 return self.execute_tool(org, {**body, "operation": op})
             raise SocialError(f"Unsupported social action: {action}")
+
+    @staticmethod
+    def _page_accounts(page):
+        result = [("facebook", str(page["id"]))]
+        ig = page.get("instagram_business_account")
+        if isinstance(ig, dict) and ig.get("id"):
+            result.append(("instagram", str(ig["id"])))
+        return result
+
+    def accounts(self, org):
+        conn = self.get_connection(org, "facebook") or {}
+        if conn.get("revoked"):
+            return []
+        return [{"platform": platform, "account_id": account, "page_id": str(p["id"]),
+                 "name": p.get("name"), "messaging_state": p.get("messaging_state", "reconnect_required")}
+                for p in conn.get("pages", []) for platform, account in self._page_accounts(p)]
+
+    def _account_owners(self, platform, account):
+        with self.database() as db:
+            rows = db.execute("SELECT org,encrypted FROM connections WHERE platform='facebook'").fetchall()
+        matches = []
+        for row in rows:
+            conn = self.decrypt(row["encrypted"])
+            if conn.get("revoked"):
+                continue
+            for page in conn.get("pages", []):
+                if (platform, str(account)) in self._page_accounts(page):
+                    matches.append((row["org"], page))
+        return matches
+
+    def account_page(self, org, platform, account):
+        matches = self._account_owners(platform, account)
+        if len(matches) != 1 or matches[0][0] != org:
+            raise SocialError("Account is not uniquely connected to this workspace.", 403)
+        page = matches[0][1]
+        if page.get("access_token") in (None, "", "box1_managed_session"):
+            raise SocialError("Reconnect this account.", 409)
+        return page
+
+    def ingest_webhook(self, body):
+        raw = base64.b64decode(body.get("raw") or "", validate=True)
+        cfg = self.get_config("facebook") or {}
+        secret = cfg.get("client_secret") or ""
+        signature = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+        if not secret or not hmac.compare_digest(signature, str(body.get("signature") or "")):
+            raise SocialError("Invalid Meta webhook signature.", 403)
+        if len(raw) > 90000:
+            raise SocialError("Webhook too large.", 413)
+        payload = json.loads(raw)
+        platform = {"page": "facebook", "instagram": "instagram"}.get(payload.get("object"))
+        if not platform:
+            return {"ok": True, "accepted": 0}
+        accepted = 0
+        for entry in payload.get("entry", []):
+            account = str(entry.get("id") or "")
+            owners = self._account_owners(platform, account)
+            if len(owners) != 1:
+                continue
+            org, _ = owners[0]
+            for event in entry.get("messaging", []):
+                message = event.get("message") or {}
+                sender = str((event.get("sender") or {}).get("id") or "")
+                recipient = str((event.get("recipient") or {}).get("id") or "")
+                mid = message.get("mid")
+                if not mid or not sender or recipient != account or sender == account or message.get("is_echo"):
+                    continue
+                text = message.get("text") or "[Customer sent an attachment; review it in the platform inbox.]"
+                if not isinstance(text, str):
+                    continue
+                created = float(event.get("timestamp") or 0) / 1000
+                if created <= 0 or created > self.clock() + 300:
+                    continue
+                identity = hashlib.sha256(f"{platform}:{account}:{mid}".encode()).hexdigest()
+                item = {"id": identity, "platform": platform, "account_id": account,
+                        "sender_id": sender, "text": text[:4000], "timestamp": created}
+                thread = f"{platform}:{account}:{sender}"
+                with self.database() as db:
+                    accepted += db.execute("INSERT OR IGNORE INTO social_inbox(id,org,thread,received,encrypted) VALUES(?,?,?,?,?)",
+                        (identity, org, thread, created, self.encrypt(item))).rowcount
+        return {"ok": True, "accepted": accepted}
+
+    def claim_message(self, org):
+        with self.database() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""SELECT * FROM social_inbox s WHERE org=? AND done=0 AND lease<?
+                AND NOT EXISTS(SELECT 1 FROM social_inbox older WHERE older.org=s.org AND older.thread=s.thread
+                    AND older.done=0 AND (older.received<s.received OR (older.received=s.received AND older.rowid<s.rowid)))
+                ORDER BY received,rowid LIMIT 1""", (org, self.clock())).fetchone()
+            if not row:
+                return {"event": None}
+            db.execute("UPDATE social_inbox SET lease=? WHERE id=?", (self.clock() + 180, row["id"]))
+            return {"event": self.decrypt(row["encrypted"])}
+
+    def deliver_once(self, org, body, send):
+        identity = clean_str(body.get("delivery_id"), "delivery ID", 200)
+        fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        with self.database() as db:
+            previous = db.execute("SELECT * FROM social_deliveries WHERE org=? AND id=?", (org, identity)).fetchone()
+            if previous:
+                if previous["fingerprint"] != fingerprint:
+                    raise SocialError("Delivery ID already used for different content.", 409)
+                if previous["encrypted"]:
+                    return self.decrypt(previous["encrypted"])
+                raise SocialError("Delivery outcome unknown. Check the platform before sending again.", 409)
+            # Persist before network I/O: a timeout must never cause a duplicate post/reply.
+            db.execute("INSERT INTO social_deliveries VALUES(?,?,?,NULL)", (org, identity, fingerprint))
+        result = send()
+        with self.database() as db:
+            db.execute("UPDATE social_deliveries SET encrypted=? WHERE org=? AND id=?", (self.encrypt(result), org, identity))
+        return result
+
+    def send_message(self, org, body):
+        platform = clean_str(body.get("platform"), "platform", 20)
+        account = clean_str(body.get("account_id"), "account", 100)
+        recipient = clean_str(body.get("recipient_id"), "recipient", 100)
+        page = self.account_page(org, platform, account)
+        with self.database() as db:
+            recent = db.execute("SELECT MAX(received) AS latest FROM social_inbox WHERE org=? AND thread=?",
+                (org, f"{platform}:{account}:{recipient}")).fetchone()["latest"]
+        if not recent or self.clock() - recent >= 86400:
+            raise SocialError("The customer's 24-hour messaging window has closed.", 409)
+        message = clean_str(body.get("message"), "message", 1000 if platform == "instagram" else 2000)
+        def send():
+            result = self.transport(f"{GRAPH_BASE}/{page['id']}/messages", method="POST", token=page["access_token"],
+                data={"recipient": {"id": recipient}, "message": {"text": message}, "messaging_type": "RESPONSE"})
+            if not result.get("message_id"):
+                raise SocialError("Meta did not confirm message delivery.", 502)
+            return {"ok": True, "message_id": result["message_id"]}
+        return self.deliver_once(org, body, send)
