@@ -109,6 +109,63 @@ class SocialTests(unittest.TestCase):
         with self.assertRaises(SocialError): self.send()
         self.assertEqual(1,len(attempts))
 
+    def test_explicit_rejection_can_retry_same_delivery(self):
+        self.ingest()
+        original = self.social.transport
+        self.social.transport = lambda *a, **kw: (_ for _ in ()).throw(SocialError("Permission denied", 403, rejected=True))
+        with self.assertRaises(SocialError): self.send()
+        self.social.transport = original
+        self.assertEqual("sent-1", self.send()["message_id"])
+        self.assertEqual("sent-1", self.send()["message_id"])
+
+    def test_handled_unknown_delivery_releases_later_messages(self):
+        self.ingest()
+        first = self.social.claim_message(ORG)["event"]
+        self.social.transport = lambda *a, **kw: (_ for _ in ()).throw(SocialError("Outcome unknown", 502))
+        with self.assertRaises(SocialError): self.send()
+        self.now += 1
+        self.ingest(mid="later")
+        self.social.handle({"org":OTHER,"action":"inbox_done","id":first["id"]})
+        self.assertIsNone(self.social.claim_message(ORG)["event"])
+        self.social.handle({"org":ORG,"action":"inbox_done","id":first["id"]})
+        self.assertNotEqual(first["id"], self.social.claim_message(ORG)["event"]["id"])
+        with self.assertRaisesRegex(SocialError, "outcome unknown"): self.send()
+
+    def test_provider_rejection_classification(self):
+        import io
+        import urllib.error
+        from hermes_social import provider_request
+        for status, rejected in [(400,True),(403,True),(429,True),(500,False)]:
+            error=urllib.error.HTTPError("https://graph.facebook.com/test",status,"test",{},io.BytesIO(b'{"error":{"message":"Rejected"}}'))
+            with patch('hermes_social.urllib.request.build_opener') as opener:
+                opener.return_value.open.side_effect=error
+                with self.assertRaises(SocialError) as caught: provider_request("https://graph.facebook.com/test",method="POST",data={})
+                self.assertEqual(rejected,caught.exception.rejected)
+
+    def test_reels_resume_processing_without_duplicate_upload(self):
+        for platform, account in [("facebook","101"),("instagram","303")]:
+            calls=[]
+            ready=False
+            def provider(url, **kw):
+                calls.append((url,kw))
+                if url.endswith('/video_reels'):
+                    return {"video_id":"123"} if kw.get('data',{}).get('upload_phase')=='start' else {"success":True}
+                if 'rupload.facebook.com' in url: return {"success":True}
+                if url.endswith('/media'): return {"id":"123"}
+                if 'fields=status_code' in url: return {"status_code":"FINISHED" if ready else "IN_PROGRESS"}
+                if 'fields=status' in url: return {"status":{"processing_phase":{"status":"complete" if ready else "in_progress"},"publishing_phase":{"status":"complete" if ready else "not_started"}}}
+                return {"id":"published-123"}
+            self.social.transport=provider
+            body={"org":ORG,"action":"publish_approved","platform":platform,"account_id":account,"message":"Reviewed Reel","video_url":"https://example.com/reel.mp4","delivery_id":"reel-"+platform}
+            self.assertTrue(self.social.handle(body)['processing'])
+            self.assertTrue(self.social.handle(body)['processing'])
+            ready=True
+            result=self.social.handle(body)
+            if result.get('processing'): result=self.social.handle(body)
+            self.assertTrue(result['post_id'])
+            before=len(calls);self.assertEqual(result,self.social.handle(body));self.assertEqual(before,len(calls))
+            self.assertEqual(1,len([c for c in calls if c[0].endswith('/media') or c[1].get('data',{}).get('upload_phase')=='start']))
+
     def test_instagram_page_token_pair(self):
         self.ingest(platform="instagram",account="303")
         self.send(platform="instagram",account_id="303")

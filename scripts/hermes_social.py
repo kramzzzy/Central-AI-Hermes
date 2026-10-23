@@ -68,9 +68,10 @@ DEFAULT_CAPABILITIES = {
 
 
 class SocialError(Exception):
-    def __init__(self, message, status=400):
+    def __init__(self, message, status=400, rejected=False):
         super().__init__(message)
         self.status = status
+        self.rejected = rejected
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -117,14 +118,14 @@ def provider_request(url, method="GET", data=None, token=None, form=False, heade
         except Exception:
             pass
         if exc.code == 401:
-            raise SocialError(err_msg or "Social account authorization expired. Reconnect in Settings -> Connection.", 401) from None
+            raise SocialError(err_msg or "Social account authorization expired. Reconnect in Settings -> Connection.", 401, rejected=True) from None
         if exc.code == 403:
-            raise SocialError(err_msg or "Platform denied this permission. Check Page access and scopes.", 403) from None
+            raise SocialError(err_msg or "Platform denied this permission. Check Page access and scopes.", 403, rejected=True) from None
         if exc.code == 404:
-            raise SocialError(err_msg or "Requested social page or post was not found.", 404) from None
+            raise SocialError(err_msg or "Requested social page or post was not found.", 404, rejected=True) from None
         if exc.code == 429:
-            raise SocialError("Social platform rate limit reached. Retry shortly.", 429) from None
-        raise SocialError(err_msg or f"Social platform request failed (HTTP {exc.code}).", 502) from None
+            raise SocialError("Social platform rate limit reached. Retry shortly.", 429, rejected=True) from None
+        raise SocialError(err_msg or f"Social platform request failed (HTTP {exc.code}).", 502, rejected=exc.code == 400) from None
     except (OSError, ValueError) as exc:
         raise SocialError(f"Could not reach social platform API: {exc}", 502) from None
 
@@ -135,7 +136,7 @@ def validate_org(org):
     try:
         return str(UUID(str(org)))
     except (ValueError, TypeError, AttributeError):
-        raise SocialError("Invalid workspace identifier.", 403) from None
+        raise SocialError("Invalid workspace identifier.", 403, rejected=True) from None
 
 
 def clean_str(value, label, maximum=1000, empty=False):
@@ -1278,6 +1279,8 @@ class SocialWorkspace:
                 return self.send_comment(org, body)
             if action == "accounts":
                 return {"accounts": self.accounts(org)}
+            if action == "publish_approved" and body.get("video_url"):
+                return self.publish_reel(org, body)
             if action == "publish_approved":
                 return self.deliver_once(org, body, lambda: self.execute_tool(org, {**body, "operation": "publish_post"}))
             if action == "status":
@@ -1492,9 +1495,96 @@ class SocialWorkspace:
                 raise SocialError("Delivery outcome unknown. Check the platform before sending again.", 409)
             # Persist before network I/O: a timeout must never cause a duplicate post/reply.
             db.execute("INSERT INTO social_deliveries VALUES(?,?,?,NULL)", (org, identity, fingerprint))
-        result = send()
+        try:
+            result = send()
+        except SocialError as exc:
+            if exc.rejected:
+                with self.database() as db:
+                    db.execute("DELETE FROM social_deliveries WHERE org=? AND id=? AND encrypted IS NULL", (org, identity))
+            raise
         with self.database() as db:
             db.execute("UPDATE social_deliveries SET encrypted=? WHERE org=? AND id=?", (self.encrypt(result), org, identity))
+        return result
+
+    def publish_reel(self, org, body):
+        identity = clean_str(body.get("delivery_id"), "delivery ID", 200)
+        fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        page = self.account_page(org, body.get("platform"), body.get("account_id"))
+        token = page["access_token"]
+        url = clean_str(body.get("video_url"), "video URL", 1000)
+        if not url.startswith("https://"):
+            raise SocialError("A public HTTPS video URL is required.")
+        with self.database() as db:
+            previous = db.execute("SELECT * FROM social_deliveries WHERE org=? AND id=?", (org, identity)).fetchone()
+            if previous:
+                if previous["fingerprint"] != fingerprint:
+                    raise SocialError("Delivery ID already used for different content.", 409)
+                if not previous["encrypted"]:
+                    raise SocialError("Reel outcome unknown. Check Meta before retrying.", 409)
+                state = self.decrypt(previous["encrypted"])
+                if not state.get("processing"):
+                    return state
+            else:
+                db.execute("INSERT INTO social_deliveries VALUES(?,?,?,NULL)", (org, identity, fingerprint))
+                state = {}
+        def save(value):
+            with self.database() as db:
+                db.execute("UPDATE social_deliveries SET encrypted=? WHERE org=? AND id=?", (self.encrypt(value) if value else None, org, identity))
+        platform = body.get("platform")
+        if not state:
+            if platform == "instagram":
+                account = page["instagram_business_account"]["id"]
+                created = self.transport(f"{GRAPH_BASE}/{account}/media", method="POST", token=token,
+                    data={"media_type":"REELS", "video_url":url, "caption":body["message"]}, form=True)
+                video = created.get("id")
+            else:
+                created = self.transport(f"{GRAPH_BASE}/{page['id']}/video_reels", method="POST", token=token,
+                    data={"upload_phase":"start"}, form=True)
+                video = created.get("video_id")
+                if not video or not str(video).isdigit():
+                    raise SocialError("Meta did not create a Reel upload.", 502)
+                uploaded = self.transport(f"https://rupload.facebook.com/video-upload/{GRAPH_API_VERSION}/{video}",
+                    method="POST", token=token, headers_extra={"file_url":url,"Authorization":"OAuth " + token})
+                if not uploaded.get("success"):
+                    raise SocialError("Meta did not confirm the Reel upload.", 502)
+            if not video:
+                raise SocialError("Meta did not create a Reel container.", 502)
+            state = {"processing":True,"video_id":video}
+            save(state)
+        video = state["video_id"]
+        if platform == "instagram":
+            status = self.transport(f"{GRAPH_BASE}/{video}?fields=status_code", token=token).get("status_code")
+            if status in ("ERROR","EXPIRED"):
+                raise SocialError("Meta rejected the Reel. Review its format and duration.", 400)
+            if status != "FINISHED":
+                return state
+            save(None) # A timeout during final publication must not cause a duplicate.
+            result = self.transport(f"{GRAPH_BASE}/{page['instagram_business_account']['id']}/media_publish",
+                method="POST", token=token, data={"creation_id":video}, form=True)
+            if not result.get("id"):
+                raise SocialError("Meta did not confirm Reel publication.", 502)
+            result = {"ok":True,"post_id":result["id"]}
+        else:
+            status = self.transport(f"{GRAPH_BASE}/{video}?fields=status", token=token).get("status", {})
+            if state.get("submitted"):
+                if status.get("publishing_phase", {}).get("status") == "complete":
+                    result = {"ok":True,"post_id":video}
+                elif status.get("video_status") == "error":
+                    raise SocialError("Meta could not publish this Reel.", 400)
+                else:
+                    return state
+            else:
+                if status.get("uploading_phase", {}).get("status") in ("in_progress", "not_started"):
+                    return state
+                save(None)
+                result = self.transport(f"{GRAPH_BASE}/{page['id']}/video_reels", method="POST", token=token,
+                    data={"upload_phase":"finish","video_id":video,"video_state":"PUBLISHED","description":body["message"]}, form=True)
+                if not result.get("success"):
+                    raise SocialError("Meta did not accept Reel publication.", 502)
+                state["submitted"] = True
+                save(state)
+                return state
+        save(result)
         return result
 
     def send_message(self, org, body):
