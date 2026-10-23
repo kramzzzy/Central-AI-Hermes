@@ -1384,7 +1384,7 @@ class SocialWorkspace:
                     continue
                 identity = hashlib.sha256(f"{platform}:{account}:comment:{cid}".encode()).hexdigest()
                 item = {"id": identity, "kind": "comment", "platform": platform, "account_id": account,
-                        "sender_id": sender, "comment_id": cid, "post_id": post, "text": text[:4000], "timestamp": self.clock()}
+                        "sender_id": sender, "sender_name": str((value.get("from") or {}).get("name") or (value.get("from") or {}).get("username") or "Visitor")[:200], "comment_id": cid, "post_id": post, "text": text[:4000], "timestamp": self.clock()}
                 with self.database() as db:
                     # Ignore our own replies even when Meta omits the Page/account author.
                     own = db.execute("SELECT encrypted FROM social_deliveries WHERE org=? AND encrypted IS NOT NULL", (org,)).fetchall()
@@ -1426,9 +1426,18 @@ class SocialWorkspace:
 
     def comment_context(self, org, body):
         page, event = self.verified_comment(org, body)
-        fields = "message" if event["platform"] == "facebook" else "caption"
-        post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?fields={fields}", token=page["access_token"])
-        return {"post_text": str(post.get(fields) or "")[:4000], "comment_text": event["text"]}
+        facebook = event["platform"] == "facebook"
+        field = "message" if facebook else "caption"
+        fields = "message,permalink_url,full_picture" if facebook else "caption,permalink,media_url,media_type"
+        try:
+            post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?fields={fields}", token=page["access_token"])
+        except SocialError:
+            post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?fields={field}", token=page["access_token"])
+        return {"post_text": str(post.get(field) or "")[:4000], "comment_text": event["text"],
+                "post_id": event["post_id"], "account_name": page.get("name", ""),
+                "post_url": post.get("permalink_url") or post.get("permalink") or (f"https://www.facebook.com/{event['post_id']}" if facebook else ""),
+                "image_url": post.get("full_picture") or (post.get("media_url") if post.get("media_type") != "VIDEO" else ""),
+                "sender_name": event.get("sender_name", "Visitor")}
 
     def send_comment(self, org, body):
         page, event = self.verified_comment(org, body)

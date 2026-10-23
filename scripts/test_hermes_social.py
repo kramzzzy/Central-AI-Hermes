@@ -147,6 +147,27 @@ class SocialTests(unittest.TestCase):
     def reply_comment(self, **extra):
         return self.social.handle({"org":ORG,"action":"send_comment","platform":"facebook","account_id":"101","comment_id":"101_555","message":"Public answer","like":True,"delivery_id":"comment-reply-1",**extra})
 
+    def test_comment_post_details_and_metadata_fallback(self):
+        self.comment()
+        body={"org":ORG,"action":"comment_context","platform":"facebook","account_id":"101","comment_id":"101_555"}
+        self.social.transport=lambda url,**kw: {"message":"Solar roof", "permalink_url":"https://www.facebook.com/101_888", "full_picture":"https://example.test/solar.jpg"}
+        context=self.social.handle(body)
+        self.assertEqual("101_888",context["post_id"])
+        self.assertEqual("Page A",context["account_name"])
+        self.assertEqual("Solar roof",context["post_text"])
+        self.assertEqual("https://example.test/solar.jpg",context["image_url"])
+        with self.assertRaises(SocialError): self.social.handle({**body,"org":OTHER})
+        def fallback(url,**kw):
+            if "full_picture" in url: raise SocialError("Unavailable field",400)
+            return {"message":"Caption only"}
+        self.social.transport=fallback
+        self.assertEqual("Caption only",self.social.handle(body)["post_text"])
+        self.comment(platform="instagram",account="303",cid="555")
+        self.social.transport=lambda url,**kw: {"caption":"Solar reel","permalink":"https://www.instagram.com/p/example/","media_url":"https://example.test/video.mp4","media_type":"VIDEO"}
+        context=self.social.handle({**body,"platform":"instagram","account_id":"303","comment_id":"555"})
+        self.assertEqual("Solar reel",context["post_text"])
+        self.assertFalse(context["image_url"])
+
     def test_comment_reply_like_and_deduplication(self):
         self.assertEqual(1,self.comment()["accepted"])
         self.assertEqual(0,self.comment()["accepted"])
