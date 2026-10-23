@@ -904,6 +904,31 @@ def google_workspace(arguments=None, **kwargs):
     return json.dumps({"error": "Google Workspace connection is unavailable or not yet authorized in Settings → Google Workspace."})
 
 
+def social_media(arguments=None, **kwargs):
+    params = dict(arguments or kwargs or {})
+    operation = str(params.get("operation") or "status").strip().lower()
+    args = params.get("args") if isinstance(params.get("args"), dict) else {}
+    if not args:
+        extra = {k: v for k, v in params.items() if k not in ("operation", "args") and v is not None}
+        if extra:
+            args = extra
+    try:
+        import sys
+        from pathlib import Path
+        scripts_dir = str(Path(__file__).resolve().parent.parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from hermes_social import SocialWorkspace, SocialError
+        root = Path(os.environ.get("HERMES_PROFILE_ROOT", "/opt/data"))
+        if not root.is_dir():
+            root = Path(__file__).resolve().parent.parent.parent / ".runtime"
+        sw = SocialWorkspace(root)
+        result = sw.handle({"action": "tool", "operation": operation, "args": args, **args})
+        return json.dumps(result)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
 def end_call(arguments=None, **kwargs):
     token = process_token()
     if token:

@@ -10,7 +10,7 @@ from .client import (
     call_contact, call_whatsapp_contact,
     open_widget, close_widget, control_widget,
     navigate_browser, get_live_weather, calculate_solar,
-    google_workspace, end_call
+    google_workspace, social_media, end_call
 )
 
 TOOLS = {
@@ -406,6 +406,48 @@ TOOLS = {
                     "args": {
                         "type": "object",
                         "description": "Operation arguments (e.g. {'query': '...'}, {'message_id': '...'}, {'start': '2026-10-22T00:00:00+10:00', 'end': '2026-10-29T23:59:59+10:00'}, {'to': '...', 'subject': '...', 'body': '...'}, {'summary': '...', 'start': '...', 'end': '...'}, {'spreadsheet_id': '...', 'range': 'Sheet1!A1:D10', 'values': [[...]]}).",
+                    },
+                },
+                "required": ["operation"],
+            },
+        },
+    },
+    "mcp__michael_os__social_media": {
+        "handler": social_media,
+        "check_fn": None,
+        "emoji": "📣",
+        "description": "Manage connected Social Media Pages (Facebook Page, Instagram Business, TikTok, LinkedIn) authorized in Settings -> Connection.",
+        "schema": {
+            "name": "mcp__michael_os__social_media",
+            "description": "Access and control connected Social Media accounts (Facebook Page, Instagram Business, TikTok, LinkedIn) authorized in Settings -> Connection. Operations: 'status' (check connected pages), 'list_posts' (read recent Facebook Page posts and engagement), 'publish_post' (publish a post or photo to Facebook Page or Instagram Business), 'reply_comment' (reply to a post or comment).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["status", "list_posts", "publish_post", "reply_comment"],
+                        "description": "Social media operation to perform.",
+                    },
+                    "platform": {
+                        "type": "string",
+                        "enum": ["facebook", "instagram", "tiktok", "linkedin"],
+                        "description": "Target social platform (default 'facebook').",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Post text content, caption, or comment reply text.",
+                    },
+                    "link": {
+                        "type": "string",
+                        "description": "Optional URL link to attach when publishing a Facebook Page post.",
+                    },
+                    "image_url": {
+                        "type": "string",
+                        "description": "Optional public image URL when publishing a photo post to Facebook or Instagram.",
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "description": "Post ID or Comment ID when replying with operation='reply_comment'.",
                     },
                 },
                 "required": ["operation"],

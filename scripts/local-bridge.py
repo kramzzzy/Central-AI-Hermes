@@ -43,6 +43,8 @@ team_chats=TeamPool(settings,ROOT)
 from hermes_google import GoogleWorkspace, GoogleError
 google_storage_root=Path(os.environ.get('HERMES_PROFILE_ROOT','/opt/data')) if Path(os.environ.get('HERMES_PROFILE_ROOT','/opt/data')).is_dir() else (ROOT/'.runtime')
 google_workspace=GoogleWorkspace(google_storage_root)
+from hermes_social import SocialWorkspace, SocialError
+social_workspace=SocialWorkspace(google_storage_root)
 from hermes_voice import VoiceProvider
 voice=VoiceProvider(settings)
 team_voice=VoiceProvider(dict(settings,HERMES_PROFILE='os-team-voice'),defaults=voice.config)
@@ -728,6 +730,14 @@ class Handler(BaseHTTPRequestHandler):
    except GoogleError as exc:return self.reply(exc.status,{'error':str(exc)})
    except (ValueError,TypeError):return self.reply(400,{'error':'Invalid Google request.'})
    except Exception:return self.reply(503,{'error':'Google connection is unavailable. Check backend configuration.'})
+  if self.path=='/social':
+   try:
+    length=int(self.headers.get('Content-Length','0'))
+    if not 0<length<=150000:return self.reply(413,{'error':'Social request too large'})
+    return self.reply(200,social_workspace.handle(json.loads(self.rfile.read(length))))
+   except SocialError as exc:return self.reply(exc.status,{'error':str(exc)})
+   except (ValueError,TypeError):return self.reply(400,{'error':'Invalid social connection request.'})
+   except Exception:return self.reply(503,{'error':'Social connection service is unavailable. Check backend configuration.'})
   if self.path.startswith('/voice/'):
    try:
     if self.path.startswith('/voice/team/'):
