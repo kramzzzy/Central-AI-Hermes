@@ -4,11 +4,18 @@
 # Services: Hermes Engine (:8642) + Hindsight Memory (:8888) + Laya Router (:8001)
 #           + WhatsApp Connector (:8085->:8080) + Scrapling (:8008)
 # ==============================================================================
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # ----------------------------------------------------------------------------
   # 1. Hermes AI Reasoning Engine (:8642)
   # ----------------------------------------------------------------------------
   hermes:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/hermes/Dockerfile
@@ -18,6 +25,7 @@ services:
     tty: true
     ports:
       - "8642:8642"
+      - "8644:8644"
     environment:
       HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
       HERMES_BRIDGE_BIND: "0.0.0.0"
@@ -28,29 +36,41 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       HERMES_CHAT_PROVIDER: ${HERMES_CHAT_PROVIDER:-openrouter}
-      HERMES_CHAT_MODEL: ${HERMES_CHAT_MODEL:-nousresearch/hermes-4-405b}
-      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-deepseek/deepseek-v4.1-flash}
+      HERMES_CHAT_MODEL: ${HERMES_CHAT_MODEL:-deepseek/deepseek-chat-v3-0324}
+      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-openai/gpt-4o-mini}
       HERMES_VOICE_PROVIDER: ${HERMES_VOICE_PROVIDER:-openrouter}
-      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-meta-llama/llama-3.3-70b-instruct}
+      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-openai/gpt-4o-mini}
       HINDSIGHT_URL: http://hindsight:8888
       LAYA_URL: http://laya:8000
-      HERMES_CALLER_URL: http://whatsapp-connector:8080
-      WHATSAPP_VOICE_URL: http://voice:8081
       SCRAPLING_URL: http://scrapling:8008
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
       FISH_VOICE_NAME: ${FISH_VOICE_NAME:-Jarvis}
+      FISH_OS_CALL_ENGINE: ${FISH_OS_CALL_ENGINE:-stream}
+      FISH_ASR_ENABLED: ${FISH_ASR_ENABLED:-false}
       CENTRAL_AI_CALL_SPEECH: ${CENTRAL_AI_CALL_SPEECH:-fish}
-      HERMES_CALL_SPEECH: ${HERMES_CALL_SPEECH:-fish}
+      HERMES_APPROVAL_MODE: "off"
+      HERMES_PERMISSION_MODE: "off"
+      HERMES_SESSION_PLATFORM: "api_server"
+      CALLER_URL: ${CALLER_URL:-http://caller:8080}
+      WHATSAPP_URL: ${WHATSAPP_URL:-http://caller:8080}
       APP_OS_URL: ${APP_OS_URL:-http://web:3000}
       MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      # Social sign-in (Facebook Login popup). Register the Box 3 callback
+      # https://<app-os-domain>/api/connections/social/callback in the Meta App.
+      FACEBOOK_APP_ID: ${FACEBOOK_APP_ID:-}
+      FACEBOOK_APP_SECRET: ${FACEBOOK_APP_SECRET:-}
+      FACEBOOK_REDIRECT_URI: ${FACEBOOK_REDIRECT_URI:-}
+      TIKTOK_CLIENT_KEY: ${TIKTOK_CLIENT_KEY:-}
+      TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
+      LINKEDIN_CLIENT_ID: ${LINKEDIN_CLIENT_ID:-}
+      LINKEDIN_CLIENT_SECRET: ${LINKEDIN_CLIENT_SECRET:-}
       HOME: /opt/data
     volumes:
       - hermes-profiles:/opt/data
       - hermes-state:/opt/os-adapter/.runtime
+      - phone-state:/data
+      - customer-phone-state:/data/customer
     networks:
       hermes-net:
         aliases:
@@ -63,6 +83,7 @@ services:
   # 2. Superpower 1: Hindsight Long-Term Vector Memory (:8888)
   # ----------------------------------------------------------------------------
   hindsight:
+    logging: *default-logging
     image: ghcr.io/vectorize-io/hindsight:0.10.2-slim
     restart: unless-stopped
     ports:
@@ -70,9 +91,11 @@ services:
     environment:
       HINDSIGHT_API_LLM_PROVIDER: openai
       HINDSIGHT_API_LLM_BASE_URL: https://openrouter.ai/api/v1
-      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_MODEL:-deepseek/deepseek-chat-v3.1}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_MODEL:-openai/gpt-4o-mini}
       HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-${OPENROUTER_API_KEY:-}}
       HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
+      HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION: "false"
+      HINDSIGHT_API_MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS: "86400"
       HINDSIGHT_API_EMBEDDINGS_PROVIDER: openrouter
       HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL: ${HINDSIGHT_EMBEDDINGS_MODEL:-openai/text-embedding-3-small}
       HINDSIGHT_API_OPENROUTER_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-${OPENROUTER_API_KEY:-}}
@@ -88,6 +111,7 @@ services:
   # 3. Superpower 2: Laya Fast Intent Classifier & Decision Router (:8001:8000)
   # ----------------------------------------------------------------------------
   laya:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/laya/Dockerfile
@@ -104,6 +128,7 @@ services:
   # 4. Superpower 3: WhatsApp Connector (Meowcaller VoIP & Chat Telephony) (:8085:8080)
   # ----------------------------------------------------------------------------
   whatsapp-connector:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/whatsapp/Dockerfile.caller
@@ -117,10 +142,12 @@ services:
       VOICE_URL: "http://voice:8081"
       AUDIO_URL: "http://voice:8082"
       TEXT_CHAT_ENABLED: "true"
-      WHATSAPP_CONVERSATION_MODE: "fish"
+      WHATSAPP_CONVERSATION_MODE: "stream"
       ENGINE_ENABLED_FILE: /data/remote-engine-enabled
       WHATSAPP_LINE_ID: "executive"
       WHATSAPP_DEVICE_NAME: "Central AI Executive Line"
+      WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
     volumes:
       - phone-state:/data
     networks:
@@ -138,23 +165,26 @@ services:
   # Dedicated channel for customer inquiries, assigned to customer or custom agents
   # ----------------------------------------------------------------------------
   whatsapp-customer-connector:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/whatsapp/Dockerfile.caller
     image: central-ai-whatsapp-caller:latest
     restart: unless-stopped
     depends_on:
-      - voice
+      - whatsapp-connector
     ports:
       - "8086:8080"
     environment:
       VOICE_URL: "http://voice:8081"
       AUDIO_URL: "http://voice:8082"
       TEXT_CHAT_ENABLED: "true"
-      WHATSAPP_CONVERSATION_MODE: "fish"
+      WHATSAPP_CONVERSATION_MODE: "stream"
       ENGINE_ENABLED_FILE: /data/remote-engine-enabled
       WHATSAPP_LINE_ID: "customer"
       WHATSAPP_DEVICE_NAME: "Central AI Customer Support"
+      WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
     volumes:
       - customer-phone-state:/data
     networks:
@@ -171,6 +201,7 @@ services:
   # 5. Superpower 4: Scrapling Stealth Web Scraper & Cloudflare Bypass (:8008)
   # ----------------------------------------------------------------------------
   scrapling:
+    logging: *default-logging
     image: ghcr.io/d4vinci/scrapling:latest
     restart: unless-stopped
     ports:
@@ -183,10 +214,11 @@ services:
   # 6. Superpower 5: Voice Pipeline (:8081 / :8082) - WhatsApp Call Voice (Jarvis)
   # ----------------------------------------------------------------------------
   voice:
+    logging: *default-logging
     build:
       context: .
       dockerfile: deploy/hermes/Dockerfile
-    image: central-ai-voice:latest
+    image: central-ai-backend:latest
     entrypoint:
       - /opt/hermes/.venv/bin/python
       - /opt/os-adapter/scripts/central_ai_service.py
@@ -204,18 +236,32 @@ services:
       ORBIT_HERMES_PROFILE: leo
       HOME: /data/voice
       TEXT_CHAT_ENABLED: "true"
-      WHATSAPP_CONVERSATION_MODE: "fish"
+      WHATSAPP_CONVERSATION_MODE: "stream"
+      WHATSAPP_ASR_MODE: ${WHATSAPP_ASR_MODE:-auto}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
       FISH_VOICE_NAME: ${FISH_VOICE_NAME:-Jarvis}
       CENTRAL_AI_CALL_SPEECH: ${CENTRAL_AI_CALL_SPEECH:-fish}
       HERMES_CALL_SPEECH: ${HERMES_CALL_SPEECH:-fish}
+      WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
+      APP_OS_URL: ${APP_OS_URL:-http://web:3000}
+      MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
+      HINDSIGHT_URL: http://hindsight:8888
+      LAYA_URL: http://laya:8000
+      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-openai/gpt-4o-mini}
+      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-openai/gpt-4o-mini}
     volumes:
       - hermes-profiles:/opt/data
       - phone-state:/data
+      - customer-phone-state:/data/customer
     networks:
       hermes-net:
+        aliases:
+          - voice
+      coolify:
         aliases:
           - voice
 

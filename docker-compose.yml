@@ -36,10 +36,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       HERMES_CHAT_PROVIDER: ${HERMES_CHAT_PROVIDER:-openrouter}
-      HERMES_CHAT_MODEL: ${HERMES_CHAT_MODEL:-nousresearch/hermes-4-405b}
-      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-deepseek/deepseek-v4.1-flash}
+      HERMES_CHAT_MODEL: ${HERMES_CHAT_MODEL:-deepseek/deepseek-chat-v3-0324}
+      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-openai/gpt-4o-mini}
       HERMES_VOICE_PROVIDER: ${HERMES_VOICE_PROVIDER:-openrouter}
-      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-meta-llama/llama-3.3-70b-instruct}
+      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-openai/gpt-4o-mini}
       HINDSIGHT_URL: http://hindsight:8888
       LAYA_URL: http://laya:8000
       SCRAPLING_URL: http://scrapling:8008
@@ -56,10 +56,21 @@ services:
       WHATSAPP_URL: ${WHATSAPP_URL:-http://caller:8080}
       APP_OS_URL: ${APP_OS_URL:-http://web:3000}
       MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
+      # Social sign-in (Facebook Login popup). Register the Box 3 callback
+      # https://<app-os-domain>/api/connections/social/callback in the Meta App.
+      FACEBOOK_APP_ID: ${FACEBOOK_APP_ID:-}
+      FACEBOOK_APP_SECRET: ${FACEBOOK_APP_SECRET:-}
+      FACEBOOK_REDIRECT_URI: ${FACEBOOK_REDIRECT_URI:-}
+      TIKTOK_CLIENT_KEY: ${TIKTOK_CLIENT_KEY:-}
+      TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
+      LINKEDIN_CLIENT_ID: ${LINKEDIN_CLIENT_ID:-}
+      LINKEDIN_CLIENT_SECRET: ${LINKEDIN_CLIENT_SECRET:-}
       HOME: /opt/data
     volumes:
       - hermes-profiles:/opt/data
+      - hermes-state:/opt/os-adapter/.runtime
       - phone-state:/data
+      - customer-phone-state:/data/customer
     networks:
       hermes-net:
         aliases:
@@ -80,16 +91,19 @@ services:
     environment:
       HINDSIGHT_API_LLM_PROVIDER: openai
       HINDSIGHT_API_LLM_BASE_URL: https://openrouter.ai/api/v1
-      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_MODEL:-deepseek/deepseek-chat-v3.1}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_MODEL:-openai/gpt-4o-mini}
       HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-${OPENROUTER_API_KEY:-}}
       HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
+      HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION: "false"
+      HINDSIGHT_API_MENTAL_MODEL_MIN_REFRESH_INTERVAL_SECONDS: "86400"
       HINDSIGHT_API_EMBEDDINGS_PROVIDER: openrouter
       HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL: ${HINDSIGHT_EMBEDDINGS_MODEL:-openai/text-embedding-3-small}
       HINDSIGHT_API_OPENROUTER_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-${OPENROUTER_API_KEY:-}}
       HINDSIGHT_API_RERANKER_PROVIDER: rrf
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
-      - hindsight-data:/var/lib/hindsight
+      # Existing installations: migrate the live database before redeploying (deploy/README.md).
+      - hindsight-data:/home/hindsight/.pg0
     networks:
       - hermes-net
 
@@ -133,6 +147,7 @@ services:
       WHATSAPP_LINE_ID: "executive"
       WHATSAPP_DEVICE_NAME: "Central AI Executive Line"
       WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
     volumes:
       - phone-state:/data
     networks:
@@ -169,6 +184,7 @@ services:
       WHATSAPP_LINE_ID: "customer"
       WHATSAPP_DEVICE_NAME: "Central AI Customer Support"
       WHATSAPP_ALLOW_ALL_INBOUND: ${WHATSAPP_ALLOW_ALL_INBOUND:-true}
+      HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
     volumes:
       - customer-phone-state:/data
     networks:
@@ -221,6 +237,8 @@ services:
       HOME: /data/voice
       TEXT_CHAT_ENABLED: "true"
       WHATSAPP_CONVERSATION_MODE: "stream"
+      WHATSAPP_ASR_MODE: ${WHATSAPP_ASR_MODE:-auto}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
       FISH_API_KEY: ${FISH_API_KEY:-}
       FISH_VOICE_ID: ${FISH_VOICE_ID:-612b878b113047d9a770c069c8b4fdfe}
       FISH_VOICE_NAME: ${FISH_VOICE_NAME:-Jarvis}
@@ -230,13 +248,15 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       HERMES_API_KEY: ${HERMES_API_KEY:-hermes_standalone_secret_token_32chars}
       APP_OS_URL: ${APP_OS_URL:-http://web:3000}
+      MICHAEL_OS_URL: ${APP_OS_URL:-http://web:3000}
       HINDSIGHT_URL: http://hindsight:8888
       LAYA_URL: http://laya:8000
-      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-deepseek/deepseek-v4.1-flash}
-      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-meta-llama/llama-3.3-70b-instruct}
+      WHATSAPP_CHAT_MODEL: ${WHATSAPP_CHAT_MODEL:-openai/gpt-4o-mini}
+      HERMES_VOICE_MODEL: ${HERMES_VOICE_MODEL:-openai/gpt-4o-mini}
     volumes:
       - hermes-profiles:/opt/data
       - phone-state:/data
+      - customer-phone-state:/data/customer
     networks:
       hermes-net:
         aliases:
@@ -250,6 +270,7 @@ services:
 # ------------------------------------------------------------------------------
 volumes:
   hermes-profiles:
+  hermes-state:
   hindsight-data:
   phone-state:
   customer-phone-state:
