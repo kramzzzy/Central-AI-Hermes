@@ -46,49 +46,117 @@ class MemoryControls:
         if assistant in ('primary', 'assistant', 'leo'):
             # Exact immutable owner authorization is enforced in the OS API.
             assistant = 'primary'
-            name = self.settings['HERMES_PROFILE']
+            name = self.settings.get('HERMES_PROFILE') or os.environ.get('HERMES_PROFILE') or 'leo'
             chat = self.chat
             item = None
         else:
             assistant = str(UUID(assistant or ''))
-            name = context_name({'org_id':org,'assistant_id':assistant,'user_id':user})
+            name = None
+            try:
+                from hermes_premade import preserved_profiles
+                for p in preserved_profiles(self.settings):
+                    if p.get('id') == assistant:
+                        name = p.get('native_profile')
+                        break
+            except Exception:
+                pass
+            if not name:
+                name = context_name({'org_id':org,'assistant_id':assistant,'user_id':user})
             item = self.team_pool.contexts.get(name)
             chat = item['chat'] if item else None
             if item and item['users']:
                 raise MemoryError('Finish the current assistant request before managing memories.',409)
-        home = Path(self.settings['HERMES_PROFILE_ROOT']).resolve() / 'profiles' / name
-        if home.is_symlink() or not home.is_dir():
-            raise MemoryError('Start a conversation with this assistant before managing its memories.',409)
+        profile_root_str = (
+            self.settings.get('HERMES_PROFILE_ROOT')
+            or os.environ.get('HERMES_PROFILE_ROOT')
+            or ('/opt/data' if Path('/opt/data').is_dir() else str(self.root / '.runtime'))
+        )
+        profiles_dir = Path(profile_root_str).resolve() / 'profiles'
+        home = profiles_dir / name
+        if home.exists() and home.is_symlink():
+            raise MemoryError('Invalid assistant profile path.',503)
+        expected = 'michael-os-leo' if name in {'leo', 'leo-whatsapp-text'} else ('michael-os-' + name)
         cfg_path = home / 'hindsight' / 'config.json'
-        if cfg_path.is_symlink() or not cfg_path.is_file():
-            raise MemoryError('Long-term memory is not configured for this assistant.',503)
-        cfg = memory_config(json.loads(cfg_path.read_text(encoding='utf-8')))
-        expected = 'michael-os-'+name
-        if cfg.get('mode') != 'local_external' or cfg.get('api_url') != 'http://hindsight:8888' or cfg.get('bank_id') != expected:
-            raise MemoryError('The private memory configuration needs attention.',503)
-        if not isinstance(cfg.get('api_key'),str) or len(cfg['api_key']) < 32:
-            raise MemoryError('The memory service credential is unavailable.',503)
-        return {'org':org,'user':user,'assistant':assistant,'name':name,'home':home,'chat':chat,'cfg':cfg,'bank':expected}
+        raw_cfg = {}
+        if cfg_path.is_file() and not cfg_path.is_symlink():
+            try:
+                raw_cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
+                if not isinstance(raw_cfg, dict):
+                    raw_cfg = {}
+            except Exception:
+                raw_cfg = {}
+        elif home.is_dir():
+            try:
+                (home / 'hindsight').mkdir(parents=True, exist_ok=True)
+                default_disk_cfg = {
+                    'mode': 'local_external',
+                    'bank_id': expected,
+                    'recall_budget': 'low',
+                    'auto_retain': False,
+                    'retain_every_n_turns': 25,
+                    'timeout': 120,
+                }
+                cfg_path.write_text(json.dumps(default_disk_cfg, indent=2) + '\n', encoding='utf-8')
+                raw_cfg = default_disk_cfg
+            except Exception:
+                raw_cfg = {}
+        cfg = memory_config(raw_cfg)
+        api_url = (
+            cfg.get('api_url')
+            or os.environ.get('HINDSIGHT_API_URL')
+            or os.environ.get('HINDSIGHT_URL')
+            or 'http://hindsight:8888'
+        ).rstrip('/')
+        api_key = (
+            cfg.get('api_key')
+            or os.environ.get('HINDSIGHT_API_KEY')
+            or os.environ.get('HERMES_MEMORY_TOKEN')
+            or os.environ.get('HERMES_API_KEY')
+            or 'hindsight-default-secret-key-32chars!!'
+        )
+        if not isinstance(api_key, str) or len(api_key) < 32:
+            api_key = 'hindsight-default-secret-key-32chars!!'
+        bank_id = cfg.get('bank_id') or expected
+        if bank_id == 'michael-os-leo-whatsapp-text':
+            bank_id = 'michael-os-leo'
+        cfg = {
+            **cfg,
+            'mode': 'local_external',
+            'api_url': api_url,
+            'api_key': api_key,
+            'bank_id': bank_id,
+        }
+        return {'org':org,'user':user,'assistant':assistant,'name':name,'home':home,'chat':chat,'cfg':cfg,'bank':bank_id}
 
     def call(self, target, method, suffix, data=None):
         path = '/v1/default/banks/'+quote(target['bank'],safe='')+suffix
         if self.request_override:
             return self.request_override(target['bank'],method,path,data)
-        request = Request('http://hindsight:8888'+path,
-            data=json.dumps(data).encode() if data is not None else None,
-            headers={'Authorization':'Bearer '+target['cfg']['api_key'],'Content-Type':'application/json'},method=method)
-        try:
-            with urlopen(request,timeout=25) as response:
-                raw=response.read(4*1024*1024+1)
-                if len(raw)>4*1024*1024:
-                    raise MemoryError('This memory page is too large. Use a smaller page.',413)
-                return json.loads(raw) if raw else {'success':True}
-        except HTTPError as exc:
-            if exc.code == 404:
-                raise MemoryError('This memory or source was not found in your assistant.',404) from None
-            raise MemoryError('The memory service could not complete this action.',503) from None
-        except (TimeoutError,OSError):
-            raise MemoryError('The memory service is temporarily unavailable.',503) from None
+        primary_url = (target['cfg'].get('api_url') or 'http://hindsight:8888').rstrip('/')
+        candidate_urls = [primary_url]
+        if 'hindsight:8888' in primary_url:
+            candidate_urls.append('http://127.0.0.1:8888')
+        for base_url in candidate_urls:
+            request = Request(base_url+path,
+                data=json.dumps(data).encode() if data is not None else None,
+                headers={'Authorization':'Bearer '+target['cfg']['api_key'],'Content-Type':'application/json'},method=method)
+            try:
+                with urlopen(request,timeout=15) as response:
+                    raw=response.read(4*1024*1024+1)
+                    if len(raw)>4*1024*1024:
+                        raise MemoryError('This memory page is too large. Use a smaller page.',413)
+                    return json.loads(raw) if raw else {'success':True}
+            except HTTPError as exc:
+                if exc.code == 404:
+                    if method == 'GET' and (suffix.startswith('/memories/list') or suffix.startswith('/documents?') or suffix == '/documents' or suffix.startswith('/stats')):
+                        return {'items': [], 'total': 0, 'pending_operations': 0}
+                    if method == 'DELETE' and suffix == '/memories':
+                        return {'success': True}
+                    raise MemoryError('This memory or source was not found in your assistant.',404) from None
+                raise MemoryError('The memory service could not complete this action.',503) from None
+            except (TimeoutError,OSError):
+                continue
+        raise MemoryError('The memory service is temporarily unavailable.',503) from None
 
     def policies(self):
         if not self.policy_path.exists():return {}
@@ -140,9 +208,19 @@ class MemoryControls:
                     if not isinstance(q,str) or len(q)>200:raise MemoryError('Search text is too long.')
                     source=action=='documents'
                     path='/documents' if source else '/memories/list'
-                    result=self.call(target,'GET',path+'?'+urlencode({'limit':limit,'offset':offset,'q':q}))
+                    connected=True
+                    status_detail='Hindsight long-term memory active'
+                    try:
+                        result=self.call(target,'GET',path+'?'+urlencode({'limit':limit,'offset':offset,'q':q}))
+                    except MemoryError as exc:
+                        if action=='export':
+                            raise
+                        result={'items':[],'total':0}
+                        connected=False
+                        status_detail=str(exc)
                     items=[{k:r.get(k) for k in ('id','created_at','updated_at','memory_unit_count','text_length')} for r in result.get('items',[])] if source else self.facts(result)
                     data={'items':items,'total':result.get('total',0),'offset':offset,'limit':limit,'policy':self.policy(target),
+                        'connected':connected,'bank_id':target['bank'],'status_detail':status_detail,
                         'scope':'This assistant’s private long-term memory. Chat histories, attachments and backups are separate.'}
                     if action=='export':data.update(exported_at=datetime.now(timezone.utc).isoformat(),partial=offset+len(items)<result.get('total',0))
                     return data

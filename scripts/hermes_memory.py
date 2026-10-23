@@ -5,6 +5,7 @@ import os
 import subprocess
 import threading
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from central_ai_integrations import memory_config
 
@@ -62,26 +63,39 @@ def complete(settings, root, body):
 def read_bank(home, include_memories=False):
     """Only the active profile's fixed bank. No browser-selected URL or bank."""
     cfg_path = home / 'hindsight' / 'config.json'
-    if not cfg_path.is_file():
-        return None
-    try:
-        cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
-    except (ValueError, OSError):
-        return {'available': False, 'bank': '', 'background_recall': False,
-            'error': 'Memory configuration could not be read; existing native files are preserved.'}
-    if not isinstance(cfg, dict):
-        return {'available': False, 'bank': '', 'background_recall': False}
-    cfg = memory_config(cfg)
-    bank = cfg.get('bank_id', '')
+    expected = 'michael-os-leo' if home.name in {'leo', 'leo-whatsapp-text'} else ('michael-os-' + home.name)
+    raw_cfg = {}
+    if cfg_path.is_file():
+        try:
+            raw_cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
+            if not isinstance(raw_cfg, dict):
+                raw_cfg = {}
+        except (ValueError, OSError):
+            return {'available': False, 'bank': expected, 'background_recall': False,
+                'error': 'Memory configuration could not be read; existing native files are preserved.'}
+    cfg = memory_config(raw_cfg)
+    bank = cfg.get('bank_id') or expected
+    if bank == 'michael-os-leo-whatsapp-text':
+        bank = 'michael-os-leo'
+    api_url = (cfg.get('api_url') or os.environ.get('HINDSIGHT_API_URL') or os.environ.get('HINDSIGHT_URL') or 'http://hindsight:8888').rstrip('/')
+    token = cfg.get('api_key') or os.environ.get('HINDSIGHT_API_KEY') or os.environ.get('HERMES_MEMORY_TOKEN') or os.environ.get('HERMES_API_KEY') or 'hindsight-default-secret-key-32chars!!'
     result = {'available': False, 'bank': bank, 'background_recall': not cfg.get('recall_sync', True)}
-    if cfg.get('mode') != 'local_external' or cfg.get('api_url') != 'http://hindsight:8888' or bank != 'michael-os-' + home.name:
-        result['error'] = 'Memory configuration does not match this profile; existing banks are preserved for administrator review.'
-        return result
-    token = cfg.get('api_key', '')
+    candidate_urls = [api_url]
+    if 'hindsight:8888' in api_url:
+        candidate_urls.append('http://127.0.0.1:8888')
     def get(path):
-        request = Request(cfg['api_url'] + path, headers={'Authorization': 'Bearer ' + token})
-        with urlopen(request, timeout=4) as response:
-            return json.loads(response.read(1048576))
+        for base in candidate_urls:
+            request = Request(base + path, headers={'Authorization': 'Bearer ' + str(token)})
+            try:
+                with urlopen(request, timeout=4) as response:
+                    return json.loads(response.read(1048576))
+            except HTTPError as exc:
+                if exc.code == 404:
+                    return {'total_nodes': 0, 'total_documents': 0, 'pending_operations': 0, 'failed_operations': 0, 'total_observations': 0, 'items': []}
+                raise
+            except OSError:
+                continue
+        raise RuntimeError('Hindsight unreachable')
     try:
         stats = get('/v1/default/banks/' + bank + '/stats?refresh=true')
         result.update(available=True, memories_count=stats.get('total_nodes', 0),

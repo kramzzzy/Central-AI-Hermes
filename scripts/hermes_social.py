@@ -330,6 +330,12 @@ class SocialWorkspace:
     def _public_platform_status(self, org, platform):
         cfg = self.get_config(platform)
         conn = self.get_connection(org, platform)
+        if conn and (
+            conn.get("auth_mode") == "session"
+            or conn.get("access_token") in (None, "", "box1_managed_session")
+        ):
+            # Legacy placeholder links (no real provider token) are not connections.
+            conn = None
         if not conn:
             return {
                 "platform": platform,
@@ -575,7 +581,17 @@ class SocialWorkspace:
         page_query = clean_str(body.get("page_query") or "", "page name or URL", 300, empty=True)
 
         if token and platform in ("facebook", "instagram"):
-            pages, selected, _ = self._discover_facebook_pages(token)
+            pages, selected, ig = self._discover_facebook_pages(token)
+            previous = self.get_connection(org, "facebook")
+            # Persist real Page tokens in Box 1 only; the browser never receives them.
+            if previous and not previous.get("revoked"):
+                previous["available_pages"] = pages
+                previous["user_access_token"] = token
+                self.save_connection(org, "facebook", previous)
+            else:
+                self._save_facebook_and_instagram(
+                    org, pages, selected, ig, user_token=token, auth_mode="token",
+                )
             discovered = []
             for p in pages:
                 ig_obj = p.get("instagram_business_account")
@@ -588,57 +604,19 @@ class SocialWorkspace:
                     "instagram_id": (ig_obj or {}).get("id") if isinstance(ig_obj, dict) else None,
                     "instagram_username": (ig_obj or {}).get("username") if isinstance(ig_obj, dict) else None,
                     "instagram_name": (ig_obj or {}).get("name") if isinstance(ig_obj, dict) else None,
-                    "access_token": p.get("access_token") or token,
                 })
             return {"ok": True, "platform": platform, "discovered_pages": discovered, "selected_id": selected["id"]}
 
-        # Direct Sign-In discovery (no Developer Mode required)
-        base_name = page_query or self._default_company_name()
-        if "facebook.com/" in base_name or "instagram.com/" in base_name or "tiktok.com/" in base_name or "linkedin.com/" in base_name:
-            slug = base_name.rstrip("/").split("/")[-1].lstrip("@")
-            clean_title = slug.replace("-", " ").replace(".", " ").title() or "Business Page"
-        else:
-            clean_title = base_name
-            slug = slugify_handle(base_name)
-
-        existing_fb = self.get_connection(org, "facebook")
-        discovered = []
-        if existing_fb and existing_fb.get("pages"):
-            for p in existing_fb["pages"]:
-                if isinstance(p, dict) and p.get("id"):
-                    ig_obj = p.get("instagram_business_account") or {}
-                    discovered.append({
-                        "id": str(p["id"]),
-                        "name": str(p["name"]),
-                        "handle": p.get("handle") or f"fb.com/{slugify_handle(p['name'])}",
-                        "category": p.get("category") or "Solar & Renewable Energy",
-                        "followers_count": p.get("followers_count"),
-                        "instagram_id": ig_obj.get("id") or f"ig_{slugify_handle(p['name'])}",
-                        "instagram_username": ig_obj.get("username") or slugify_handle(p["name"]),
-                        "instagram_name": ig_obj.get("name") or f"{p['name']} (@{slugify_handle(p['name'])})",
-                    })
-
-        primary_id = f"meta_{slug}"
-        if not any(d["id"] == primary_id or d["name"].lower() == clean_title.lower() for d in discovered):
-            discovered.insert(0, {
-                "id": primary_id,
-                "name": clean_title,
-                "handle": f"facebook.com/{slug}",
-                "category": "Solar & Renewable Energy Service",
-                "followers_count": None,
-                "instagram_id": f"ig_{slug}",
-                "instagram_username": slug,
-                "instagram_name": f"{clean_title} Instagram",
-                "account_email": email,
-            })
-
-        return {
-            "ok": True,
-            "platform": platform,
-            "account_email": email,
-            "discovered_pages": discovered,
-            "selected_id": discovered[0]["id"],
-        }
+        # Re-list Pages from the real Facebook sign-in already stored in Box 1.
+        # Never fabricate Pages: every listed Page must come from the Graph API.
+        existing_fb = self.get_connection(org, "facebook") if platform in ("facebook", "instagram") else None
+        user_token = (existing_fb or {}).get("user_access_token") or ""
+        if user_token and user_token != "box1_managed_session":
+            return self.discover_pages(org, {"platform": platform, "access_token": user_token})
+        raise SocialError(
+            "Sign in with Facebook first. Box 1 lists only the real Pages your Facebook account manages.",
+            400,
+        )
 
     def link_pages(self, org, body):
         """Sprout-Social-style Step 2: Link the user's selected Pages & Instagram accounts into Box 1."""
@@ -656,98 +634,52 @@ class SocialWorkspace:
         link_instagram = body.get("link_instagram") is not False
 
         if platform in ("facebook", "instagram"):
-            normalized_pages = []
-            for item in raw_pages:
-                if not isinstance(item, dict):
-                    continue
-                pid = clean_str(str(item.get("id") or secrets.token_hex(6)), "page ID", 200)
-                pname = clean_str(str(item.get("name") or "Facebook Page"), "page name", 200)
-                pslug = slugify_handle(item.get("instagram_username") or pname)
-                ig_username = clean_str(
-                    str(item.get("instagram_username") or pslug),
-                    "Instagram username",
-                    120,
-                    empty=True,
-                ).lstrip("@")
-                ig_account = (
-                    {
-                        "id": str(item.get("instagram_id") or f"ig_{pslug}"),
-                        "username": ig_username or pslug,
-                        "name": str(item.get("instagram_name") or pname),
-                        "followers_count": item.get("followers_count"),
-                    }
-                    if link_instagram and (ig_username or item.get("has_instagram", True))
-                    else None
+            existing = self.get_connection(org, "facebook") or {}
+            real_pages = {
+                str(p.get("id")): p
+                for p in (existing.get("available_pages") or []) + (existing.get("pages") or [])
+                if isinstance(p, dict)
+                and p.get("id")
+                and p.get("access_token")
+                and p.get("access_token") != "box1_managed_session"
+            }
+            if not real_pages:
+                raise SocialError(
+                    "Sign in with Facebook first so Box 1 can load the Pages your account manages.",
+                    400,
                 )
-                normalized_pages.append({
-                    "id": pid,
-                    "name": pname,
-                    "handle": str(item.get("handle") or f"facebook.com/{pslug}"),
-                    "access_token": str(item.get("access_token") or "box1_managed_session"),
-                    "category": str(item.get("category") or "Business Page"),
-                    "followers_count": item.get("followers_count"),
-                    "instagram_business_account": ig_account,
-                })
-
-            if not normalized_pages:
-                raise SocialError("No valid Facebook Page was selected.")
-            chosen = normalized_pages[0]
-            for p in normalized_pages:
-                if p["id"] == selected_page_id:
-                    chosen = p
-                    break
+            wanted = [
+                str(item.get("id"))
+                for item in raw_pages
+                if isinstance(item, dict) and str(item.get("id")) in real_pages
+            ]
+            if not wanted:
+                raise SocialError("Select a Page returned by your Facebook sign-in.", 400)
+            normalized_pages = [real_pages[pid] for pid in wanted]
+            chosen = real_pages.get(selected_page_id) if selected_page_id in wanted else normalized_pages[0]
             ig_chosen = chosen.get("instagram_business_account") if link_instagram else None
-            auth_mode = "oauth" if any(
-                p.get("access_token") and p.get("access_token") != "box1_managed_session"
-                for p in normalized_pages
-            ) else "session"
+            if link_instagram and not isinstance(ig_chosen, dict):
+                for p in normalized_pages:
+                    if isinstance(p.get("instagram_business_account"), dict):
+                        ig_chosen = p["instagram_business_account"]
+                        break
             self._save_facebook_and_instagram(
                 org,
                 normalized_pages,
                 chosen,
                 ig_chosen,
-                user_token=chosen.get("access_token"),
-                auth_mode=auth_mode,
+                user_token=existing.get("user_access_token") or chosen.get("access_token"),
+                auth_mode=existing.get("auth_mode") or "oauth",
             )
-            if not link_instagram:
+            if not link_instagram or not isinstance(ig_chosen, dict):
                 with self.database() as db:
                     db.execute("DELETE FROM connections WHERE org=? AND platform='instagram'", (org,))
             return self.status(org)
 
-        # TikTok, LinkedIn, YouTube page/profile linking
-        first = raw_pages[0] if isinstance(raw_pages[0], dict) else {}
-        pid = clean_str(str(first.get("id") or secrets.token_hex(6)), "account ID", 200)
-        pname = clean_str(str(first.get("name") or f"{platform.capitalize()} Business"), "account name", 200)
-        phandle = clean_str(str(first.get("handle") or f"@{slugify_handle(pname)}"), "handle", 200)
-        now = self.clock()
-        conn = {
-            "platform": platform,
-            "auth_mode": "session",
-            "account_id": pid,
-            "account_name": pname,
-            "handle": phandle,
-            "category": str(first.get("category") or f"{platform.capitalize()} Business"),
-            "followers_count": first.get("followers_count"),
-            "picture_url": None,
-            "access_token": str(first.get("access_token") or "box1_managed_session"),
-            "pages": [
-                {
-                    "id": str(p.get("id") or pid),
-                    "name": str(p.get("name") or pname),
-                    "handle": str(p.get("handle") or phandle),
-                    "category": str(p.get("category") or f"{platform.capitalize()} Business"),
-                }
-                for p in raw_pages
-                if isinstance(p, dict)
-            ],
-            "selected_page_id": pid,
-            "capabilities": DEFAULT_CAPABILITIES.get(platform, []),
-            "connected_at": now,
-            "checked_at": now,
-            "revoked": False,
-        }
-        self.save_connection(org, platform, conn)
-        return self.status(org)
+        raise SocialError(
+            f"{platform.capitalize()} linking requires its official sign-in. This connector is coming soon.",
+            400,
+        )
 
     def connect_token(self, org, body):
         platform = clean_str(body.get("platform"), "platform", 40).lower()
@@ -828,7 +760,7 @@ class SocialWorkspace:
         cfg = self.get_config(platform)
         if not cfg or not cfg.get("client_id") or not cfg.get("client_secret"):
             raise SocialError(
-                f"OAuth App ID is not configured yet. Use the built-in Sign-In & Page Picker.",
+                "Facebook sign-in is not set up yet. Add the Meta App ID and App Secret once (Box 1 env FACEBOOK_APP_ID / FACEBOOK_APP_SECRET or the setup step in Settings → Connection).",
                 400,
             )
         callback = redirect_uri or cfg.get("redirect_uri")
@@ -1064,6 +996,12 @@ class SocialWorkspace:
     def test_connection(self, org, body):
         platform = clean_str(body.get("platform"), "platform", 40).lower()
         conn = self.get_connection(org, platform)
+        if conn and (
+            conn.get("auth_mode") == "session"
+            or conn.get("access_token") in (None, "", "box1_managed_session")
+        ):
+            # Legacy placeholder links (no real provider token) are not connections.
+            conn = None
         if not conn:
             raise SocialError(f"{platform.capitalize()} is not connected yet.", 409)
         token = conn.get("access_token") or ""
