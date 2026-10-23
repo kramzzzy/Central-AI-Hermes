@@ -25,6 +25,7 @@ class SocialTests(unittest.TestCase):
             self.calls.append((url, kw))
             if url.endswith('/subscribed_apps'): return {"success": True}
             if url.endswith('/messages'): return {"message_id": "sent-1"}
+            if url.endswith('/likes'): return {"success": True}
             return {"id": "real-post-1"}
         self.social = SocialWorkspace(self.tmp.name, transport=provider, clock=lambda:self.now)
         self.pages = [
@@ -49,7 +50,7 @@ class SocialTests(unittest.TestCase):
         with self.assertRaises(SocialError): self.social.handle({"action":"webhook_verify","token":"wrong"})
 
     def test_auto_subscription_and_all_accounts(self):
-        self.assertEqual(2,len([c for c in self.calls if c[0].endswith('/subscribed_apps')]))
+        self.assertEqual(4,len([c for c in self.calls if c[0].endswith('/subscribed_apps')]))
         self.assertEqual({"101","202","303"},{a["account_id"] for a in self.social.accounts(ORG)})
         self.assertIsNone(self.social.get_connection(OTHER,"facebook"))
         self.assertEqual("token-B",self.social.get_connection(ORG,"instagram")["access_token"])
@@ -123,5 +124,50 @@ class SocialTests(unittest.TestCase):
         self.social.transport=lambda *a,**kw: {"success":False}
         self.social._save_facebook_and_instagram(ORG,self.pages,self.pages[0],None)
         self.assertTrue(all(a['messaging_state']=='reconnect_required' for a in self.social.accounts(ORG)))
+
+    def comment(self, platform="page", account="101", sender="999", cid="101_555", verb="add"):
+        value = {"item":"comment","verb":verb,"comment_id":cid,"post_id":"101_888","message":"How much?","from":{"id":sender}} if platform == "page" else {"id":cid,"media":{"id":"888"},"text":"How much?","from":{"id":sender}}
+        payload={"object":platform,"entry":[{"id":account,"changes":[{"field":"feed" if platform=="page" else "comments","value":value}]}]}
+        raw=json.dumps(payload).encode()
+        return self.social.handle({"action":"webhook_ingest","raw":base64.b64encode(raw).decode(),"signature":"sha256="+hmac.new(b"test-secret",raw,hashlib.sha256).hexdigest()})
+
+    def reply_comment(self, **extra):
+        return self.social.handle({"org":ORG,"action":"send_comment","platform":"facebook","account_id":"101","comment_id":"101_555","message":"Public answer","like":True,"delivery_id":"comment-reply-1",**extra})
+
+    def test_comment_reply_like_and_deduplication(self):
+        self.assertEqual(1,self.comment()["accepted"])
+        self.assertEqual(0,self.comment()["accepted"])
+        self.assertEqual(0,self.comment(cid="101_556",sender="101")["accepted"])
+        self.assertEqual(0,self.comment(cid="101_557",verb="remove")["accepted"])
+        self.assertEqual("comment",self.social.claim_message(ORG)["event"]["kind"])
+        result=self.reply_comment()
+        self.assertTrue(result["liked"])
+        self.assertEqual(result,self.reply_comment())
+        self.assertEqual(1,len([c for c in self.calls if c[0].endswith('/101_555/comments')]))
+        self.assertEqual(1,len([c for c in self.calls if c[0].endswith('/101_555/likes')]))
+        with self.assertRaises(SocialError): self.reply_comment(org=OTHER)
+        with self.assertRaises(SocialError): self.reply_comment(comment_id="101_777")
+        with self.assertRaises(SocialError): self.send()
+
+    def test_instagram_public_reply_and_optional_heart(self):
+        self.comment(platform="instagram",account="303",cid="555")
+        with patch.dict(os.environ,{"META_INSTAGRAM_COMMENT_LIKES":"1"}):
+            result=self.reply_comment(platform="instagram",account_id="303",comment_id="555")
+        self.assertTrue(result["liked"])
+        replies=[c for c in self.calls if c[0].endswith('/555/replies')]
+        self.assertEqual('token-B',replies[0][1]['token'])
+        self.assertTrue(self.calls[-1][0].endswith('/303/likes'))
+        self.assertEqual({"comment_id":"555"},self.calls[-1][1]['data'])
+
+    def test_failed_like_does_not_duplicate_reply(self):
+        self.comment()
+        provider=self.social.transport
+        def fail_like(url,**kw):
+            if url.endswith('/likes'): raise SocialError("Permission denied",403)
+            return provider(url,**kw)
+        self.social.transport=fail_like
+        self.assertEqual("needs_attention",self.reply_comment()["reaction_state"])
+        self.reply_comment()
+        self.assertEqual(1,len([c for c in self.calls if c[0].endswith('/101_555/comments')]))
 
 if __name__ == '__main__': unittest.main()

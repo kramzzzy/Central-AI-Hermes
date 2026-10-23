@@ -36,9 +36,12 @@ FACEBOOK_SCOPES = [
     "pages_manage_posts",
     "pages_manage_metadata",
     "pages_messaging",
+    "pages_read_user_content",
+    "pages_manage_engagement",
     "instagram_basic",
     "instagram_content_publish",
     "instagram_manage_messages",
+    "instagram_manage_comments",
 ]
 
 TIKTOK_SCOPES = [
@@ -398,6 +401,7 @@ class SocialWorkspace:
                         "picture_url": p.get("picture_url"),
                         "has_instagram": bool(ig_obj),
                         "messaging_state": p.get("messaging_state", "reconnect_required"),
+                        "comments_state": p.get("comments_state", "reconnect_required"),
                         "instagram_username": (ig_obj or {}).get("username") if isinstance(ig_obj, dict) else None,
                         "instagram_name": (ig_obj or {}).get("name") if isinstance(ig_obj, dict) else None,
                     }
@@ -577,6 +581,12 @@ class SocialWorkspace:
                 page["messaging_state"] = "subscribed" if result.get("success") else "reconnect_required"
             except SocialError:
                 page["messaging_state"] = "reconnect_required"
+            try:
+                result = self.transport(f"{GRAPH_BASE}/{page['id']}/subscribed_apps", method="POST",
+                    data={"subscribed_fields": "messages,feed", "access_token": page["access_token"]}, form=True)
+                page["comments_state"] = "subscribed" if result.get("success") else "reconnect_required"
+            except SocialError:
+                page["comments_state"] = "reconnect_required"
         now = self.clock()
         fb_conn = {
             "platform": "facebook",
@@ -857,7 +867,7 @@ class SocialWorkspace:
                 "redirect_uri": callback,
                 "state": state,
                 "response_type": "code",
-                "scope": ",".join(FACEBOOK_SCOPES),
+                "scope": ",".join(FACEBOOK_SCOPES + (["instagram_manage_engagement"] if os.environ.get("META_INSTAGRAM_COMMENT_LIKES") == "1" else [])),
             }
             return {
                 "url": f"https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth?"
@@ -1262,6 +1272,10 @@ class SocialWorkspace:
                 return {"ok": True}
             if action == "send_message":
                 return self.send_message(org, body)
+            if action == "comment_context":
+                return self.comment_context(org, body)
+            if action == "send_comment":
+                return self.send_comment(org, body)
             if action == "accounts":
                 return {"accounts": self.accounts(org)}
             if action == "publish_approved":
@@ -1349,6 +1363,35 @@ class SocialWorkspace:
             if len(owners) != 1:
                 continue
             org, _ = owners[0]
+            for change in entry.get("changes", []):
+                value = change.get("value") or {}
+                if platform == "facebook":
+                    if change.get("field") != "feed" or value.get("item") != "comment" or value.get("verb") != "add":
+                        continue
+                    cid, post = str(value.get("comment_id") or ""), str(value.get("post_id") or "")
+                    text = value.get("message")
+                else:
+                    if change.get("field") != "comments":
+                        continue
+                    cid, post = str(value.get("id") or ""), str((value.get("media") or {}).get("id") or "")
+                    text = value.get("text")
+                sender = str((value.get("from") or {}).get("id") or "")
+                if not re.fullmatch(r"[0-9_]{1,150}", cid) or not re.fullmatch(r"[0-9_]{1,150}", post):
+                    continue
+                if not sender.isdigit() or sender == account or not isinstance(text, str) or not text.strip():
+                    continue
+                if platform == "facebook" and not post.startswith(account + "_"):
+                    continue
+                identity = hashlib.sha256(f"{platform}:{account}:comment:{cid}".encode()).hexdigest()
+                item = {"id": identity, "kind": "comment", "platform": platform, "account_id": account,
+                        "sender_id": sender, "comment_id": cid, "post_id": post, "text": text[:4000], "timestamp": self.clock()}
+                with self.database() as db:
+                    # Ignore our own replies even when Meta omits the Page/account author.
+                    own = db.execute("SELECT encrypted FROM social_deliveries WHERE org=? AND encrypted IS NOT NULL", (org,)).fetchall()
+                    if any(self.decrypt(r["encrypted"]).get("comment_id") == cid for r in own):
+                        continue
+                    accepted += db.execute("INSERT OR IGNORE INTO social_inbox(id,org,thread,received,encrypted) VALUES(?,?,?,?,?)",
+                        (identity, org, f"{platform}:{account}:comment:{cid}", self.clock(), self.encrypt(item))).rowcount
             for event in entry.get("messaging", []):
                 message = event.get("message") or {}
                 sender = str((event.get("sender") or {}).get("id") or "")
@@ -1370,6 +1413,50 @@ class SocialWorkspace:
                     accepted += db.execute("INSERT OR IGNORE INTO social_inbox(id,org,thread,received,encrypted) VALUES(?,?,?,?,?)",
                         (identity, org, thread, created, self.encrypt(item))).rowcount
         return {"ok": True, "accepted": accepted}
+
+    def verified_comment(self, org, body):
+        platform, account, cid = body.get("platform"), str(body.get("account_id") or ""), str(body.get("comment_id") or "")
+        page = self.account_page(org, platform, account)
+        identity = hashlib.sha256(f"{platform}:{account}:comment:{cid}".encode()).hexdigest()
+        with self.database() as db:
+            row = db.execute("SELECT encrypted FROM social_inbox WHERE org=? AND id=?", (org, identity)).fetchone()
+        if not row:
+            raise SocialError("No verified visitor comment for this account.", 403)
+        return page, self.decrypt(row["encrypted"])
+
+    def comment_context(self, org, body):
+        page, event = self.verified_comment(org, body)
+        fields = "message" if event["platform"] == "facebook" else "caption"
+        post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?fields={fields}", token=page["access_token"])
+        return {"post_text": str(post.get(fields) or "")[:4000], "comment_text": event["text"]}
+
+    def send_comment(self, org, body):
+        page, event = self.verified_comment(org, body)
+        message = clean_str(body.get("message"), "comment reply", 2000)
+        def send():
+            edge = "comments" if event["platform"] == "facebook" else "replies"
+            result = self.transport(f"{GRAPH_BASE}/{event['comment_id']}/{edge}", method="POST",
+                token=page["access_token"], data={"message": message}, form=True)
+            if not result.get("id"):
+                raise SocialError("Meta did not confirm the public reply.", 502)
+            return {"ok": True, "comment_id": result["id"]}
+        receipt = self.deliver_once(org, body, send)
+        # A failed reaction must not suppress or resend a confirmed public reply.
+        if body.get("like") and (event["platform"] == "facebook" or os.environ.get("META_INSTAGRAM_COMMENT_LIKES") == "1"):
+            def react():
+                target = event["comment_id"] if event["platform"] == "facebook" else event["account_id"]
+                data = {} if event["platform"] == "facebook" else {"comment_id": event["comment_id"]}
+                result = self.transport(f"{GRAPH_BASE}/{target}/likes", method="POST",
+                    token=page["access_token"], data=data, form=True)
+                if not result.get("success"):
+                    raise SocialError("Like not confirmed.", 502)
+                return {"liked": True}
+            try:
+                reaction = self.deliver_once(org, {"delivery_id": f"like:{event['id']}"}, react)
+            except SocialError:
+                reaction = {"liked": False, "reaction_state": "needs_attention"}
+            return {**receipt, **reaction}
+        return {**receipt, "liked": False, "reaction_state": "not_requested" if not body.get("like") else "permission_setup_required"}
 
     def claim_message(self, org):
         with self.database() as db:
