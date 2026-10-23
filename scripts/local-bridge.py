@@ -1014,9 +1014,21 @@ def _fast_draft_only_completion(body,settings_dict):
   laya_sig=_classify_customer_turn_laya(last_user_msg)
   if laya_sig:
    enrichment_lines.append(f"[LAYA DECISION ENGINE SIGNAL (<15ms ONNX): Customer message intent = {laya_sig['intent']} (confidence {laya_sig['confidence']})]")
-  recalled_facts=_recall_hindsight_fast(last_user_msg)
-  if recalled_facts:
-   enrichment_lines.append("[HINDSIGHT LONG-TERM MEMORY RECALL (Verified Past Context & Coaching)]:\n" + "\n".join(f"- {f}" for f in recalled_facts))
+  mem_key=str(body.get('memory_key') or '').strip()[:300]
+  if mem_key:
+   import hashlib
+   mem_tag='cust:'+hashlib.sha256(mem_key.encode('utf-8')).hexdigest()[:24]
+   try:
+    from hermes_plugins.central_ai_whatsapp.adapter import _recall_memory_items
+    recalled_facts=_recall_memory_items(last_user_msg,limit=6,tags=[mem_tag])
+   except Exception:
+    recalled_facts=[]
+   if recalled_facts:
+    enrichment_lines.append("[CUSTOMER MEMORY (this customer's earlier conversations; use only if relevant, never mention you searched memory)]:\n" + "\n".join(f"- {f}" for f in recalled_facts))
+  else:
+   recalled_facts=_recall_hindsight_fast(last_user_msg)
+   if recalled_facts:
+    enrichment_lines.append("[HINDSIGHT LONG-TERM MEMORY RECALL (Verified Past Context & Coaching)]:\n" + "\n".join(f"- {f}" for f in recalled_facts))
  out_msgs=[{'role':str(m.get('role') or 'user'),'content':m['content']} for m in msgs]
  if enrichment_lines and out_msgs and out_msgs[0]['role']=='system':
   out_msgs[0]={
@@ -1067,6 +1079,19 @@ def _fast_draft_only_completion(body,settings_dict):
     threading.Thread(
      target=_retain_memory_item,
      args=(f"Qualified customer outcome & confirmation: {content}",'Customer Inquiry Pipeline','omni-channel','qualified_lead_outcome'),
+     daemon=True,
+    ).start()
+   except Exception:
+    pass
+  mem_key_out=str(body.get('memory_key') or '').strip()[:300]
+  if mem_key_out and last_user_msg:
+   try:
+    import hashlib
+    from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
+    out_tag='cust:'+hashlib.sha256(mem_key_out.encode('utf-8')).hexdigest()[:24]
+    threading.Thread(
+     target=_retain_memory_item,
+     args=(f"Customer: {last_user_msg}\nAgent reply: {content}",'customer-chat','customer-chat','customer-chat',[out_tag]),
      daemon=True,
     ).start()
    except Exception:

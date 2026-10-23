@@ -17,13 +17,14 @@ import urllib.request
 
 binding=contextvars.ContextVar('leo_text_binding',default=None)
 
-def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp'):
+def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp', tags=None):
     try:
         import os, urllib.request
         if not content or not isinstance(content, str) or len(content.strip()) < 20:
             return
         ctx_norm = str(context or 'whatsapp').strip().lower()
-        if ctx_norm in {'whatsapp', 'website', 'customer'} and os.environ.get('HINDSIGHT_RETAIN_ALL_CHAT', '').lower() != 'true':
+        # Per-customer tagged memory is always retained (it is isolated by tag); untagged chat stays opt-in.
+        if not tags and ctx_norm in {'whatsapp', 'website', 'customer'} and os.environ.get('HINDSIGHT_RETAIN_ALL_CHAT', '').lower() != 'true':
             return
         api_url = (
             os.environ.get('HINDSIGHT_URL')
@@ -49,12 +50,13 @@ def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp'):
                 or os.environ.get('OPENROUTER_API_KEY')
                 or 'hindsight-default-secret-key-32chars!!'
             ).strip()
-        payload = json.dumps({
-            'items': [{
-                'content': f"WhatsApp {sender} ({route}): {content.strip()}",
-                'context': context or 'whatsapp'
-            }]
-        }).encode('utf-8')
+        item = {
+            'content': f"WhatsApp {sender} ({route}): {content.strip()}" if not tags else content.strip(),
+            'context': context or 'whatsapp'
+        }
+        if tags:
+            item['tags'] = [str(t) for t in tags]
+        payload = json.dumps({'items': [item]}).encode('utf-8')
         req = urllib.request.Request(
             f'{api_url}/v1/default/banks/michael-os-leo/memories',
             data=payload,
@@ -67,7 +69,7 @@ def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp'):
         pass
 
 
-def _recall_memory_items(query: str, limit: int = 5) -> list:
+def _recall_memory_items(query: str, limit: int = 5, tags=None) -> list:
     try:
         import os, urllib.request
         clean_q = (query or '').strip()
@@ -97,10 +99,15 @@ def _recall_memory_items(query: str, limit: int = 5) -> list:
                 or os.environ.get('OPENROUTER_API_KEY')
                 or 'hindsight-default-secret-key-32chars!!'
             ).strip()
-        payload = json.dumps({
+        recall_body = {
             'query': clean_q[:240],
             'max_tokens': 800,
-        }).encode('utf-8')
+        }
+        if tags:
+            # Strict: only this customer's memories, never untagged/global or other customers'.
+            recall_body['tags'] = [str(t) for t in tags]
+            recall_body['tags_match'] = 'all_strict'
+        payload = json.dumps(recall_body).encode('utf-8')
         req = urllib.request.Request(
             f'{api_url}/v1/default/banks/michael-os-leo/memories/recall',
             data=payload,
