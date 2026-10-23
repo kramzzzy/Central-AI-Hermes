@@ -85,6 +85,19 @@ class SocialTests(unittest.TestCase):
         self.now+=86401
         with self.assertRaises(SocialError): self.send()
 
+    def test_typing_actions_use_verified_thread_and_do_not_dedupe(self):
+        body = {"org":ORG,"action":"sender_action","platform":"facebook","account_id":"101","recipient_id":"999","sender_action":"typing_on"}
+        with self.assertRaises(SocialError): self.social.handle(body)
+        self.ingest()
+        for action in ("typing_on", "typing_on", "typing_off"):
+            self.social.handle({**body,"sender_action":action})
+            self.assertEqual({"recipient":{"id":"999"},"sender_action":action},self.calls[-1][1]["data"])
+        self.assertEqual(3,len([c for c in self.calls if c[0].endswith('/messages')]))
+        with self.assertRaises(SocialError): self.social.handle({**body,"org":OTHER})
+        with self.assertRaises(SocialError): self.social.handle({**body,"sender_action":"invalid"})
+        self.now += 86401
+        with self.assertRaises(SocialError): self.social.handle(body)
+
     def test_unknown_outcome_not_retried(self):
         self.ingest()
         attempts=[]

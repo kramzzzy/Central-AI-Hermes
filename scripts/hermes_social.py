@@ -1270,7 +1270,7 @@ class SocialWorkspace:
                 with self.database() as db:
                     db.execute("UPDATE social_inbox SET done=1 WHERE id=? AND org=?", (body.get("id"), org))
                 return {"ok": True}
-            if action == "send_message":
+            if action in ("send_message", "sender_action"):
                 return self.send_message(org, body)
             if action == "comment_context":
                 return self.comment_context(org, body)
@@ -1498,6 +1498,13 @@ class SocialWorkspace:
                 (org, f"{platform}:{account}:{recipient}")).fetchone()["latest"]
         if not recent or self.clock() - recent >= 86400:
             raise SocialError("The customer's 24-hour messaging window has closed.", 409)
+        if body.get("action") == "sender_action":
+            action = body.get("sender_action")
+            if platform != "facebook" or action not in ("typing_on", "typing_off"):
+                raise SocialError("Unsupported typing action.")
+            self.transport(f"{GRAPH_BASE}/{page['id']}/messages", method="POST", token=page["access_token"],
+                data={"recipient": {"id": recipient}, "sender_action": action})
+            return {"ok": True}
         message = clean_str(body.get("message"), "message", 1000 if platform == "instagram" else 2000)
         def send():
             result = self.transport(f"{GRAPH_BASE}/{page['id']}/messages", method="POST", token=page["access_token"],
