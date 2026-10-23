@@ -1442,7 +1442,7 @@ class SocialWorkspace:
                 "post_id": event["post_id"], "account_name": page.get("name", ""),
                 "post_url": post.get("permalink_url") or post.get("permalink") or (f"https://www.facebook.com/{event['post_id']}" if facebook else ""),
                 "image_url": post.get("full_picture") or (post.get("media_url") if post.get("media_type") != "VIDEO" else ""),
-                "sender_name": event.get("sender_name", "Visitor")}
+                "sender_name": self._event_name(org, event)}
 
     def send_comment(self, org, body):
         page, event = self.verified_comment(org, body)
@@ -1514,12 +1514,39 @@ class SocialWorkspace:
                 return {"event": None}
             db.execute("UPDATE social_inbox SET lease=? WHERE id=?", (self.clock() + 180, row["id"]))
             event = self.decrypt(row["encrypted"])
-        # Comments already carry the commenter's name; DMs only carry an ID, so look the name up here.
-        if not event.get("kind") and not event.get("sender_name"):
-            name = self._profile_name(org, event)
+        # Meta often omits names from webhooks (DMs: ID only; comments: sometimes no `from.name`), so look them up here.
+        if (not event.get("kind") and not event.get("sender_name")) or (event.get("kind") == "comment" and event.get("sender_name") in (None, "", "Visitor")):
+            name = self._event_name(org, event, default="")
             if name:
                 event = {**event, "sender_name": name}
         return {"event": event}
+
+    def _event_name(self, org, event, default="Visitor"):
+        current = str(event.get("sender_name") or "")
+        if current and current != "Visitor":
+            return current
+        name = ""
+        if event.get("kind") == "comment":
+            platform, account, cid = event.get("platform"), str(event.get("account_id") or ""), str(event.get("comment_id") or "")
+            key = (org, platform, account, "c:" + cid)
+            now = self.clock()
+            hit = self._names.get(key)
+            if hit and hit[1] > now:
+                name = hit[0]
+            else:
+                try:
+                    page = self.account_page(org, platform, account)
+                    fields = "from{id,name}" if platform == "facebook" else "username"
+                    data = self.transport(f"{GRAPH_BASE}/{cid}?fields={fields}", token=page["access_token"], timeout=4)
+                    if isinstance(data, dict):
+                        who = data.get("from") if isinstance(data.get("from"), dict) else {}
+                        name = re.sub(r"\s+", " ", str(who.get("name") or data.get("username") or "")).strip()[:120]
+                except Exception as exc:
+                    print(f"[social] comment author lookup failed ({platform}): {str(exc)[:200]}", flush=True)
+                self._names[key] = (name, now + (86400 if name else 900))
+        if not name:
+            name = self._profile_name(org, event)
+        return name or default
 
     def deliver_once(self, org, body, send):
         identity = clean_str(body.get("delivery_id"), "delivery ID", 200)
