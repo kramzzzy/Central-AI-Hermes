@@ -295,9 +295,57 @@ def generate_marketing_image(body):
         raise ArtworkError(f'Marketing image generation failed: {e}', 502) from None
 
 
+def generate_social_image(body):
+    """Generate the finished post exactly as briefed; never substitute stock media."""
+    prompt = body.get('prompt')
+    if not isinstance(prompt, str) or not 3 <= len(prompt.strip()) <= 1400:
+        raise ArtworkError('Supply an image prompt between 3 and 1400 characters.', 400)
+    key = os.environ.get('OPENROUTER_API_KEY', '').strip()
+    if not key or key.startswith('sk-or-v1-standalone-default'):
+        raise ArtworkError('Configure OPENROUTER_API_KEY on Box 1 to generate social images.', 503)
+    model = os.environ.get('SOCIAL_IMAGE_MODEL', '').strip() or 'google/gemini-nano-banana-2.1'
+    payload = {
+        'model': model,
+        'modalities': ['image', 'text'],
+        'messages': [{'role': 'user', 'content': prompt}],
+        'image_config': {'aspect_ratio': '1:1', 'image_size': '1K'},
+    }
+    request = urllib.request.Request(
+        'https://openrouter.ai/api/v1/chat/completions',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=150) as response:
+            raw = response.read(12_000_001)
+        if len(raw) > 12_000_000:
+            raise ArtworkError('Generated image response exceeds the size limit.', 502)
+        result = json.loads(raw)
+        images = result['choices'][0]['message'].get('images') or []
+        if not images:
+            raise ArtworkError('The image model returned no image. Retry generation.', 502)
+        uri = images[0]['image_url']['url']
+        header, encoded = uri.split(',', 1)
+        if header not in ('data:image/png;base64', 'data:image/jpeg;base64', 'data:image/webp;base64'):
+            raise ArtworkError('The image model returned an unsupported image.', 502)
+        image = base64.b64decode(encoded, validate=True)
+        if not 512 <= len(image) <= 8 * 1024 * 1024:
+            raise ArtworkError('Generated image must be between 512 bytes and 8 MB.', 502)
+        return {'data': [{'b64_json': encoded, 'model': model}]}
+    except ArtworkError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise ArtworkError(f'OpenRouter image generation failed (HTTP {exc.code}). Check credits and model access.', 502) from None
+    except Exception:
+        raise ArtworkError('OpenRouter did not return a valid image. Retry generation.', 502) from None
+
+
 def generate(body):
     if not isinstance(body, dict):
         raise ArtworkError('Supply a valid artwork request payload.', 400)
+    if body.get('mode') == 'social':
+        return generate_social_image(body)
     if body.get('mode') == 'marketing' or body.get('prompt'):
         return generate_marketing_image(body)
     if not body.get('type'):

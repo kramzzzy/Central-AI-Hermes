@@ -1,7 +1,7 @@
 ---
 name: promotion
 description: Create scroll-stopping, straightforward promotional posts, offers, and MeiGen.ai-style flagship commercial ad posters (/promotion).
-version: 2.0.0
+version: 2.1.0
 author: kramzzzy, Central AI
 license: MIT
 platforms: [linux, macos, windows]
@@ -13,7 +13,7 @@ metadata:
 
 # Promotion (`/promotion`)
 
-Create high-impact, straightforward promotional posts and offers that immediately stop the scroll. Every promotion pairs blunt, straight-talking Australian copywriting with a **MeiGen.ai (`?category=product`) Flagship Commercial Advertisement Poster** featuring forced-perspective hero hardware, futuristic UI callout nodes, and a frosted glassmorphism spec panel.
+Create clear promotional posts and complete graphics using the assigned brand knowledge. The user's requested composition and exact wording take priority over the optional product-poster style below. Never invent hardware, prices, discounts, savings, warranties, software features, or package specifications to fill a template. Omit unverified claims and use general service wording instead.
 
 ## When to Use
 
@@ -30,15 +30,17 @@ Use when the user asks to promote a service, product, seasonal offer, rebate, so
 2. **Straight-Talking Australian Tone**:
    - Write like a trusted local solar specialist speaking to a homeowner.
    - Keep sentences short and scannable (1–2 sentences per paragraph).
-   - Use concrete numbers (`6.6kW`, `13.5kWh`, `30% bill drop`, `$1,800–$2,800/yr saved`, `3pm–9pm peak tariff`) instead of vague promises.
+   - Use numbers only when supported by the assigned knowledge and relevant to this specific offer. Examples are not product facts.
 
 3. **MeiGen.ai Flagship Product & Ad Visual Direction**:
-   - Every post MUST include:
+   - Only when the user requests this visual style and the knowledge supports its content, include:
      - `**Callouts:**` 3 concise hardware/feature callout labels (`3–4 words each`, separated by `|`) that point to features on the image with thin futuristic leader lines and glowing nodes.
      - `**Glass Panel:**` 4 concise flagship benefit specs (`3–5 words each`, separated by `|`) displayed inside the bottom-left frosted glassmorphism card.
      - `**Visual Brief:**` A multi-layer MeiGen.ai commercial advertisement prompt describing a confident subject in a dynamic low-angle cinematic pose holding/presenting a sleek smart solar device or standing beside sleek solar/battery hardware with strong forced perspective, soft studio + golden-hour rim lighting, blurred large-scale background depth typography, futuristic UI overlays, and 8K HDR commercial product photography.
 
-## Required Output Structure for Every Post
+## Optional Product Poster Structure
+
+For App OS publishing, use `social_accounts` then `social_prepare_post` once per requested post and destination. Supply the complete graphic brief in `visual_prompt`, including exact headline, brand text, callouts and CTA when requested. The image is generated and attached before review. Stop for human approval; never publish or substitute stock media. Do not create extra drafts or formats the user did not request.
 
 ```markdown
 ### Post 1: [Direct, Outcome-Focused Title]

@@ -32,6 +32,7 @@ services:
       HERMES_PORT: "8642"
       HERMES_PYTHON: "/opt/hermes/.venv/bin/python"
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      SOCIAL_IMAGE_MODEL: ${SOCIAL_IMAGE_MODEL:-google/gemini-nano-banana-2.1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
