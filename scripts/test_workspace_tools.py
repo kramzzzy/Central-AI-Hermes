@@ -81,6 +81,20 @@ class WorkspaceToolsTests(unittest.TestCase):
             self.assertEqual(result['error'], 'An assigned skill is no longer installed.')
             self.assertEqual(opener.open.call_count,1)
 
+    def test_task_fallback_only_when_request_could_not_connect(self):
+        import socket
+        import urllib.error
+        from unittest.mock import MagicMock
+        for reason, expected_calls in [(ConnectionRefusedError(), 2), (socket.gaierror(), 2), (TimeoutError(), 1), (ConnectionResetError(), 1)]:
+            with self.subTest(reason=type(reason).__name__):
+                response = MagicMock()
+                response.__enter__.return_value.read.return_value = json.dumps({'result':{'content':[{'text':'{"task_id":"fixture-task"}'}]}}).encode()
+                opener = MagicMock(); opener.open.side_effect = [urllib.error.URLError(reason), response]
+                with patch.object(client, '_hermes_api_key',return_value='fixture'), patch.object(client,'_app_os_urls',return_value=['http://old.invalid','http://current.invalid']), patch.object(client.urllib.request,'build_opener',return_value=opener):
+                    result=json.loads(client._call_app_os_mcp('central_ai_manage_tasks', {}, retry=False))
+                    self.assertEqual(opener.open.call_count, expected_calls)
+                    self.assertIn('task_id' if expected_calls == 2 else 'error', result)
+
     def test_public_call_excludes_private_tools(self):
         import types
         import hermes_phone_tools as phone

@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import socket
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -421,6 +422,12 @@ def _call_app_os_mcp(tool_name, arguments, timeout=10, retry=True):
                     text = data["result"]["content"][0]["text"]
                     # Legacy MCP wrappers decode JSON; preserve tool errors instead of hiding them as parse failures.
                     return json.dumps({"error": text}) if data["result"].get("isError") else text
+        except urllib.error.URLError as exc:
+            # DNS failure or refusal happens before any request is delivered; trying another configured address cannot duplicate a task.
+            if isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError)):
+                continue
+            if not retry:
+                return json.dumps({"error": "Result unconfirmed; check workspace before retrying."})
         except Exception:
             if not retry:
                 return json.dumps({"error": "Result unconfirmed; check workspace before retrying."})
