@@ -16,6 +16,20 @@ class SocialArtworkTests(unittest.TestCase):
         }).encode()
         return response
 
+    @patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-only'})
+    @patch('hermes_artwork.urllib.request.build_opener')
+    def test_supported_ratios_reach_provider(self, opener):
+        opener.return_value.open.return_value = self.response()
+        for ratio in ('1:1', '3:4', '4:5', '4:3', '16:9', '9:16'):
+            artwork.generate({'mode': 'social', 'prompt': 'Solar image', 'aspect_ratio': ratio})
+            payload = json.loads(opener.return_value.open.call_args.args[0].data)
+            self.assertEqual(payload['image_config']['aspect_ratio'], ratio)
+            self.assertIn(ratio, payload['messages'][0]['content'])
+        for ratio in ('2:7', '', None, {}):
+            with self.assertRaises(artwork.ArtworkError):
+                artwork.generate({'mode': 'social', 'prompt': 'Solar image', 'aspect_ratio': ratio})
+        self.assertEqual(opener.return_value.open.call_count, 6)
+
     @patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-only', 'SOCIAL_IMAGE_MODEL': ''})
     @patch('hermes_artwork.urllib.request.build_opener')
     def test_preserves_exact_prompt_and_uses_selected_model(self, opener):
