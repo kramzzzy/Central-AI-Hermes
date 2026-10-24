@@ -35,6 +35,8 @@ def configure_phone_tools():
         tools = []
         for tool in original(*args, **kwargs):
             name = (tool.get('function') or tool).get('name', '')
+            if _public_phone_only and 'michael_os' in name and name.rsplit('__', 1)[-1] not in {'get_live_weather', 'calculate_solar', 'end_call'}:
+                continue
             if name == 'clarify':
                 continue
             tools.append(tool)

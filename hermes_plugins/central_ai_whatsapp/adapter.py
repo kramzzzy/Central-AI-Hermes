@@ -1095,12 +1095,13 @@ def build_engine_adapter(route,member,home,group):
                         f"KNOWLEDGE BASE (FROM APP OS):\n{kb_str}" if kb_str else "",
                     ]))
                 else:
+                    from hermes_os import WORKSPACE_TOOLS_NOTE
                     live_box3 = await asyncio.to_thread(_fetch_live_box3_context, msg_text, home)
-                    event.channel_prompt='\n\n'.join(filter(None,[event.channel_prompt,get_whatsapp_reply_style(),
-                        'You are fully connected to the Central AI knowledge base (8 Knowledge Base sources and 60 Available skills) and persistent Hindsight memory (\'michael-os-leo\'). '
-                        'All Box 3 tools (mcp__michael_os__inspect_workspace, mcp__michael_os__manage_crm, mcp__michael_os__manage_tasks, mcp__michael_os__create_task, mcp__michael_os__search_knowledge, mcp__michael_os__get_knowledge, mcp__michael_os__add_knowledge, mcp__michael_os__get_workspace_overview) are enabled on this WhatsApp connection. '
+                    event.channel_prompt='\n\n'.join(filter(None,[event.channel_prompt,get_whatsapp_reply_style(),WORKSPACE_TOOLS_NOTE,
+                        'Use live tools to discover current workspace knowledge, skills and capabilities. '
+                        'Use the tools exposed to this authorized session; capability guidance does not grant access to unavailable tools. '
                         'When the user asks to make a social media post, create a task, or assign work to an agent, ALWAYS invoke mcp__michael_os__manage_tasks(action=\'create\', title=..., instruction=..., agent=..., auto_run=True) so the task and AI automation run appear in Box 3 Tasks and Approvals (\'review\' status). '
-                        'NEVER claim that knowledge base or workspace tools are disabled or unavailable on WhatsApp. '
+                        'Report unavailable tools or permission errors accurately. '
                         'You represent Your Choice Solar: selling high-grade solar systems, panels, inverters, and batteries, and installing/maintaining solar setups across Australia. '
                         'Always reply strictly and exclusively in clear, warm, professional English (never use casual slang like "G\'day" or "mate", and never switch to Tagalog, Taglish, Filipino, or any other language). Answer questions about the knowledge base, CRM, business, services, and company capabilities directly, confidently, and warmly. '
                         'Use this native profile’s configured memory tools for saved facts; do not invent memories. '

@@ -471,7 +471,7 @@ def manage_tasks(
     action: 'create' (or 'assign'/'delegate'), 'list', 'run', 'approve', 'reject', or 'delete'.
     title: Task title (e.g. 'Social media post — residential solar packages').
     instruction: Detailed task instructions or prompt for the assigned agent.
-    agent: Optional agent name ('Social Media', 'Customer Service', 'Appointment Coordinator', 'Sarah', 'Leo'). Auto-detected from topic if omitted.
+    agent: Optional agent name (exact enabled ID or name from inspect_workspace section=agents). Auto-detected from topic if omitted.
     due_date: Optional due date (YYYY-MM-DD).
     task_id: Task UUID when running, approving, rejecting, or deleting.
     auto_run: Immediately queue and execute the AI automation run so the output appears in Approvals (default True).
@@ -506,8 +506,31 @@ def create_task(
     due_date: str = '',
     auto_run: bool = True,
 ) -> dict:
-    """Create a Box 3 workspace task, assign the responsible agent ('Social Media', 'Customer Service', 'Appointment Coordinator', 'Sarah', 'Leo'), trigger AI automation, and send output to Approvals."""
+    """Create a Box 3 workspace task, assign the responsible agent (exact enabled ID or name from inspect_workspace section=agents), trigger AI automation, and send output to Approvals."""
     return manage_tasks(action='create', title=title, instruction=instruction, agent=agent, due_date=due_date, auto_run=auto_run)
+
+
+@server.tool(name='manage_communications')
+def manage_communications(action: str, id: str, version: int | None = None) -> dict:
+    """Archive/restore or takeover/resume a conversation. Inspect first; takeover/resume requires control_version."""
+    args = {'action': action, 'id': id}
+    if version is not None:
+        args['version'] = version
+    return json.loads(_plugin_client.manage_communications(args))
+
+
+@server.tool(name='generate_image')
+def generate_image(prompt: str, aspect_ratio: str = '3:4') -> dict:
+    """Generate and save one image to Files; ratios 1:1,3:4,4:5,4:3,16:9,9:16. Does not publish."""
+    return json.loads(_plugin_client.generate_image({'prompt': prompt, 'aspect_ratio': aspect_ratio}))
+
+
+@server.tool(name='social_media')
+def social_media(operation: str = 'status', platform: str = '', account_id: str = '') -> dict:
+    """Read connected social account status or list_posts. Use an agent task for drafts requiring post approval."""
+    if operation not in {'status', 'list_posts'}:
+        return {'error': 'Use a Social Media task for post creation and approval.'}
+    return json.loads(_plugin_client.social_media({k: v for k, v in {'operation': operation, 'platform': platform, 'account_id': account_id}.items() if v}))
 
 
 @server.tool(name='end_call')

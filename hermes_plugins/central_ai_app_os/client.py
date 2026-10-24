@@ -19,7 +19,7 @@ SECTIONS = {
     "calendar",
     "crm",
     "clients",
-    "contacts",
+    "contacts", "communications", "comments", "social_posts", "files", "capabilities",
 }
 
 
@@ -286,7 +286,7 @@ def _inspect_from_snapshot(arguments, snapshot):
     }
     snap_key = key_map.get(section)
     if not snap_key:
-        return {"section": section, "total": 0, "records": [], "next_offset": None}
+        return None
     items = list(snapshot.get(snap_key) or [])
     if target_id:
         items = [r for r in items if isinstance(r, dict) and str(r.get("id")) == str(target_id)]
@@ -307,9 +307,25 @@ def _inspect_from_snapshot(arguments, snapshot):
     }
 
 
+def owner_tools_available():
+    if os.environ.get("MICHAEL_RESTRICT_TEAM_TOOLS") == "true":
+        return False
+    home = Path(os.environ.get("HERMES_HOME", ""))
+    if home.name.startswith(("team-", "customer-", "contact-")):
+        return False
+    try:
+        import yaml
+        config = yaml.safe_load((home / "config.yaml").read_text()) or {}
+        return not (config.get("phone_business_context") or config.get("os_specialist"))
+    except Exception:
+        return False
+
+
 def inspect_workspace(arguments, **kwargs):
     try:
         validate(arguments)
+        if arguments.get("section") in {"communications", "comments", "social_posts", "files", "capabilities"} and not owner_tools_available():
+            return json.dumps({"error": "Owner workspace access required."})
         token = process_token()
         api_key = _hermes_api_key()
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -378,7 +394,7 @@ def inspect_workspace(arguments, **kwargs):
         return json.dumps({"error": "Workspace inspection is unavailable. No data was verified."})
 
 
-def _call_app_os_mcp(tool_name, arguments, timeout=10):
+def _call_app_os_mcp(tool_name, arguments, timeout=10, retry=True):
     api_key = _hermes_api_key()
     req_body = json.dumps({
         "jsonrpc": "2.0",
@@ -402,6 +418,8 @@ def _call_app_os_mcp(tool_name, arguments, timeout=10):
                 if "result" in data and "content" in data["result"]:
                     return data["result"]["content"][0]["text"]
         except Exception:
+            if not retry:
+                return json.dumps({"error": "Result unconfirmed; check workspace before retrying."})
             continue
     return None
 
@@ -458,10 +476,24 @@ def manage_crm(arguments, **kwargs):
     return json.dumps({"error": "CRM operation unavailable. Check Box 3 connection."})
 
 
+def manage_communications(arguments, **kwargs):
+    if not owner_tools_available():
+        return json.dumps({"error": "Owner workspace access required."})
+    return _call_app_os_mcp("central_ai_manage_communications", arguments, timeout=20, retry=False) or json.dumps({"error": "Communication operation unavailable."})
+
+
+def generate_image(arguments, **kwargs):
+    if not owner_tools_available():
+        return json.dumps({"error": "Owner workspace access required."})
+    return _call_app_os_mcp("central_ai_generate_image", arguments, timeout=180, retry=False) or json.dumps({"error": "Image generation unavailable."})
+
+
 def manage_tasks(arguments, **kwargs):
+    if not owner_tools_available():
+        return json.dumps({"error": "Owner workspace access required."})
     args = dict(arguments or {})
     args.setdefault("action", "create")
-    raw = _call_app_os_mcp("central_ai_manage_tasks", args, timeout=15)
+    raw = _call_app_os_mcp("central_ai_manage_tasks", args, timeout=40, retry=args.get("action") == "list")
     if raw:
         return raw
     action = str(args.get("action") or "create").lower()
