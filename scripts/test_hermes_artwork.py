@@ -23,10 +23,23 @@ class SocialArtworkTests(unittest.TestCase):
         prompt = 'Create a graphic with the headline "Explore solar" and our brand.'
         result = artwork.generate({'mode': 'social', 'prompt': prompt})
         payload = json.loads(opener.return_value.open.call_args.args[0].data)
-        self.assertEqual(payload['messages'], [{'role': 'user', 'content': prompt}])
+        self.assertEqual(payload['messages'][1], {'role': 'user', 'content': [{'type': 'text', 'text': prompt}]})
         self.assertEqual(payload['model'], 'google/gemini-nano-banana-2.1')
         self.assertEqual(result['data'][0]['model'], payload['model'])
-        self.assertEqual(payload['image_config']['aspect_ratio'], '1:1')
+        self.assertEqual(payload['image_config']['aspect_ratio'], '3:4')
+
+    @patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-only'})
+    @patch('hermes_artwork.urllib.request.build_opener')
+    def test_references_reach_provider_and_urls_are_rejected(self, opener):
+        opener.return_value.open.return_value = self.response()
+        reference = 'data:image/png;base64,' + base64.b64encode(b'reference fixture').decode()
+        artwork.generate({'mode': 'social', 'prompt': 'Use this product reference', 'references': [reference]})
+        payload = json.loads(opener.return_value.open.call_args.args[0].data)
+        self.assertEqual(payload['messages'][1]['content'][1], {'type': 'image_url', 'image_url': {'url': reference}})
+        for references in [['https://example.com/image.png'], [reference] * 7, ['data:image/png;base64,'], 'invalid']:
+            with self.assertRaises(artwork.ArtworkError):
+                artwork.generate({'mode': 'social', 'prompt': 'Use this reference', 'references': references})
+        self.assertEqual(opener.return_value.open.call_count, 1)
 
     @patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-only', 'SOCIAL_IMAGE_MODEL': 'configured/image-model'})
     @patch('hermes_artwork.urllib.request.build_opener')

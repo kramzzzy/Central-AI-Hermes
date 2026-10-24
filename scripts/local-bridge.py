@@ -616,7 +616,7 @@ class Handler(BaseHTTPRequestHandler):
    acquired=False
    try:
     length=int(self.headers.get('Content-Length','0'))
-    if not 0<length<=8192:return self.reply(413,{'error':'Artwork request too large'})
+    if not 0<length<=12*1024*1024:return self.reply(413,{'error':'Artwork request too large'})
     req_body=json.loads(self.rfile.read(length))
     is_marketing=isinstance(req_body,dict) and (req_body.get('mode')=='marketing' or bool(req_body.get('prompt')))
     if not is_marketing:
