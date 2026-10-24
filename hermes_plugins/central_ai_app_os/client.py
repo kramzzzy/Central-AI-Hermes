@@ -415,8 +415,12 @@ def _call_app_os_mcp(tool_name, arguments, timeout=10, retry=True):
             )
             with opener.open(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+                if "error" in data:
+                    return json.dumps({"error": data["error"].get("message", "Workspace tool request failed.")})
                 if "result" in data and "content" in data["result"]:
-                    return data["result"]["content"][0]["text"]
+                    text = data["result"]["content"][0]["text"]
+                    # Legacy MCP wrappers decode JSON; preserve tool errors instead of hiding them as parse failures.
+                    return json.dumps({"error": text}) if data["result"].get("isError") else text
         except Exception:
             if not retry:
                 return json.dumps({"error": "Result unconfirmed; check workspace before retrying."})

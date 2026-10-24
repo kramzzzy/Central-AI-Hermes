@@ -50,6 +50,37 @@ class WorkspaceToolsTests(unittest.TestCase):
         for tool in ('manage_tasks','manage_communications','generate_image'):
             self.assertIn('mcp__michael_os__'+tool, TOOLS)
 
+    def test_mcp_child_inherits_active_profile_and_team_restriction(self):
+        import types
+        from hermes_os import install_process_token
+        config = types.SimpleNamespace(_build_safe_env=lambda supplied: dict(supplied))
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / 'owner'
+            home.mkdir(); (home / 'config.yaml').write_text('{}')
+            with patch.dict(sys.modules, {'tools': types.SimpleNamespace(mcp_tool_config=config)}), patch.dict(os.environ, {'HERMES_HOME': str(home), 'MICHAEL_RESTRICT_TEAM_TOOLS': 'true'}):
+                install_process_token()
+                child = config._build_safe_env({'MICHAEL_OS_INHERIT_TOOL_TOKEN':'true', 'HERMES_HOME':'wrong', 'MICHAEL_RESTRICT_TEAM_TOOLS':'false'})
+                self.assertEqual(child['HERMES_HOME'], str(home))
+                self.assertEqual(child['MICHAEL_RESTRICT_TEAM_TOOLS'], 'true')
+                with patch.dict(os.environ, child, clear=True):
+                    self.assertFalse(client.owner_tools_available())
+                os.environ.pop('MICHAEL_RESTRICT_TEAM_TOOLS')
+                child = config._build_safe_env({'MICHAEL_OS_INHERIT_TOOL_TOKEN':'true'})
+                with patch.dict(os.environ, child, clear=True):
+                    self.assertTrue(client.owner_tools_available())
+                unrelated = config._build_safe_env({})
+                self.assertNotIn('HERMES_HOME', unrelated)
+
+    def test_mcp_tool_errors_remain_machine_readable(self):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({'result': {'isError':True, 'content':[{'type':'text','text':'An assigned skill is no longer installed.'}]}}).encode()
+        opener = MagicMock(); opener.open.return_value = response
+        with patch.object(client, '_hermes_api_key',return_value='fixture'), patch.object(client,'_app_os_urls',return_value=['http://fixture.invalid']), patch.object(client.urllib.request,'build_opener',return_value=opener):
+            result = json.loads(client._call_app_os_mcp('central_ai_manage_tasks', {}, retry=False))
+            self.assertEqual(result['error'], 'An assigned skill is no longer installed.')
+            self.assertEqual(opener.open.call_count,1)
+
     def test_public_call_excludes_private_tools(self):
         import types
         import hermes_phone_tools as phone
