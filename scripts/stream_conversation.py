@@ -326,9 +326,9 @@ class FishRestSpeech:
     def _drain_ready_clauses(self):
         while self.pending:
             if self.first_flush is None:
-                m = re.search(r'^(\s*.{4,}?(?<!\d)[,!?;:.]\s+)', self.pending, re.S)
+                m = re.search(r'^(\s*(?:.{16,}?(?<!\d)[.!?;:]|.{26,}?(?<!\d),)\s+)', self.pending, re.S)
             else:
-                m = re.search(r'^(\s*.{28,}?(?<!\d)[.!?;:]\s+)', self.pending, re.S)
+                m = re.search(r'^(\s*.{45,}?(?<!\d)[.!?;:]\s+)', self.pending, re.S)
             if not m:
                 break
             clause = m.group(1).strip()

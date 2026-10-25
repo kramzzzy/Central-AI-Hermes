@@ -25,6 +25,11 @@ _NON_NAME_WORDS = {
     'there', 'back', 'again', 'doing', 'going', 'having', 'trying', 'checking', 'about',
     'you', 'me', 'my', 'your', 'remember', 'forgot', 'told', 'already', 'called',
     'before', 'earlier', 'last', 'time', 'name', 'is', 'was', 'am', 'are', 'with',
+    'all', 'correct', 'perfect', 'number', 'first', 'second', 'third', 'pronounced',
+    'everything', 'true', 'accurate', 'that', 'this', 'it', 'monday', 'tuesday',
+    'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'morning', 'afternoon',
+    'evening', 'poor', 'correction', 'full', 'phone', 'call', 'maybe', 'brisbane',
+    'street', 'road', 'avenue', 'drive', 'email', 'address', 'property', 'book',
 }
 
 
@@ -83,8 +88,19 @@ def _extract_spoken_caller_name(caller_text, last_assistant_text=''):
             valid.append(t.capitalize())
         return ' '.join(valid)
 
+    if last_assistant_text:
+        for rb_pat in (
+            r"(?:^|[\n•*-]\s*)(?:full\s+)?name\s*:\s*([A-Za-z][a-zA-Z'-]{1,18}(?:\s+[A-Za-z][a-zA-Z'-]{1,18}){1,2})",
+            r"\bso,\s+([A-Za-z][a-zA-Z'-]{1,18}(?:\s+[A-Za-z][a-zA-Z'-]{1,18}){1,2})\s+it\s+is\b",
+        ):
+            rb_m = re.search(rb_pat, last_assistant_text, flags=re.I)
+            if rb_m:
+                rb_cand = _valid_name_tokens(rb_m.group(1))
+                if len(rb_cand.split()) >= 2:
+                    return rb_cand
+
     for pat in (
-        r"\b(?:my\s+name\s+is|my\s+name's|i\s+am|i'm|im|this\s+is|it\s+is|it's|its|call\s+me)\s+([A-Za-z][a-z']{1,18}(?:\s+[A-Za-z][a-z']{1,18})?)\b",
+        r"\b(?:my\s+(?:full\s+|first\s+|last\s+|poor\s+)?name\s+is|my\s+name's|call\s+me|i\s+am|i'm)\s+([A-Za-z][a-zA-Z']{1,18}(?:\s+[A-Za-z][a-zA-Z']{1,18}){0,2})\b",
         r"\b([A-Za-z][a-z']{1,18})\s+(?:speaking|here|calling)\b",
     ):
         for m in re.finditer(pat, cleaned, flags=re.I):
@@ -93,11 +109,11 @@ def _extract_spoken_caller_name(caller_text, last_assistant_text=''):
                 return cand
 
     if last_assistant_text and re.search(
-        r"\b(?:your\s+name|who\s+am\s+i\s+speaking|who's\s+calling|may\s+i\s+ask\s+who|what\s+should\s+i\s+call\s+you|who\s+i'm\s+speaking\s+with)\b",
+        r"\b(?:your\s+(?:full\s+)?name|who\s+am\s+i\s+speaking|who's\s+calling|may\s+i\s+ask\s+who|what\s+should\s+i\s+call\s+you|who\s+i'm\s+speaking\s+with)\b",
         last_assistant_text,
         flags=re.I,
     ):
-        stripped = re.sub(r"^(?:yes|yeah|yep|sure|hi|hello|hey|oh|uh|um|it's|its|i'm|im|this\s+is)\b[\s,]*", '', cleaned, flags=re.I).strip()
+        stripped = re.sub(r"^(?:yes|yeah|yep|sure|hi|hello|hey|oh|uh|um|it's|its|i'm|im|this\s+is|my\s+(?:poor\s+|full\s+)?name\s+is)\b[\s,]*", '', cleaned, flags=re.I).strip()
         words = stripped.split()
         if 1 <= len(words) <= 3:
             cand = _valid_name_tokens(stripped)
@@ -715,16 +731,15 @@ class StreamPhoneCall:
                  # The shared voice note carries owner tool guidance, so customer calls get delivery + lead/booking rules.
                  '[Live call communication, lead qualification & appointment booking rules:\n'
                  '- 100% REAL HUMAN FEEL (NEVER MENTION AI, MEMORY SYSTEMS, OR TECHNICAL ERRORS): Speak strictly as a real human specialist at the company. NEVER say or imply that you are an AI, bot, virtual assistant, language model, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, databases, or say things like "my memory of you hasn\'t been saved" or "I don\'t store memory between calls". If you ever don\'t recall a detail the caller mentioned earlier, respond naturally like a real human: "I\'m sorry, I can\'t remember—could you remind me?" or "Sorry, that slipped my mind—what was your name again?".\n'
-                 '- IMMEDIATE 2-TO-4-WORD MICRO-OPENER FOR REAL-TIME TURN-TAKING: Begin every reply with a short, natural 2-to-4-word human reaction followed immediately by a period or comma (for example: "Oh, no worries at all.", "Yeah, that makes sense.", "That\'s totally fair.", "Right, gotcha.", "All right, let\'s see.", "Oh, I hear you.") before your main sentence. This lets the voice stream start speaking within milliseconds while the rest of your sentence follows seamlessly.\n'
-                 '- REAL-TIME CONVERSATIONAL CADENCE & ACTIVE LISTENING: Keep every turn to one or two short, natural spoken sentences (10–25 words total) with everyday contractions; no lists, markdown, URLs or spoken stage cues. Listen closely to the caller\'s tone, pace, and personal context—if they hesitate, correct themselves, or share what they have going on, acknowledge it warmly and unhurriedly first, then ask at most one simple follow-up question.\n'
-                 '- PROACTIVE VALUE FIRST (NEVER ASK PERMISSION TO SHARE INFO): Never ask "Would you like to know...?", "Do you want me to explain...?", "Shall I calculate that for you?", or "Would you like to hear how much you can save?". Every caller wants to know! Always deliver the actual answer, recommended solar size (kW and number of panels), estimated savings, and key facts upfront immediately, then ask one natural follow-up question to keep the conversation moving.\n'
-                 f'- NATURAL LEAD QUALIFICATION & APPOINTMENT BOOKING ON THE CALL: Gently qualify the caller one simple question at a time: 1) existing solar check, 2) last power bill amount, 3) property street address so the team can check their roof on satellite imagery, and 4) full name, confirming if this WhatsApp number (+{self.caller_digits}) is best to reach them on, and their email address. When all 4 details (Full Name, Phone, Email, Property Street Address) are collected, read them back clearly and ask the caller to confirm they are right. You can also book a Phone Consultation ("kind":"call"), On-Site Visit ("kind":"visit"), or Roof Inspection ("kind":"inspection") on any open weekday between 9 AM and 4 PM.\n'
+                 '- STRICT 1-TO-2 SHORT SPOKEN SENTENCES (ZERO BULLET POINTS OR MONOLOGUES): You are speaking on a live phone call, NOT writing a chat message. NEVER use bullet points (`- Name: ...`), numbered lists, colons, or multi-paragraph summaries. Keep EVERY turn to 1 or 2 short, natural spoken sentences (15–30 words maximum) with everyday contractions. Begin with a natural 2-to-4-word human reaction ("Oh, no worries at all.", "Yeah, that makes sense.", "Right, gotcha.") integrated smoothly into your first sentence.\n'
+                 '- PROACTIVE VALUE FIRST (NEVER ASK PERMISSION TO SHARE INFO): Never ask "Would you like to know...?", "Do you want me to explain...?", or "Shall I calculate that?". Deliver the recommended solar size (kW and panels) and estimated savings concisely in one short spoken sentence, then ask one simple follow-up question.\n'
+                 f'- NATURAL LEAD QUALIFICATION & APPOINTMENT BOOKING ON THE CALL: Gently qualify the caller one simple question at a time: 1) existing solar check, 2) last power bill amount, 3) property street address so the team can check their roof on satellite imagery, and 4) full name, confirming if this WhatsApp number (+{self.caller_digits}) is best to reach them on, and their email address (if they say they don\'t have an email address, accept that warmly and continue without an email using `"email":""`). When the details are collected, read them back in one natural spoken sentence (never a bullet list!) and ask the caller to confirm they are right. You can also book a Phone Consultation ("kind":"call"), On-Site Visit ("kind":"visit"), or Roof Inspection ("kind":"inspection") on any open weekday between 9 AM and 4 PM.\n'
                  '- SILENT CRM & BOOKING TAG AT THE END OF YOUR REPLY: ONLY in the turn where the caller explicitly confirms their details (or confirms their appointment time + details), append the exact machine tag at the very end of your text after your final spoken sentence (the voice engine automatically strips `[[...]]` so it is NEVER spoken aloud, and uses it to save the New Lead or Calendar Booking in App OS):\n'
                  '  - For a confirmed New Lead (no specific appointment slot chosen yet):\n'
-                 '    [[LEAD:{"name":"Full Name","phone":"Phone","email":"email@domain.com","address":"Street Address","notes":"Bill, solar kW recommendation, roof notes"}]]\n'
+                 '    [[LEAD:{"name":"Full Name","phone":"Phone","email":"","address":"Street Address","notes":"Bill, solar kW recommendation, roof notes"}]]\n'
                  '  - For a confirmed Appointment Booking (creates both the Calendar Event and CRM Lead):\n'
-                 '    [[BOOK:{"kind":"call","day":"YYYY-MM-DD","time":"HH:MM","name":"Full Name","phone":"Phone","email":"email@domain.com","address":"Street Address","notes":"Bill, solar kW recommendation, roof notes"}]]\n'
-                 '- 10/10 HUMAN WARMTH & EFFORTLESS DRY WIT: Sound like a sharp, warm, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. React with natural, relatable human warmth or dry wit when appropriate (for example, when they mention a high power bill: "Oof, at that rate your power company probably has your photo framed on their wall—let\'s cut that right down"), and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
+                 '    [[BOOK:{"kind":"call","day":"YYYY-MM-DD","time":"HH:MM","name":"Full Name","phone":"Phone","email":"","address":"Street Address","notes":"Bill, solar kW recommendation, roof notes"}]]\n'
+                 '- 10/10 HUMAN WARMTH & EFFORTLESS DRY WIT: Sound like a sharp, warm, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. React with natural, relatable human warmth or dry wit when appropriate, and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
         return "\n\n".join(p for p in parts if p)
 
     def task(self, coroutine):
@@ -742,7 +757,12 @@ class StreamPhoneCall:
 
     def change_state(self, state):
         if not self.closed:
-            if self.state=='speaking' and state!='speaking': self.last_speaking_end=time.monotonic()
+            if self.state=='speaking' and state!='speaking':
+                self.last_speaking_end=time.monotonic()
+                if state=='listening' and self.capture and (time.monotonic() - self.last_speech > 0.9):
+                    self.capture.clear();self.voiced=0;self.silence_frames=0;self.capture_extended=False
+                    self.close_asr(self.asr);self.asr=None
+                    self.discard_early_asr()
             self.state=state;self.service.metrics['state']=state;self.service.state_changed.set()
 
     def flush(self):
@@ -940,13 +960,12 @@ class StreamPhoneCall:
             first=None
             hermes_started=None
             timing={}
+            self.spoken_text=''
             raw_spoken_text=''
             tag_mode=False
             pending_bracket=''
             def speak(value):
                 nonlocal first,stage,spoke_any,raw_spoken_text,tag_mode,pending_bracket
-                if pending_input:
-                    pending_input['speaking_started']=True
                 if first is None:self.spoken_text=''
                 raw_spoken_text=(raw_spoken_text+str(value or ''))[-3600:]
                 if tag_mode:
@@ -1084,10 +1103,10 @@ class StreamPhoneCall:
                             speak("Sorry, I missed that. Could you say that again?")
                         else:
                             return
-                    elif (not already_extended and len(pcm) < 16000 * 2 * 1.5 and not text.rstrip().endswith('?')
-                            and re.search(r'\b(um|uh|er|hmm)\W*$',text,re.I)):
-                        # Obvious unfinished clauses or hesitations get one short opportunity
-                        # to continue, rather than dispatching a draft request.
+                    elif (not already_extended and len(pcm) < 16000 * 2 * 3.2 and not text.rstrip().endswith(('?', '!'))
+                            and re.search(r'\b(um|uh|er|hmm|was|is|are|in|on|at|to|for|with|from|of|my|your|the|a|an|and|or|but|so|because|around|about|like)\W*$',text,re.I)):
+                        # Unfinished clause or mid-sentence hesitation gets an opportunity
+                        # to continue, rather than dispatching a premature partial turn.
                         return 'continue'
                     from fish_conversation import is_goodbye_intent
                     if is_goodbye_intent(text):
@@ -1171,7 +1190,7 @@ class StreamPhoneCall:
                         if isinstance(turn_pcm, (bytes, bytearray)) and len(self.call_audio_pcm) < 16000 * 2 * 1800:
                             self.call_audio_pcm.extend(turn_pcm)
                             self.call_audio_pcm.extend(b'\x00' * (16000 * 2 * 15 // 100))
-                if greeting or (audio is not None and (spoke_any or locals().get('text'))):
+                if greeting or (audio is not None and spoke_any and not control.cancelled.is_set()):
                     caller_utt = '[Call Answered]' if greeting else str(locals().get('text') or '').strip()
                     assistant_utt = self.spoken_text.strip()
                     if caller_utt or assistant_utt:
@@ -1266,6 +1285,8 @@ class StreamPhoneCall:
 
     async def enqueue(self,data,generation,control,framer=None,final=True):
         control.check()
+        if data and self.pending_input and self.pending_input.get('generation') == generation:
+            self.pending_input['speaking_started'] = True
         if self.customer and data and len(self.call_audio_pcm) < 16000 * 2 * 1800:
             self.call_audio_pcm.extend(data)
         framer=framer or PhonePCM()
@@ -1312,11 +1333,14 @@ class StreamPhoneCall:
                     self.capture_version+=1
                     self.discard_early_asr()
                     if self.speculative:self.speculative.cancel();self.speculative=None
-                # Require 5 consecutive voiced frames (300ms at rms>=0.032) before resuming a thinking
-                # turn, and never flush a thinking turn that already started generating text before audio plays.
-                if self.speech_run>=5 and self.state=='thinking' and self.pending_input:
-                    self.resume_input()
-                if is_playing and self.speech_run>=7:
+                # If the caller continues speaking before audio playback actually starts, resume and merge
+                # into the current turn; if audio is already playing, allow clean barge-in.
+                if self.speech_run>=4 and self.state=='thinking' and self.pending_input:
+                    if not self.pending_input.get('speaking_started'):
+                        self.resume_input()
+                    elif self.speech_run>=6:
+                        self.flush()
+                if is_playing and self.speech_run>=6:
                     self.flush()
             else: self.speech_run=0
             if not self.capture:
@@ -1356,14 +1380,34 @@ class StreamPhoneCall:
                     if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .15)) and not busy:
                         self.greeting_pending=False;self.start_reply(greeting=True)
                     continue
-                # Start background local recognition + LLM prefetch early (~120ms into a pause)
+                # Start background local recognition + LLM prefetch early (~180ms into a pause)
                 # so both ASR and speculative tokens are already in flight at the endpoint.
-                early_quiet = (self.silence_frames >= 2 and now - self.last_speech >= .12) or (now - self.last_speech >= .20)
+                early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .18) or (now - self.last_speech >= .26)
                 if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
                     self.prepare_recognition()
-                # Support both continuous silent RTP frames and WhatsApp Opus DTX
-                # silence suppression (where RTP packets stop arriving during quiet gaps).
-                quiet_enough = (self.silence_frames >= 4 and now - self.last_speech >= .24) or (now - self.last_speech >= .32)
+                # Adaptive endpointing: give natural mid-sentence pauses (~0.85s) when the draft
+                # transcript looks unfinished or very short, and ~0.52s for complete thoughts.
+                draft_text = ''
+                if self.early_asr and isinstance(self.early_asr.get('local_result'), tuple):
+                    draft_text = str(self.early_asr['local_result'][0] or '').strip()
+                looks_unfinished = (
+                    self.voiced <= 5
+                    or bool(
+                        draft_text
+                        and not draft_text.rstrip().endswith('?')
+                        and (
+                            len(draft_text.split()) <= 2
+                            or re.search(
+                                r'\b(was|is|are|am|in|on|at|to|for|with|from|of|by|my|your|our|their|his|her|the|a|an|and|or|but|so|because|if|when|while|around|about|like|live\s+at|located\s+at|name\s+is|number\s+is|address\s+is|uh|um|er|hmm|\d+)\W*$',
+                                draft_text,
+                                re.I,
+                            )
+                        )
+                    )
+                )
+                min_quiet = 0.85 if looks_unfinished else 0.52
+                min_frames = 12 if looks_unfinished else 8
+                quiet_enough = (self.silence_frames >= min_frames and now - self.last_speech >= min_quiet) or (now - self.last_speech >= min_quiet + 0.10)
                 if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
                     if not self.early_asr:
                         self.prepare_recognition()

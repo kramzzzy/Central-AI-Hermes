@@ -339,6 +339,8 @@ _NON_NAME_WORDS = {
     'email', 'address', 'suburb', 'gold', 'coast', 'brisbane', 'sydney', 'melbourne',
     'perth', 'adelaide', 'queensland', 'qld', 'nsw', 'vic', 'wa', 'sa', 'tas', 'act',
     'nt', 'hello', 'hi', 'hey', 'yes', 'yeah', 'yep', 'no', 'nah', 'thanks', 'thank',
+    'poor', 'correction', 'all', 'correct', 'everything', 'perfect', 'accurate', 'right',
+    'first', 'last', 'full', 'name', 'is', 'my',
 }
 _STREET_SUFFIX_RE = re.compile(
     r'^(street|st|road|rd|avenue|ave|drive|dr|court|ct|place|pl|lane|ln|way|circuit|cct|crescent|cres|boulevard|blvd|terrace|tce|highway|hwy|parade|pde|close|cl|esplanade|esp)$',
@@ -461,13 +463,34 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     name = ''
     phone = ''
     email = ''
+    email_declined = False
     address = ''
     suburb = ''
     existing_solar = ''
     power_bill = ''
 
     for idx, m in enumerate(turns or []):
-        if not isinstance(m, dict) or m.get('role') != 'user':
+        if not isinstance(m, dict):
+            continue
+        if m.get('role') == 'assistant':
+            asst_txt = re.sub(r'^(?:📞\s*)?\[(?:Voice\s+Call|Incoming\s+WhatsApp\s+Voice\s+Call)\]\s*', '', str(m.get('content') or ''), flags=re.I).strip()
+            rb_name = re.search(r'(?:^|[\n•*-]\s*)(?:full\s+)?name\s*:\s*([^\n•*|,]+)', asst_txt, re.I) or re.search(r'\bso,\s+([A-Z][a-zA-Z\'-]+(?:\s+[A-Z][a-zA-Z\'-]+){1,2})\s+it\s+is\b', asst_txt)
+            if rb_name:
+                cwords = [w for w in rb_name.group(1).strip().split() if w.lower() not in _NON_NAME_WORDS and not _STREET_SUFFIX_RE.match(w)]
+                cand = ' '.join(cwords)
+                if len(cwords) >= 2 and _is_valid_person_name(cand):
+                    name = ' '.join(w[0].upper() + w[1:] for w in cwords)
+            rb_phone = re.search(r'(?:^|[\n•*-]\s*)(?:phone|contact|number)\s*:\s*([+\d][\d\s-]{7,18})', asst_txt, re.I)
+            if rb_phone and 8 <= len(re.sub(r'\D', '', rb_phone.group(1))) <= 15:
+                phone = rb_phone.group(1).strip()
+            rb_email = re.search(r'(?:^|[\n•*-]\s*)email(?:\s+address)?\s*:\s*([^\s\n|,]+@[^\s\n|,]+)', asst_txt, re.I)
+            if rb_email and _is_valid_confirmed_email(rb_email.group(1)):
+                email = rb_email.group(1).strip().lower()
+            rb_addr = re.search(r'(?:^|[\n•*-]\s*)(?:property\s+|street\s+)?address\s*:\s*([^\n•*|]+)', asst_txt, re.I)
+            if rb_addr and _is_valid_confirmed_street_address(rb_addr.group(1).strip(' .')):
+                address = rb_addr.group(1).strip(' .')
+            continue
+        if m.get('role') != 'user':
             continue
         text = re.sub(r'^(?:📞\s*)?\[(?:Voice\s+Call|Incoming\s+WhatsApp\s+Voice\s+Call)\]\s*', '', str(m.get('content') or ''), flags=re.I).strip()
         text = re.sub(
@@ -508,6 +531,9 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
             em = re.search(r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', text, re.I)
             if em and _is_valid_confirmed_email(em.group(0)):
                 email = em.group(0).lower()
+                email_declined = False
+            elif re.search(r'\b(?:i\s+)?(?:don\'?t|do\s+not)\s+have\s+(?:an?\s+|any\s+)?email\b|\bno\s+email(?:\s+address)?\b|\bwithout\s+(?:an?\s+)?email\b', text, re.I):
+                email_declined = True
         if not phone:
             ph = re.search(r'(?:\+?61[\s-]?|0)[2-478](?:[\s-]?\d){8}\b|\b\+?\d[\d\s-]{7,14}\d\b', text)
             if ph and not _BILL_OR_NOISE_IN_ADDRESS_RE.search(text):
@@ -613,9 +639,12 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
                             name = wcap
                         break
 
+    if suburb and address and suburb.lower() not in address.lower():
+        address = f"{address}, {suburb}"
+
     has_full_name = len([w for w in name.split() if w]) >= 2 and _is_valid_person_name(name)
     has_phone = 8 <= len(re.sub(r'\D', '', phone)) <= 15
-    has_email = _is_valid_confirmed_email(email)
+    has_email = _is_valid_confirmed_email(email) or email_declined
     has_street_address = _is_valid_confirmed_street_address(address)
     has_existing_solar = len(existing_solar) >= 2
     has_power_bill = len(power_bill) >= 2
