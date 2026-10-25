@@ -19,7 +19,7 @@ from whatsapp_audio import PhoneAudioFilter
 class PhonePCM:
     """Keep provider chunks continuous; pad only the final transport frame."""
     frame_bytes = 1920
-    prefill_frames = 3
+    prefill_frames = 2
     single_burst_frames = 4
 
     def __init__(self):
@@ -58,7 +58,9 @@ class StreamPhoneCall:
         self.jobs = self.member['jobs']
         # Customer-line calls: customer agent persona and voice, no tools, never the owner's native session.
         self.customer = self.member.get('line') == 'customer'
-        customer_voice = os.environ.get('CUSTOMER_FISH_VOICE_ID', '').strip()
+        customer_voice = os.environ.get('CUSTOMER_FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13').strip()
+        if customer_voice == '711cf3ed00ab441a8f54a45058047b7a':
+            customer_voice = 'a30d099a643d4173836cfee1d8ae6c13'
         self.speech_config = ({**service.config, 'FISH_VOICE_ID': customer_voice, 'FISH_ENGLISH_FALLBACK_VOICE_ID': customer_voice}
                               if self.customer and customer_voice else service.config)
         self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=512)
@@ -310,9 +312,7 @@ class StreamPhoneCall:
                  '[Assigned Knowledge Base]\n' + '\n'.join(cards) + '\n[/Assigned Knowledge Base]' if cards else '',
                  'You have no tools on this call: never claim to book, send, look up or change anything.',
                  # The shared voice note carries owner tool guidance, so customer calls get delivery rules only.
-                 '[Live call: speak in one or two short, natural sentences; no lists, markdown or URLs. Ask one question '
-                 'at a time. An occasional single Fish S2 cue such as [happy], [laughing], [curious] or [empathetic] at a '
-                 'sentence start may fit the moment; cues are delivery, not spoken words.]']
+                 '[Live call: speak in one or two short, warm, natural sentences; no lists, markdown, URLs or bracketed stage cues. Ask one question at a time.]']
         try:
             from central_ai_identity import central_ai_identity
         except Exception:
@@ -404,6 +404,8 @@ class StreamPhoneCall:
             self.early_asr=None
 
     def prepare_recognition(self):
+        if not self.prepared_speech and (not self.worker or self.worker.done()):
+            self.prepare_speech()
         if self.early_asr:return
         cloud=getattr(self.service,'cloud_asr',None)
         local_fn=getattr(self.service,'recognize',None)
@@ -471,9 +473,6 @@ class StreamPhoneCall:
     async def start(self):
         self.task(self._warm_native_conversation())
         self.task(self.feed());self.task(self.tick())
-        # A paired-device socket can connect while the handset is still
-        # ringing. Wait for real media before producing the greeting.
-        self.prepare_speech()
 
     def prepare_speech(self):
         if self.prepared_speech:return
@@ -806,10 +805,11 @@ class StreamPhoneCall:
                 if speaking:self.last_speech=time.monotonic()
                 continue
             if speaking:
-                self.capture_version+=1
-                self.discard_early_asr()
-                if self.speculative:self.speculative.cancel();self.speculative=None
                 self.speech_run+=1;self.last_user_activity=self.last_speech=time.monotonic();self.voiced+=1
+                if self.speech_run>=2 or not self.early_asr:
+                    self.capture_version+=1
+                    self.discard_early_asr()
+                    if self.speculative:self.speculative.cancel();self.speculative=None
                 # Resume before committing a prepared final turn, even if the
                 # caller has only just resumed. During active speech playback,
                 # require 4 strong frames (240ms) so speaker echo cannot cut off Leo.
@@ -828,7 +828,6 @@ class StreamPhoneCall:
                     self.asr=self.service.streaming_asr.new_turn()
                     if prefix:await asyncio.to_thread(self.asr.feed,prefix)
             self.capture.extend(pcm)
-            if self.speech_run>=3 and not self.prepared_speech and (not self.worker or self.worker.done()):self.prepare_speech()
             if self.asr:
                 try:await asyncio.to_thread(self.asr.feed,pcm)
                 except Exception:
@@ -852,19 +851,20 @@ class StreamPhoneCall:
                     self.capture_rejected=False
                 continue
             if self.greeting_pending:
-                if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .45)) and not busy:
+                if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .15)) and not busy:
                     self.greeting_pending=False;self.start_reply(greeting=True)
                 continue
-            # Start background local recognition + LLM prefetch early (~180ms into a pause)
+            # Start background local recognition + LLM prefetch early (~150ms into a pause)
             # so both ASR and speculative tokens are already in flight at the endpoint.
-            early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .18) or (now - self.last_speech >= .28)
+            early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .15) or (now - self.last_speech >= .24)
             if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
                 self.prepare_recognition()
             # Support both continuous silent RTP frames and WhatsApp Opus DTX
             # silence suppression (where RTP packets stop arriving during quiet gaps).
-            quiet_enough = (self.silence_frames >= 7 and now - self.last_speech >= .42) or (now - self.last_speech >= .55)
+            quiet_enough = (self.silence_frames >= 5 and now - self.last_speech >= .32) or (now - self.last_speech >= .42)
             if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
-                self.prepare_recognition()
+                if not self.early_asr:
+                    self.prepare_recognition()
                 audio={
                     'pcm':bytes(self.capture),
                     'stream':self.asr,

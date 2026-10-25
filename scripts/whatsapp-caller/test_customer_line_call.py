@@ -63,6 +63,13 @@ class CustomerLineCallTests(unittest.TestCase):
         with patch.dict(os.environ, {'CUSTOMER_FISH_VOICE_ID': ''}):
             self.assertEqual('owner-voice', self.call(line='customer').speech_config['FISH_VOICE_ID'])
 
+    def test_customer_legacy_or_unset_voice_uses_michael_voice(self):
+        with patch.dict(os.environ, {'CUSTOMER_FISH_VOICE_ID': '711cf3ed00ab441a8f54a45058047b7a'}):
+            self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', self.call(line='customer').speech_config['FISH_VOICE_ID'])
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('CUSTOMER_FISH_VOICE_ID', None)
+            self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', self.call(line='customer').speech_config['FISH_VOICE_ID'])
+
 
 if __name__ == '__main__':
     unittest.main()

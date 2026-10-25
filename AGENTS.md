@@ -27,6 +27,15 @@ Central AI integrates with Hindsight (`:8888`) as Box 1's long-term memory engin
 - Use Hindsight MCP tools (`hindsight_sync_status`, `hindsight_search_knowledge_pages`, `hindsight_reflect`, `hindsight_capture_initiative`) to store and retrieve architectural decisions, user preferences, and operational initiatives.
 - Do not repeat redundant codebase deep-dives when memory pages and graphify subgraphs already exist.
 
+## Mandatory Main Assistant Control for Every New Feature
+
+- **Definition of done:** Every new or changed feature that supports agent reading, control, or delegation MUST be wired to the configured main assistant (currently Leo) in the same change. Do not ship a UI-only feature and leave agent integration for later. Keep the identity dynamic (`agent_profiles WHERE is_main = true`).
+- **All owner channels:** Provide the same authorized capability through App OS chat, App OS voice, WhatsApp owner chat, and WhatsApp owner calls. Update native plugin tools, legacy MCP tools, schemas, validators, tool allowlists, and runtime registration wherever that feature requires them.
+- **Awareness and discovery:** Update the live capability catalog, workspace inspection sections, and shared chat/voice workflow guidance so the assistant knows when and how to use the feature. A prompt claiming access is not an implementation; the tool must execute the real operation and report its actual result.
+- **One implementation:** Reuse the feature's existing authenticated service and persistence path. Task delegation must preserve the selected agent's skills, knowledge, attachments, and normal run/approval lifecycle. Include status/error inspection so the assistant can verify completion rather than merely queueing work.
+- **Access and approvals:** Preserve tenant isolation, owner/team/customer boundaries, and required human approvals. Owner capability parity never grants owner controls to customer chats or public callers, and does not authorize publishing or sending without the required approval.
+- **Verification before completion:** Test tool discovery and execution, changed state/read-back, permission denial, and affected channel adapters locally. Report untested live/provider behavior explicitly. Sync and push affected Box 1 files to both repositories under the existing dual-push rule; deployments remain user-managed.
+
 ## Assistant Identity & Voice Call Architecture
 
 1. **Zero Hardcoded Assistant Names**:
@@ -67,10 +76,12 @@ Central AI integrates with Hindsight (`:8888`) as Box 1's long-term memory engin
        ```
     4. Ensure both repositories are pushed and kept completely in sync.
 
-## Strict Prohibition: No Remote / Live Server Access
+## Strict Prohibition: No Remote / Live Server Access (Unless User Explicitly Allows)
 
-- **NEVER connect to, inspect, ping, curl, SSH into, or check the live server / remote VPS under any circumstances.**
-- All development, debugging, testing, and fixing must be 100% local.
+- **By default, NEVER connect to, inspect, ping, curl, SSH into, or check the live server / remote VPS.**
+- **Exception:** you may access the remote server ONLY when the user explicitly tells you to in the current request. The permission applies to that task only and must not be assumed for later tasks.
+- When permitted, keep access minimal and read-only unless the user says otherwise. Never expose or store secrets.
+- Otherwise, all development, debugging, testing, and fixing must be 100% local.
 - The user exclusively handles all deployments via Coolify.
 
 ## Supabase & Database Layer Best Practices (RLS & Schema Security)

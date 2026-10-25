@@ -88,6 +88,13 @@ _fish_working_model = None
 _fish_failed_models = set()
 
 
+def _resolve_fish_tts_model(config):
+    raw = str((config or {}).get('FISH_TTS_MODEL') or '').strip()
+    if not raw or raw == 's2.1-pro-free':
+        return 's1'
+    return raw
+
+
 def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
     global _fish_working_model
     from voice_http import client as http_client
@@ -95,14 +102,17 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
     voice_id = (config.get('FISH_VOICE_ID') or '').strip()
     if not key or not voice_id or not text or not text.strip():
         return b''
+    cleaned_text = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', text, flags=re.I).strip()
+    if not cleaned_text:
+        return b''
     payload = json.dumps({
-        'text': text.strip(),
+        'text': cleaned_text,
         'reference_id': voice_id,
         'format': 'pcm',
         'sample_rate': rate,
         'latency': 'balanced'
     }).encode('utf-8')
-    configured_model = config.get('FISH_TTS_MODEL') or 's2.1-pro-free'
+    configured_model = _resolve_fish_tts_model(config)
     if _fish_working_model and configured_model in _fish_failed_models:
         models_to_try = [_fish_working_model]
     else:
@@ -202,7 +212,7 @@ class FishRestSpeech:
                 self.control.check()
                 if self.bytes > clause_bytes_before:
                     raise  # Never replay a partly spoken clause through another TTS.
-                _fish_http_cooldown_until = time.monotonic() + 120
+                _fish_http_cooldown_until = time.monotonic() + 3.0
                 import sys
                 print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc}), falling back to NativeSpeech", file=sys.stderr)
         from native_call_speech import pcm as native_pcm
@@ -238,8 +248,8 @@ class FishRestSpeech:
 
     def _drain_ready_clauses(self):
         while self.pending:
-            min_len = 10 if self.first_flush is None else 90
-            m = re.search(rf'^(\s*.{{{min_len},}}?(?<!\d)[.!?]\s+)', self.pending, re.S)
+            min_len = 10 if self.first_flush is None else 36
+            m = re.search(rf'^(\s*.{{{min_len},}}?(?<!\d)[.!?;:]\s+)', self.pending, re.S)
             if not m:
                 break
             clause = m.group(1).strip()
@@ -292,7 +302,7 @@ class FreeSpeech:
         self.transcript = ''
         self.transport_guard = threading.RLock()
         self.abandoned = False
-        self.connect_deadline = time.monotonic() + 1.5
+        self.connect_deadline = time.monotonic() + 4.0
         if time.monotonic() < _fish_ws_cooldown_until:
             self.abandoned = True
             self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
@@ -303,14 +313,14 @@ class FreeSpeech:
 
     def receive(self):
         global _fish_ws_cooldown_until, _fish_working_model
-        configured = self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'
+        configured = _resolve_fish_tts_model(self.config)
         model = _fish_working_model if (configured in _fish_failed_models and _fish_working_model) else configured
         try:
             import msgpack
             from websockets.sync.client import connect
             with connect('wss://api.fish.audio/v1/tts/live', additional_headers={
                     'Authorization': 'Bearer ' + (self.config.get('FISH_API_KEY') or ''),
-                    'model': model}, open_timeout=1.5, close_timeout=1,
+                    'model': model}, open_timeout=4.0, close_timeout=1,
                     max_size=4*1024*1024, max_queue=8) as socket:
                 with self.transport_guard:
                     if self.abandoned:
@@ -328,7 +338,7 @@ class FreeSpeech:
                     self.control.check()
                     if self.abandoned:
                         return
-                    if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.2:
+                    if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.8:
                         raise RuntimeError('Speech first audio deadline exceeded')
                     try: raw = socket.recv(timeout=.15)
                     except TimeoutError: continue
@@ -352,12 +362,15 @@ class FreeSpeech:
                         return
                 raise RuntimeError('Speech deadline exceeded')
         except Exception as exc:
-            if not self.control.cancelled.is_set():
+            if not self.control.cancelled.is_set() and not self.abandoned:
                 if not self.bytes:
                     _fish_failed_models.add(model)
                     if model != 's1' and not _fish_working_model:
                         _fish_working_model = 's1'
-                    _fish_ws_cooldown_until = time.monotonic() + 300
+                    elif self.started:
+                        # Only apply a brief 3s backoff when an active synthesis stream failed
+                        # after text was sent; never poison WS for 300s or on idle pre-open sockets.
+                        _fish_ws_cooldown_until = time.monotonic() + 3.0
                 import sys
                 print(f"[FreeSpeech] Cloud WS TTS unavailable ({type(exc).__name__})", file=sys.stderr)
                 self.error = type(exc).__name__
@@ -434,10 +447,13 @@ class FreeSpeech:
             self.use_fallback()
 
     def text(self, value):
-        # Strip markdown markers to protect voice prosody
+        # Strip markdown markers and any bracketed stage cues to protect voice prosody
         cleaned = value.replace('**', '').replace('`', '').replace('*', '')
+        cleaned = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', cleaned, flags=re.I)
+        if not cleaned:
+            return
         self.transcript += cleaned
-        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.2)) and not self.bytes and not self.fallback:
+        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.8)) and not self.bytes and not self.fallback:
             self.use_fallback()
         if self.fallback:
             self._sync_fallback()
@@ -446,7 +462,7 @@ class FreeSpeech:
         self.unflushed += cleaned
 
         # Stream words as soon as boundaries are reached
-        boundaries = list(re.finditer(r'\s+|[!?;:]$|\.(?<!\d\.)$', self.pending))
+        boundaries = list(re.finditer(r'\s+|[!?;:,]$|\.(?<!\d\.)$', self.pending))
         if not boundaries:
             return
         cut = boundaries[-1].end()
@@ -454,12 +470,12 @@ class FreeSpeech:
         self.started = self.started or time.monotonic()
         self.send({'event': 'text', 'text': phrase})
         if not self.fallback:
-            # Flush the first usable phrase (at least 4 words / 20 chars) while subsequent model words arrive.
-            first_phrase = (self.first_flush is None and 
-                            len(self.unflushed.strip()) >= 20 and 
-                            len(self.unflushed.split()) >= 4)
-            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed))
-            overflow = len(self.unflushed) >= 90
+            # Flush the first usable phrase (at least 2 words / 12 chars or clause comma) while subsequent model words arrive.
+            first_phrase = (self.first_flush is None and (
+                            (len(self.unflushed.strip()) >= 12 and len(self.unflushed.split()) >= 2) or
+                            (len(self.unflushed.strip()) >= 8 and bool(re.search(r'[,!?;:.]\s*$', self.unflushed)))))
+            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed)) or (len(self.unflushed.strip()) >= 24 and bool(re.search(r',\s*$', self.unflushed)))
+            overflow = len(self.unflushed) >= 75
 
             if punct_boundary or first_phrase or overflow:
                 self.send({'event': 'flush'})
@@ -569,8 +585,10 @@ def openrouter_stream(config, messages, tools, control):
     last_exc = None
     for idx, candidate_model in enumerate(candidates):
         payload = {'model': candidate_model, 'messages': messages, 'stream': True,
-                   'max_tokens': 900, 'temperature': .4,
+                   'max_tokens': 900 if tools else 220, 'temperature': .4,
                    'provider': {'sort': 'latency', 'allow_fallbacks': True}}
+        if not tools and 'gemini' in candidate_model.lower():
+            payload['reasoning'] = {'effort': 'none'}
         if candidate_model in {'openai/gpt-4o-mini', 'openai/gpt-4.1-mini'}:
             fallback = 'openai/gpt-4.1-mini' if candidate_model == 'openai/gpt-4o-mini' else 'openai/gpt-4o-mini'
             payload['models'] = [candidate_model, fallback]

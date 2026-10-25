@@ -6,15 +6,15 @@
     "semantic_hash": ""
   },
   "hermes_plugins/central_ai_app_os/__init__.py": {
-    "mtime": 1792748679.5343516,
-    "seen": 1792762024.238677,
-    "ast_hash": "2b41609dd3157bfe49248846c7eb5c6b",
+    "mtime": 1792846269.3881094,
+    "seen": 1792846485.3570623,
+    "ast_hash": "cda74903aa6c6d3400a4ceb7ed6323c3",
     "semantic_hash": ""
   },
   "hermes_plugins/central_ai_app_os/client.py": {
-    "mtime": 1792748675.4976442,
-    "seen": 1792762024.238677,
-    "ast_hash": "85d9f08ee16a1c97929b12d291571824",
+    "mtime": 1792847629.5766149,
+    "seen": 1792847657.1890793,
+    "ast_hash": "59378ba1829a87434a57c67dd39c5ac9",
     "semantic_hash": ""
   },
   "hermes_plugins/central_ai_whatsapp/__init__.py": {
@@ -24,9 +24,9 @@
     "semantic_hash": ""
   },
   "hermes_plugins/central_ai_whatsapp/adapter.py": {
-    "mtime": 1792684208.6191747,
-    "seen": 1792762024.238677,
-    "ast_hash": "cdf27727411f65dd820b6a83267c54c9",
+    "mtime": 1792846450.5520818,
+    "seen": 1792846485.3570623,
+    "ast_hash": "414525aaec6a177f74c7c746b28ea213",
     "semantic_hash": ""
   },
   "scripts/app_os_plugin.py": {
@@ -162,9 +162,9 @@
     "semantic_hash": ""
   },
   "scripts/hermes-os-mcp.py": {
-    "mtime": 1792656641.6970165,
-    "seen": 1792762024.238677,
-    "ast_hash": "70e2b448e1d44df516fc930f35468d19",
+    "mtime": 1792846269.3902142,
+    "seen": 1792846485.3570623,
+    "ast_hash": "7d3d91e40017cea7350946afa832a0d0",
     "semantic_hash": ""
   },
   "scripts/hermes-settings-entry.py": {
@@ -174,9 +174,9 @@
     "semantic_hash": ""
   },
   "scripts/hermes_artwork.py": {
-    "mtime": 1792506904.7194922,
-    "seen": 1792762024.238677,
-    "ast_hash": "f498147b1d5aee4d0c654c220269cf4b",
+    "mtime": 1792845626.7599354,
+    "seen": 1792845862.707318,
+    "ast_hash": "0d5a831b079c66b8f246cf7b249b4e84",
     "semantic_hash": ""
   },
   "scripts/hermes_backup_export.py": {
@@ -234,9 +234,9 @@
     "semantic_hash": ""
   },
   "scripts/hermes_os.py": {
-    "mtime": 1792684233.8897896,
-    "seen": 1792762024.238677,
-    "ast_hash": "c56f859d66405344d35d4a6ffa4757a5",
+    "mtime": 1792847507.209102,
+    "seen": 1792847535.016362,
+    "ast_hash": "7afe1904e909fa93f5108476cfd51324",
     "semantic_hash": ""
   },
   "scripts/hermes_os_calls.py": {
@@ -246,9 +246,9 @@
     "semantic_hash": ""
   },
   "scripts/hermes_phone_tools.py": {
-    "mtime": 1792459546.1063526,
-    "seen": 1792762024.238677,
-    "ast_hash": "d693658ef29c679eaf1210934be8b794",
+    "mtime": 1792846296.0429716,
+    "seen": 1792846485.3570623,
+    "ast_hash": "4a9b4b37f2cfdca98eb0d776a2b2194d",
     "semantic_hash": ""
   },
   "scripts/hermes_premade.py": {
@@ -300,9 +300,9 @@
     "semantic_hash": ""
   },
   "scripts/hermes_voice.py": {
-    "mtime": 1792683582.2648234,
-    "seen": 1792762024.238677,
-    "ast_hash": "193095eda6f00e04260d2a91797fd0ab",
+    "mtime": 1792846269.3892136,
+    "seen": 1792846485.3570623,
+    "ast_hash": "a9bcb69274a3ef1e2efbbbeb38490983",
     "semantic_hash": ""
   },
   "scripts/hermes_whatsapp_setup.py": {
@@ -348,9 +348,9 @@
     "semantic_hash": ""
   },
   "scripts/local-bridge.py": {
-    "mtime": 1792748644.7370365,
-    "seen": 1792762024.238677,
-    "ast_hash": "dfd6b5d18a3e5e479aed5dee4b2e663b",
+    "mtime": 1792844247.3132248,
+    "seen": 1792844355.2699826,
+    "ast_hash": "d4ba1585b6220802acce0338318b3a19",
     "semantic_hash": ""
   },
   "scripts/local_call_asr.py": {
@@ -810,9 +810,9 @@
     "semantic_hash": ""
   },
   "AGENTS.md": {
-    "mtime": 1792016611.3681657,
-    "seen": 1792017018.744287,
-    "ast_hash": "67f17aae5a805d6a64f3c018d7a17986",
+    "mtime": 1792846526.0103056,
+    "seen": 1792847535.016362,
+    "ast_hash": "a87cf37214cba1bea835b65d7ad88a05",
     "semantic_hash": ""
   },
   "README.md": {
@@ -822,9 +822,9 @@
     "semantic_hash": ""
   },
   "compose.hermes.yaml": {
-    "mtime": 1792762258.2133734,
-    "seen": 1792762359.276298,
-    "ast_hash": "7bbf61897359be0014cf4d40628003dc",
+    "mtime": 1792843960.5465076,
+    "seen": 1792844158.4944344,
+    "ast_hash": "f32277c5e0bce84c9dea178e023ecbdc",
     "semantic_hash": ""
   },
   "compose.yaml": {
@@ -906,15 +906,15 @@
     "semantic_hash": ""
   },
   "scripts/hermes_social.py": {
-    "mtime": 1792770324.0465813,
-    "seen": 1792770628.722535,
-    "ast_hash": "7a370ae6c700c81aa9ab1a0922e38cbd",
+    "mtime": 1792777459.0351646,
+    "seen": 1792844158.4944344,
+    "ast_hash": "b66f8ee53687a6c840a6aa12927e8fe8",
     "semantic_hash": ""
   },
   "scripts/test_hermes_social.py": {
-    "mtime": 1792772528.49097,
-    "seen": 1792772769.80619,
-    "ast_hash": "2a157fb4fcc480db670ad8cb0ef72ac9",
+    "mtime": 1792776579.722147,
+    "seen": 1792844158.4944344,
+    "ast_hash": "fefd8c57eda60c630e2bb44a9528007e",
     "semantic_hash": ""
   },
   "skills/personal-assistant/ads/SKILL.md": {
@@ -936,9 +936,21 @@
     "semantic_hash": ""
   },
   "skills/personal-assistant/promotion/SKILL.md": {
-    "mtime": 1792505769.93508,
-    "seen": 1792762024.238677,
-    "ast_hash": "7f2d5b26515187f74e414761aa8f6eda",
+    "mtime": 1792844324.7136695,
+    "seen": 1792844355.2699826,
+    "ast_hash": "18af4ff474f4dd92d51aaa2a97d8dc77",
+    "semantic_hash": ""
+  },
+  "scripts/test_hermes_artwork.py": {
+    "mtime": 1792845642.7639296,
+    "seen": 1792845862.707318,
+    "ast_hash": "bfc65e210dea9eb66d8c096195bd1927",
+    "semantic_hash": ""
+  },
+  "scripts/test_workspace_tools.py": {
+    "mtime": 1792847583.1015227,
+    "seen": 1792847657.1890793,
+    "ast_hash": "9fe1c362e380a00e52a7e78cfc187b7f",
     "semantic_hash": ""
   }
 }

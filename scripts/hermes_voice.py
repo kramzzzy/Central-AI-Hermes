@@ -247,7 +247,10 @@ class VoiceProvider:
             tts_voice_id = tts_voice_id or self.config['FISH_VOICE_ID']
             data = json.dumps({'text': text, 'reference_id': tts_voice_id, 'format': 'pcm', 'sample_rate': 24000, 'latency': 'balanced'}).encode()
             target = '/v1/tts'
-            headers.update({'Content-Type': 'application/json', 'model': self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'})
+            tts_model = self.config.get('FISH_TTS_MODEL') or 's1'
+            if tts_model == 's2.1-pro-free':
+                tts_model = 's1'
+            headers.update({'Content-Type': 'application/json', 'model': tts_model})
         elif path == '/voice/asr':
             if self.config.get('FISH_ASR_ENABLED') != 'true':
                 return handler.reply(503, {'error': 'Fish transcription is not enabled in Hermes.'})
@@ -324,9 +327,12 @@ class VoiceProvider:
                 return
             upstream = None
             try:
+                tts_model = self.config.get('FISH_TTS_MODEL') or 's1'
+                if tts_model == 's2.1-pro-free':
+                    tts_model = 's1'
                 upstream = connect('wss://api.fish.audio/v1/tts/live', additional_headers={
                     'Authorization': 'Bearer ' + self.config['FISH_API_KEY'],
-                    'model': self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'}, open_timeout=15, close_timeout=3, max_size=4*1024*1024, max_queue=16)
+                    'model': tts_model}, open_timeout=15, close_timeout=3, max_size=4*1024*1024, max_queue=16)
                 client.send(json.dumps({'ready': True, 'reference_id': self.config['FISH_VOICE_ID']}))
             except Exception:
                 if upstream:
