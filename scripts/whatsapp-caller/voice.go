@@ -68,6 +68,8 @@ func (v *voiceAudio) request(ctx context.Context, path string, body []byte) ([]b
 	req.Header.Set("Authorization", "Bearer "+v.key)
 	req.Header.Set("X-Call-ID", v.id)
 	if v.callerNumber != "" { req.Header.Set("X-Caller-Number", v.callerNumber) }
+	// The shared voice service routes customer-line calls to the customer agent, never the owner assistant.
+	if line := os.Getenv("WHATSAPP_LINE_ID"); line != "" { req.Header.Set("X-Line-ID", line) }
 	resp, err := voiceHTTPClient.Do(req)
 	if err != nil {
 		return nil, err

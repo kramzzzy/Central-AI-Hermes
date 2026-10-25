@@ -628,7 +628,7 @@ class Conversation:
         except ValueError:
             pass
         available_names = {t['name'] for t in TASK_TOOLS}
-        self.names = (names or {
+        self.names = (names if names is not None else {
             'native_leo', 'task_status', 'cancel_task', 'send_whatsapp_message',
             'call_whatsapp_contact', 'get_live_weather', 'control_widget',
             'end_call', 'inspect_workspace', 'manage_crm', 'manage_tasks', 'search_knowledge', 'get_knowledge', 'add_knowledge', 'get_workspace_overview'

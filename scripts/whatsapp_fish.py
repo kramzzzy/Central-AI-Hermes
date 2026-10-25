@@ -910,10 +910,26 @@ class FishService:
         if not self.allowed(request.headers.get('X-Call-ID', '')):
             return connection.respond(403, 'Inactive call')
 
-    def start(self, call, caller=None, callback_id=None):
+    def start(self, call, caller=None, callback_id=None, member=None):
         async def start():
             if self.call:
                 raise RuntimeError('Existing Fish call')
+            if member is not None:
+                # Customer-line call: own empty job list, never the owner's tasks, results or native session.
+                def no_native(task_id, label, ready):
+                    raise PermissionError('Customer calls cannot start background work')
+                jobs = BackgroundTasks(Path(self.config.get('DATA', '/data')) / ('customer-' + member['number']),
+                    lambda call, backend, admitted: NativeTaskBridge(call, backend, admitted, timeout=900),
+                    no_native, owner='whatsapp-customer:' + member['number'], slots=self.slots)
+                session = self.call_factory(self, call, {**member, 'jobs': jobs})
+                self.call = session
+                try:
+                    await session.start()
+                except BaseException:
+                    self.call = None
+                    await session.close()
+                    raise
+                return
             target_caller = caller or routing().get('owner') or ''
             if not target_caller:
                 contacts = routing().get('contacts', [])

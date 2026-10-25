@@ -61,6 +61,15 @@ try:
 except Exception:
     pass
 KEY = KEYFILE.read_text().strip()
+# The customer connector reads its voice key from its own volume (mounted here at /data/customer);
+# without this it falls back to an env token this service rejects, so customer-line calls never start.
+CUSTOMER_KEYFILE = Path('/data/customer/voice-key')
+try:
+    if CUSTOMER_KEYFILE.parent.is_dir() and (not CUSTOMER_KEYFILE.is_file() or CUSTOMER_KEYFILE.read_text().strip() != KEY):
+        CUSTOMER_KEYFILE.write_text(KEY)
+        os.chmod(CUSTOMER_KEYFILE, 0o666)
+except Exception as exc:
+    print(f"[voice] customer line key not shared: {exc}", flush=True)
 config = dotenv_values('/opt/data/profiles/leo/.env')
 from central_ai_integrations import integration_config
 config = integration_config(config)
@@ -628,13 +637,20 @@ class Handler(BaseHTTPRequestHandler):
                 with guard:
                     if active:
                         return self.reply(409, {})
+                    customer_line = self.headers.get('X-Line-ID') == 'customer'
                     try:
                         caller_header = self.headers.get('X-Caller-Number') or OWNER or ''
                         member = resolve_caller(caller_header)
                     except PermissionError:
                         return self.reply(403, {})
                     active_caller = member['number']
-                    if fish_service and active_caller not in fish_service.members:
+                    if customer_line and (callback_id or not fish_service):
+                        # Customer calls have no owner callbacks or native owner session.
+                        return self.reply(403, {})
+                    if customer_line:
+                        # Uncached per call: the same number may also be an owner-line member.
+                        member = {'number': active_caller, 'name': f'Caller +{active_caller}', 'role': 'customer', 'line': 'customer'}
+                    elif fish_service and active_caller not in fish_service.members:
                         data = caller_data(DATA_BASE, active_caller)
                         data.mkdir(parents=True, exist_ok=True)
                         native_fac = (lambda num: lambda task_id, label, ready: task_native(task_id, label, ready, resolve_caller(num)))(active_caller)
@@ -655,7 +671,9 @@ class Handler(BaseHTTPRequestHandler):
                     turn_records.clear()
                 if fish_service:
                     try:
-                        if callback_id:
+                        if customer_line:
+                            fish_service.start(call, caller=active_caller, member=member)
+                        elif callback_id:
                             fish_service.start(call, caller=active_caller, callback_id=callback_id)
                         else:
                             fish_service.start(call, caller=active_caller)

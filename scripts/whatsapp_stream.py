@@ -7,6 +7,7 @@ import asyncio
 from whatsapp_routing import routing
 from collections import deque
 import json
+import os
 import re
 import struct
 import time
@@ -55,6 +56,11 @@ class StreamPhoneCall:
         self.service, self.call = service, call
         self.member = member or service.members[routing()['owner']]
         self.jobs = self.member['jobs']
+        # Customer-line calls: customer agent persona and voice, no tools, never the owner's native session.
+        self.customer = self.member.get('line') == 'customer'
+        customer_voice = os.environ.get('CUSTOMER_FISH_VOICE_ID', '').strip()
+        self.speech_config = ({**service.config, 'FISH_VOICE_ID': customer_voice, 'FISH_ENGLISH_FALLBACK_VOICE_ID': customer_voice}
+                              if self.customer and customer_voice else service.config)
         self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=512)
         self.closed = self.connected = False
         self.state, self.generation = 'initializing', 1
@@ -254,7 +260,8 @@ class StreamPhoneCall:
         )
 
         prompt = central_ai_identity("\n\n".join(p for p in identity_parts if p))
-        import os
+        if self.customer:
+            prompt = self._customer_prompt(company)
         conv_config = dict(self.service.config or {})
         if not conv_config.get('OPENROUTER_API_KEY') and os.environ.get('OPENROUTER_API_KEY'):
             conv_config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
@@ -281,9 +288,31 @@ class StreamPhoneCall:
             self.fallback_conversation.prompt = prompt
             self.fallback_conversation.config = conv_config
         else:
-            self.fallback_conversation = Conversation(conv_config, prompt, dispatch_tool)
+            self.fallback_conversation = Conversation(conv_config, prompt, dispatch_tool, names=set() if self.customer else None)
         self._agent_conv_mtime = mtime_key
         return self.fallback_conversation
+
+    def _customer_prompt(self, company):
+        # Persona and knowledge come from the customer agent App OS syncs into contacts.json; nothing is fixed here.
+        r = routing()
+        company = company or str(r.get('company_name') or '').strip()
+        role = str(r.get('customer_agent_role') or '').strip()
+        cards = [f"- [{c.get('category') or 'General'}] {c.get('title') or ''}: {str(c.get('content') or '')[:1200]}"
+                 for c in (r.get('customer_agent_knowledge') or [])[:15] if isinstance(c, dict)]
+        parts = [f"You are {str(r.get('customer_agent') or '').strip() or 'the customer service assistant'}"
+                 f"{', ' + role if role else ''}{' for ' + company if company else ''}, answering a customer on a live WhatsApp voice call.",
+                 str(r.get('customer_agent_instructions') or '').strip(),
+                 '[Assigned Knowledge Base]\n' + '\n'.join(cards) + '\n[/Assigned Knowledge Base]' if cards else '',
+                 'You have no tools on this call: never claim to book, send, look up or change anything.',
+                 # The shared voice note carries owner tool guidance, so customer calls get delivery rules only.
+                 '[Live call: speak in one or two short, natural sentences; no lists, markdown or URLs. Ask one question '
+                 'at a time. An occasional single Fish S2 cue such as [happy], [laughing], [curious] or [empathetic] at a '
+                 'sentence start may fit the moment; cues are delivery, not spoken words.]']
+        try:
+            from central_ai_identity import central_ai_identity
+        except Exception:
+            def central_ai_identity(x): return x
+        return central_ai_identity("\n\n".join(p for p in parts if p))
 
     def task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -423,7 +452,7 @@ class StreamPhoneCall:
             await asyncio.to_thread(self._get_fallback_conversation)
         except Exception:
             pass
-        if not getattr(self.service, 'native_conversation', None):
+        if self.customer or not getattr(self.service, 'native_conversation', None):
             return
         try:
             conv = await asyncio.to_thread(self.service.native_conversation, self.call, self.member)
@@ -452,7 +481,7 @@ class StreamPhoneCall:
             future=asyncio.run_coroutine_threadsafe(self.enqueue(data,generation,control,framer,final),loop)
             try:future.result(timeout=30)
             except Exception:future.cancel();raise TurnCancelled()
-        speech=FreeSpeech(self.service.config,output,control,rate=16000)
+        speech=FreeSpeech(self.speech_config,output,control,rate=16000)
         self.prepared_speech=(control,speech,framer,output)
 
     def start_reply(self, audio=None, notice=None, greeting=False):
@@ -494,7 +523,7 @@ class StreamPhoneCall:
             nonlocal framer,output,speculative,stage,spoke_any
             began=time.monotonic()
             if prepared:_,speech,framer,output=prepared
-            else:speech=FreeSpeech(self.service.config,output,control,rate=16000)
+            else:speech=FreeSpeech(self.speech_config,output,control,rate=16000)
             first=None
             hermes_started=None
             timing={}
@@ -642,7 +671,7 @@ class StreamPhoneCall:
                         except Exception as conv_exc:
                             control.check()
                             if first is None:
-                                if not self.conversation and getattr(self.service, 'native_conversation', None):
+                                if not self.customer and not self.conversation and getattr(self.service, 'native_conversation', None):
                                     try:
                                         self.conversation = self.service.native_conversation(self.call, self.member)
                                     except Exception:
