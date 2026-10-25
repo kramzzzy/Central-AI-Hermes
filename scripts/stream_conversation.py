@@ -393,7 +393,8 @@ class FreeSpeech:
             except Exception:
                 pass
         can_use_hermes_ws = os.environ.get('HERMES_PHONE_CONVERSATION') == 'true'
-        if (not fish_key and not can_use_hermes_ws) or time.monotonic() < _fish_ws_cooldown_until:
+        prefer_http_tts = os.environ.get('FISH_TTS_TRANSPORT', 'http').strip().lower() == 'http'
+        if prefer_http_tts or (not fish_key and not can_use_hermes_ws) or time.monotonic() < _fish_ws_cooldown_until:
             self.abandoned = True
             self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
             self.ready.set()
@@ -506,6 +507,7 @@ class FreeSpeech:
         self.bytes = self.fallback.bytes
 
     def use_fallback(self):
+        global _fish_ws_cooldown_until
         self.control.check()
         with self.transport_guard:
             if self.bytes:
@@ -514,6 +516,7 @@ class FreeSpeech:
                 self.complete = True
                 self.pending = self.unflushed = ''
                 return
+            _fish_ws_cooldown_until = max(_fish_ws_cooldown_until, time.monotonic() + 1800.0)
             self.abandoned = True  # A late socket must never compete with HTTP.
             if not self.fallback:
                 self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)

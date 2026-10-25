@@ -408,7 +408,19 @@ def incomplete_utterance(text):
 
 def recognize(samples):
     """Use independent English transcripts; withhold uncertain decoding."""
-    segments, _ = model.transcribe(samples, language='en', task='transcribe',
+    rms = float(np.sqrt(np.mean(samples*samples))) if len(samples) else 0.0
+    quality = {'language': 'en', 'audio_ms': round(len(samples)/16),
+               'decision': 'clarify' if rms > 0.004 else 'silence'}
+    if rms <= 0.0035 or len(samples) < 1600:
+        return '', quality
+    # Trim leading/trailing silence in stream mode so CPU Whisper decodes in ~120-200ms instead of 900ms.
+    decode_samples = samples
+    if CONVERSATION_MODE == 'stream':
+        active_idx = np.flatnonzero(np.abs(samples) > 0.007)
+        if len(active_idx):
+            pad = 1600
+            decode_samples = samples[max(0, int(active_idx[0]) - pad):min(len(samples), int(active_idx[-1]) + pad)]
+    segments, _ = model.transcribe(decode_samples, language='en', task='transcribe',
         # Go already selects a voiced utterance with pre-roll. A second VAD
         # removed quiet opening words in the synthetic phone-band test.
         beam_size=1 if CONVERSATION_MODE == 'stream' else 5, temperature=0, vad_filter=False,
@@ -419,9 +431,6 @@ def recognize(samples):
         **({'without_timestamps': True} if CONVERSATION_MODE == 'stream' else {}))
     parts = list(segments)
     text = ' '.join(s.text.strip() for s in parts).strip()
-    rms = float(np.sqrt(np.mean(samples*samples)))
-    quality = {'language': 'en', 'audio_ms': round(len(samples)/16),
-               'decision': 'clarify' if rms > 0.004 else 'silence'}
     if not text:
         return '', quality
     quality.update(avg_logprob=round(min(s.avg_logprob for s in parts), 3),

@@ -129,6 +129,15 @@ class StreamPhoneCall:
         self.conversation = None
         self.fallback_conversation = None
         self._agent_conv_mtime = None
+        self.call_turns = []
+        self.call_started_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        self.service.metrics['last_call_transcript'] = {
+            'call_id': self.call,
+            'caller': self.member.get('number'),
+            'line': 'customer' if self.customer else 'owner',
+            'started_at': self.call_started_at,
+            'turns': self.call_turns,
+        }
 
     def _get_fallback_conversation(self):
         from pathlib import Path
@@ -488,6 +497,8 @@ class StreamPhoneCall:
             early_entry['local_done']=done_evt
             def _run_early_local():
                 try:
+                    if control.cancelled.is_set() or self.generation != generation:
+                        return
                     res=local_fn(pcm)
                     early_entry['local_result']=res
                     l_text,l_qual=res
@@ -779,6 +790,29 @@ class StreamPhoneCall:
                         stage=stage, cancelled=control.cancelled.is_set())
                     self.service.metrics['last_turn_timing']=timing
                     print(json.dumps({'phone_voice_timing':timing}),flush=True)
+                if greeting or (audio is not None and (spoke_any or locals().get('text'))):
+                    caller_utt = '[Call Answered]' if greeting else str(locals().get('text') or '').strip()
+                    assistant_utt = self.spoken_text.strip()
+                    if caller_utt or assistant_utt:
+                        self.call_turns.append({
+                            'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                            'caller': caller_utt,
+                            'assistant': assistant_utt,
+                            'timing': dict(timing),
+                        })
+                        transcript_snap = {
+                            'call_id': self.call,
+                            'caller': self.member.get('number'),
+                            'line': 'customer' if self.customer else 'owner',
+                            'started_at': self.call_started_at,
+                            'turns': list(self.call_turns),
+                        }
+                        self.service.metrics['last_call_transcript'] = transcript_snap
+                        try:
+                            with open('/data/last_call_transcript.json', 'w', encoding='utf-8') as tf:
+                                json.dump(transcript_snap, tf, ensure_ascii=False, indent=2)
+                        except Exception:
+                            pass
                 if pending_input:
                     self.close_asr(pending_input.get('stream'))
                     self.close_asr(pending_input.get('prepared_asr'))
@@ -864,9 +898,9 @@ class StreamPhoneCall:
             if speaking and len(pcm) == 1920:
                 samples = struct.unpack('<960h', pcm)
                 rms = (sum(s * s for s in samples) / 960) ** 0.5 / 32768.0
-                if (is_playing or self.state == 'thinking') and rms < 0.015:
+                if (is_playing or self.state == 'thinking') and rms < 0.032:
                     speaking = False
-                elif rms < 0.005 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.008):
+                elif rms < 0.007 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.011):
                     speaking = False
             self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
@@ -875,16 +909,16 @@ class StreamPhoneCall:
                 continue
             if speaking:
                 self.speech_run+=1;self.last_user_activity=self.last_speech=time.monotonic();self.voiced+=1
-                if self.speech_run>=2 or not self.early_asr:
+                if self.speech_run>=3 or not self.early_asr:
                     self.capture_version+=1
                     self.discard_early_asr()
                     if self.speculative:self.speculative.cancel();self.speculative=None
-                # Require 3 consecutive voiced frames (180ms) before resuming a thinking
-                # turn so single-frame phone comfort noise never cancels in-flight ASR/LLM.
-                if self.speech_run>=3 and self.state=='thinking' and self.pending_input:self.resume_input()
-                barge_frames = 4 if is_playing else 3
-                if self.speech_run>=barge_frames and (self.state in {'speaking','thinking'} or self.playback_until>time.monotonic()):
-                    if not self.resume_input():self.flush()
+                # Require 5 consecutive voiced frames (300ms at rms>=0.032) before resuming a thinking
+                # turn, and never flush a thinking turn that already started generating text before audio plays.
+                if self.speech_run>=5 and self.state=='thinking' and self.pending_input:
+                    self.resume_input()
+                if is_playing and self.speech_run>=7:
+                    self.flush()
             else: self.speech_run=0
             if not self.capture:
                 if not speaking: self.pre.append(pcm);continue
