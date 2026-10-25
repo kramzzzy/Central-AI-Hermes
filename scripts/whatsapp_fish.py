@@ -850,9 +850,10 @@ Do not start background jobs to rediscover these known missing connections.\n"""
 
 
 class FishService:
-    def __init__(self, config, data, key, native, allowed, metrics, port=8082, native_factory=None, members=None, call_factory=None, hosted=True):
+    def __init__(self, config, data, key, native, allowed, metrics, port=8082, native_factory=None, members=None, call_factory=None, hosted=True, admit=None):
         config = phone_speech(config)
         self.config, self.key, self.native, self.allowed, self.metrics = config, key, native, allowed, metrics
+        self.admit = admit
         self.vad = speech_model()
         self.slots = threading.BoundedSemaphore(3)
         self.jobs = BackgroundTasks(data, lambda call, backend, admitted: NativeTaskBridge(call, backend, admitted, timeout=900),
@@ -905,11 +906,14 @@ class FishService:
         self.loop.run_forever()
 
     def authorize(self, connection, request):
-        keys = (self.key,) if isinstance(self.key, str) else self.key
+        # key -> is customer line; a plain key is the owner line.
+        keys = {self.key: False} if isinstance(self.key, str) else self.key
         auth = request.headers.get('Authorization', '')
-        if request.path != '/audio' or not any(hmac.compare_digest(auth, 'Bearer ' + k) for k in keys):
+        line = next((customer for k, customer in keys.items() if hmac.compare_digest(auth, 'Bearer ' + k)), None)
+        if request.path != '/audio' or line is None:
             return connection.respond(401, 'Unauthorized')
-        if not self.allowed(request.headers.get('X-Call-ID', '')):
+        call = request.headers.get('X-Call-ID', '')
+        if not self.allowed(call) or (self.admit and not self.admit(call, line)):
             return connection.respond(403, 'Inactive call')
 
     def start(self, call, caller=None, callback_id=None, member=None):

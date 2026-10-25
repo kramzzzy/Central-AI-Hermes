@@ -98,19 +98,21 @@ class PhoneAudioFilter:
         return bytes([int(self.probability >= .35)]) + bytes(result)
 
 
-def start_audio_server(key, allowed_call, metrics):
+def start_audio_server(key, allowed_call, metrics, admit=None):
     model = speech_model()
     connected = set()
     lock = threading.Lock()
 
-    keys = (key,) if isinstance(key, str) else tuple(key)
+    # key -> is customer line; a plain key is the owner line.
+    keys = {key: False} if isinstance(key, str) else dict(key)
 
     def authorize(connection, request):
         auth = request.headers.get('Authorization', '')
-        if request.path != '/audio' or not any(hmac.compare_digest(auth, 'Bearer ' + k) for k in keys):
+        line = next((customer for k, customer in keys.items() if hmac.compare_digest(auth, 'Bearer ' + k)), None)
+        if request.path != '/audio' or line is None:
             return connection.respond(401, 'Unauthorized')
         call = request.headers.get('X-Call-ID', '')
-        if not allowed_call(call):
+        if not allowed_call(call) or (admit and not admit(call, line)):
             return connection.respond(403, 'Inactive call')
 
     def handle(connection):

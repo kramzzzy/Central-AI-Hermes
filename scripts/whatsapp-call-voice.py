@@ -65,20 +65,32 @@ KEY = KEYFILE.read_text().strip()
 # It gets a distinct key: requests signed with it can only open tool-less customer-line sessions.
 CUSTOMER_KEYFILE = Path('/data/customer/voice-key')
 CUSTOMER_KEY = ''
+NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
 try:
     if CUSTOMER_KEYFILE.parent.is_dir():
-        CUSTOMER_KEY = CUSTOMER_KEYFILE.read_text().strip() if CUSTOMER_KEYFILE.is_file() else ''
-        # Replace a missing, weak, owner-equal or env-fallback key the connector may have written itself.
+        try:
+            # Never follow a link planted in the connector's volume.
+            fd = os.open(CUSTOMER_KEYFILE, os.O_RDONLY | NOFOLLOW)
+            with os.fdopen(fd) as handle:
+                os.fchmod(handle.fileno(), 0o600)  # connector and voice service both run as uid 10000
+                CUSTOMER_KEY = handle.read().strip()
+        except OSError:
+            CUSTOMER_KEY = ''
+        # Replace a missing, linked, weak, owner-equal or env-fallback key the connector may have written itself.
         if len(CUSTOMER_KEY) < 32 or CUSTOMER_KEY in {KEY, os.environ.get('HERMES_API_KEY', '').strip()}:
             CUSTOMER_KEY = secrets.token_urlsafe(32)
-            fd = os.open(CUSTOMER_KEYFILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                CUSTOMER_KEYFILE.unlink()  # removes a link itself, never its target
+            except FileNotFoundError:
+                pass
+            fd = os.open(CUSTOMER_KEYFILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, 0o600)
             with os.fdopen(fd, 'w') as handle:
                 handle.write(CUSTOMER_KEY)
-        os.chmod(CUSTOMER_KEYFILE, 0o600)  # connector and voice service both run as uid 10000
 except Exception as exc:
     CUSTOMER_KEY = ''
     print(f"[voice] customer line key unavailable: {exc}", flush=True)
-KEYS = tuple(k for k in (KEY, CUSTOMER_KEY) if k)
+# key -> is customer line; audio sockets are admitted only for the line that started the call.
+KEYS = {KEY: False, **({CUSTOMER_KEY: True} if CUSTOMER_KEY else {})}
 config = dotenv_values('/opt/data/profiles/leo/.env')
 from central_ai_integrations import integration_config
 config = integration_config(config)
@@ -934,6 +946,11 @@ def allowed_audio_call(call):
         return active is not None and active == call
 
 
+def admit_audio_call(call, customer):
+    with guard:
+        return active is not None and active == call and active_customer == customer
+
+
 # Legacy native audio uses its existing persistent worker. Streamed calls
 # admit one private native session in StreamPhoneCall.start, not a second idle
 # session selected by the global active-caller variable.
@@ -962,7 +979,7 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
                     'data': caller_data(DATA_BASE, c['number']),
                     'native_factory': (lambda num: lambda task_id, label, ready: task_native(task_id, label, ready, resolve_caller(num)))(c['number'])
                 })
-        fish_service = FishService(config, DATA, KEYS, native, allowed_audio_call, audio_metrics,
+        fish_service = FishService(config, DATA, KEYS, native, allowed_audio_call, audio_metrics, admit=admit_audio_call,
             native_factory=task_native,
             **({'call_factory':StreamPhoneCall,'hosted':False} if CONVERSATION_MODE=='stream' else {}),
             members=extra_members)
@@ -1005,7 +1022,7 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
         fish_service.recovery=lambda: fixed_speech(RECOVERY)
         fish_service.task_ack_audio=b''
 else:
-    audio_server = start_audio_server(KEYS, allowed_audio_call, audio_metrics)
+    audio_server = start_audio_server(KEYS, allowed_audio_call, audio_metrics, admit=admit_audio_call)
 for phrase in ((RECOVERY, TASK_ACK) if fish_service and CONVERSATION_MODE=='stream' else (RECOVERY,) if fish_service else (GREETING, RECOVERY)):
     try:
         audio=fixed_speech(phrase)
