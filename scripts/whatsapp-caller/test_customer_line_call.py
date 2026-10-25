@@ -70,6 +70,13 @@ class CustomerLineCallTests(unittest.TestCase):
             os.environ.pop('CUSTOMER_FISH_VOICE_ID', None)
             self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', self.call(line='customer').speech_config['FISH_VOICE_ID'])
 
+    def test_customer_call_injects_proactive_solar_calculation_on_bill_turn(self):
+        call = self.call(line='customer', role='customer')
+        conv = call._get_fallback_conversation()
+        sys_prompt = conv._system_prompt_for_turn('My last electricity bill was $600 a quarter')
+        self.assertIn('OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR', sys_prompt)
+        self.assertIn('PROACTIVE VALUE FIRST', sys_prompt)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -59,9 +59,9 @@ class StreamPhoneCall:
         # Customer-line calls: customer agent persona and voice, no tools, never the owner's native session.
         self.customer = self.member.get('line') == 'customer'
         customer_voice = os.environ.get('CUSTOMER_FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13').strip()
-        if customer_voice == '711cf3ed00ab441a8f54a45058047b7a':
+        if customer_voice in {'711cf3ed00ab441a8f54a45058047b7a', 'bf342d9e9e5b44e0ade1ccfd1abb4815'}:
             customer_voice = 'a30d099a643d4173836cfee1d8ae6c13'
-        self.speech_config = ({**service.config, 'FISH_VOICE_ID': customer_voice, 'FISH_ENGLISH_FALLBACK_VOICE_ID': customer_voice}
+        self.speech_config = ({**service.config, 'FISH_VOICE_ID': customer_voice, 'FISH_ENGLISH_FALLBACK_VOICE_ID': customer_voice, 'FISH_VOICE_NAME': 'Michael'}
                               if self.customer and customer_voice else service.config)
         self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=512)
         self.closed = self.connected = False
@@ -116,7 +116,7 @@ class StreamPhoneCall:
         cfg_path = profile_dir / 'config.yaml'
 
         mtimes = []
-        for p in (*snap_paths, soul_path, cfg_path):
+        for p in (*snap_paths, Path('/data/contacts.json'), Path('/data/customer/contacts.json'), soul_path, cfg_path):
             try:
                 if p.is_file():
                     mtimes.append((str(p), p.stat().st_mtime))
@@ -263,7 +263,7 @@ class StreamPhoneCall:
 
         prompt = central_ai_identity("\n\n".join(p for p in identity_parts if p))
         if self.customer:
-            prompt = self._customer_prompt(company)
+            prompt = self._customer_prompt(company, snap)
         conv_config = dict(self.service.config or {})
         if not conv_config.get('OPENROUTER_API_KEY') and os.environ.get('OPENROUTER_API_KEY'):
             conv_config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
@@ -299,20 +299,43 @@ class StreamPhoneCall:
         self._agent_conv_mtime = mtime_key
         return self.fallback_conversation
 
-    def _customer_prompt(self, company):
-        # Persona and knowledge come from the customer agent App OS syncs into contacts.json; nothing is fixed here.
+    def _customer_prompt(self, company, snap=None):
+        # Persona and knowledge come from the customer agent App OS syncs into contacts.json / box3_snapshot.json; nothing is fixed here.
         r = routing()
-        company = company or str(r.get('company_name') or '').strip()
+        company = company or str(r.get('company_name') or (snap or {}).get('company_name') or '').strip()
+        agent_name = str(r.get('customer_agent') or '').strip()
         role = str(r.get('customer_agent_role') or '').strip()
+        instructions = str(r.get('customer_agent_instructions') or '').strip()
+        raw_kb = r.get('customer_agent_knowledge') if isinstance(r.get('customer_agent_knowledge'), list) else []
+
+        if snap and isinstance(snap, dict):
+            snap_agents = [a for a in (snap.get('agents') or []) if isinstance(a, dict)]
+            cust_agent = None
+            if agent_name:
+                cust_agent = next((a for a in snap_agents if str(a.get('name') or '').strip().lower() == agent_name.lower()), None)
+            if not cust_agent:
+                cust_agent = next((a for a in snap_agents if str(a.get('app_role') or '').strip() == 'customer_service'), None)
+            if not cust_agent:
+                cust_agent = next((a for a in snap_agents if not a.get('is_main') and a.get('enabled', True)), None)
+            if cust_agent:
+                agent_name = agent_name or str(cust_agent.get('name') or '').strip()
+                role = role or str(cust_agent.get('role') or '').strip()
+                instructions = instructions or str(cust_agent.get('instructions') or '').strip()
+            if not raw_kb and isinstance(snap.get('knowledge'), list):
+                raw_kb = snap['knowledge']
+
         cards = [f"- [{c.get('category') or 'General'}] {c.get('title') or ''}: {str(c.get('content') or '')[:1200]}"
-                 for c in (r.get('customer_agent_knowledge') or [])[:15] if isinstance(c, dict)]
-        parts = [f"You are {str(r.get('customer_agent') or '').strip() or 'the customer service assistant'}"
+                 for c in raw_kb[:15] if isinstance(c, dict)]
+        parts = [f"You are {agent_name or 'the customer service assistant'}"
                  f"{', ' + role if role else ''}{' for ' + company if company else ''}, answering a customer on a live WhatsApp voice call.",
-                 str(r.get('customer_agent_instructions') or '').strip(),
+                 instructions,
                  '[Assigned Knowledge Base]\n' + '\n'.join(cards) + '\n[/Assigned Knowledge Base]' if cards else '',
                  'You have no tools on this call: never claim to book, send, look up or change anything.',
                  # The shared voice note carries owner tool guidance, so customer calls get delivery rules only.
-                 '[Live call: speak in one or two short, warm, natural sentences; no lists, markdown, URLs or bracketed stage cues. Ask one question at a time.]']
+                 '[Live call communication & personality rules:\n'
+                 '- Speak in one or two short, warm, natural sentences with everyday contractions; no lists, markdown, URLs or bracketed stage cues. Ask at most one question at a time.\n'
+                 '- PROACTIVE VALUE FIRST (NEVER ASK PERMISSION TO SHARE INFO): Never ask "Would you like to know...?", "Do you want me to explain...?", "Shall I calculate that for you?", or "Would you like to hear how much you can save?". Every caller wants to know! Always deliver the actual answer, recommended solar size (kW and number of panels), estimated savings, and key facts upfront immediately, then ask one natural follow-up question to keep the conversation moving.\n'
+                 '- 10/10 HUMAN WARMTH & EFFORTLESS DRY WIT: Sound like a sharp, warm, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. React with natural, relatable, dry human wit when appropriate (for example, when they mention a high power bill: "Oof, at that rate your power company probably has your photo framed on their wall—let\'s cut that right down"), and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
         try:
             from central_ai_identity import central_ai_identity
         except Exception:
@@ -542,7 +565,18 @@ class StreamPhoneCall:
                 self.spoken_text=(self.spoken_text+value)[-2400:]
             try:
                 if greeting:
-                    speak('Hello! What can I help you with?')
+                    if self.customer:
+                        r = routing()
+                        c_agent = str(r.get('customer_agent') or '').strip()
+                        c_comp = str(r.get('company_name') or '').strip()
+                        if c_agent and c_comp:
+                            speak(f"Hi there! {c_agent} speaking from {c_comp}. How can I help you out today?")
+                        elif c_agent:
+                            speak(f"Hi there! {c_agent} speaking. How can I help you out today?")
+                        else:
+                            speak('Hello! What can I help you with?')
+                    else:
+                        speak('Hello! What can I help you with?')
                 elif notice:
                     conv = self.conversation or self._get_fallback_conversation()
                     conv.reply(json.dumps(notice,ensure_ascii=False)[:12000],speak,control,notice=True)

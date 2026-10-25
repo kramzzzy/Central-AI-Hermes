@@ -6,7 +6,7 @@ WORKDIR /opt/os-adapter
 # Memory runs separately; these are its SDK and the CPU phone dependencies.
 RUN uv pip install --python /opt/hermes/.venv/bin/python --no-cache \
     'hindsight-client==0.10.2' 'hindsight-embed==0.10.2' 'cryptography==50.0.0' 'msal==1.39.0' \
-    'faster-whisper==1.2.1' 'msgpack==1.1.2' 'livekit==1.1.20' 'onnxruntime==1.30.0' 'piper-tts==1.8.0'
+    'faster-whisper==1.2.1' 'msgpack==1.1.2' 'livekit==1.1.20' 'onnxruntime==1.30.0' 'piper-tts==1.8.0' 'edge-tts==7.2.7'
 # Pre-install Playwright Chromium for native browser tools
 RUN env npm_config_cache=/tmp/.npm PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright npx playwright install chromium \
     && chmod -R a+rX /opt/hermes/.playwright \

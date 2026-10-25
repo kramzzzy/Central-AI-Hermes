@@ -122,7 +122,9 @@ class VoiceProvider:
                 self.config[key.strip()] = value.strip().strip('"').strip("'")
         # The deployment credential overrides copied profile credentials.
         if os.environ.get('FISH_API_KEY'):
-            self.config['FISH_API_KEY'] = os.environ['FISH_API_KEY'].strip()
+            env_fish_key = os.environ['FISH_API_KEY'].strip()
+            if not env_fish_key.startswith('sk-fish-') or not self.config.get('FISH_API_KEY'):
+                self.config['FISH_API_KEY'] = env_fish_key
         if os.environ.get('FISH_VOICE_ID'):
             self.config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
         else:
@@ -247,10 +249,7 @@ class VoiceProvider:
             tts_voice_id = tts_voice_id or self.config['FISH_VOICE_ID']
             data = json.dumps({'text': text, 'reference_id': tts_voice_id, 'format': 'pcm', 'sample_rate': 24000, 'latency': 'balanced'}).encode()
             target = '/v1/tts'
-            tts_model = self.config.get('FISH_TTS_MODEL') or 's1'
-            if tts_model == 's2.1-pro-free':
-                tts_model = 's1'
-            headers.update({'Content-Type': 'application/json', 'model': tts_model})
+            headers.update({'Content-Type': 'application/json', 'model': self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'})
         elif path == '/voice/asr':
             if self.config.get('FISH_ASR_ENABLED') != 'true':
                 return handler.reply(503, {'error': 'Fish transcription is not enabled in Hermes.'})
@@ -308,6 +307,26 @@ class VoiceProvider:
                     handler.wfile.write(chunk)
                     handler.wfile.flush()
         except urllib.error.HTTPError as exc:
+            if path == '/voice/tts':
+                try:
+                    from native_call_speech import pcm
+                    from stream_conversation import TurnControl
+                    tts_cfg = {**self.config, 'FISH_VOICE_ID': tts_voice_id}
+                    chunks, size = [], 0
+                    for chunk in pcm(text, tts_cfg, 24000, TurnControl()):
+                        size += len(chunk)
+                        if size > 24000 * 2 * 180:
+                            raise ValueError('Speech is too long')
+                        chunks.append(chunk)
+                    audio = b''.join(chunks)
+                    handler.send_response(200)
+                    handler.send_header('Content-Type', 'application/octet-stream')
+                    handler.send_header('Content-Length', str(len(audio)))
+                    handler.send_header('Cache-Control', 'no-store')
+                    handler.end_headers()
+                    return handler.wfile.write(audio)
+                except Exception:
+                    pass
             return handler.reply(exc.code, {'error': 'The Hermes voice provider rejected this request.'})
 
     def start_websocket(self, bind):
@@ -327,12 +346,9 @@ class VoiceProvider:
                 return
             upstream = None
             try:
-                tts_model = self.config.get('FISH_TTS_MODEL') or 's1'
-                if tts_model == 's2.1-pro-free':
-                    tts_model = 's1'
                 upstream = connect('wss://api.fish.audio/v1/tts/live', additional_headers={
                     'Authorization': 'Bearer ' + self.config['FISH_API_KEY'],
-                    'model': tts_model}, open_timeout=15, close_timeout=3, max_size=4*1024*1024, max_queue=16)
+                    'model': self.config.get('FISH_TTS_MODEL') or 's2.1-pro-free'}, open_timeout=15, close_timeout=3, max_size=4*1024*1024, max_queue=16)
                 client.send(json.dumps({'ready': True, 'reference_id': self.config['FISH_VOICE_ID']}))
             except Exception:
                 if upstream:

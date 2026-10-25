@@ -78,9 +78,85 @@ def tts_config(config=None):
     return tts
 
 
+def _edge_neural_pcm(text, config, rate, control):
+    import asyncio
+    import io
+    import av
+    import edge_tts
+
+    cfg = config or {}
+    voice_id = str(cfg.get('FISH_VOICE_ID') or '').strip().lower()
+    voice_name = str(cfg.get('FISH_VOICE_NAME') or '').strip().lower()
+    if voice_id == 'a30d099a643d4173836cfee1d8ae6c13' or 'michael' in voice_name:
+        edge_voice = str(cfg.get('EDGE_TTS_VOICE') or 'en-US-AndrewMultilingualNeural').strip()
+    else:
+        edge_voice = str(cfg.get('EDGE_TTS_VOICE') or 'en-GB-RyanNeural').strip()
+
+    cleaned = re.sub(
+        r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*',
+        '',
+        str(text or ''),
+        flags=re.I,
+    ).strip()
+    if not cleaned:
+        return
+
+    async def _fetch_mp3():
+        comm = edge_tts.Communicate(cleaned, voice=edge_voice, rate='+4%')
+        buf = bytearray()
+        async for chunk in comm.stream():
+            control.check()
+            if chunk.get('type') == 'audio' and chunk.get('data'):
+                buf.extend(chunk['data'])
+        return bytes(buf)
+
+    mp3_bytes = asyncio.run(_fetch_mp3())
+    control.check()
+    if not mp3_bytes:
+        raise RuntimeError('Empty neural TTS stream')
+
+    step = rate // 10 * 2
+    pcm_buf = bytearray()
+    with av.open(io.BytesIO(mp3_bytes), format='mp3') as container:
+        resampler = av.AudioResampler(format='s16', layout='mono', rate=rate)
+        for frame in container.decode(audio=0):
+            control.check()
+            for out_frame in resampler.resample(frame):
+                pcm_buf.extend(bytes(out_frame.planes[0])[:out_frame.samples * 2])
+                while len(pcm_buf) >= step:
+                    control.check()
+                    yield bytes(pcm_buf[:step])
+                    del pcm_buf[:step]
+        for out_frame in resampler.resample(None):
+            pcm_buf.extend(bytes(out_frame.planes[0])[:out_frame.samples * 2])
+        while len(pcm_buf) >= step:
+            control.check()
+            yield bytes(pcm_buf[:step])
+            del pcm_buf[:step]
+        if pcm_buf:
+            if len(pcm_buf) % 2:
+                pcm_buf.append(0)
+            control.check()
+            yield bytes(pcm_buf)
+
+
 def pcm(text, config, rate, control):
     import audioop
     from piper import SynthesisConfig
+    cfg = config or {}
+    if cfg.get('CENTRAL_AI_CALL_SPEECH') != 'piper':
+        emitted = False
+        try:
+            for chunk in _edge_neural_pcm(text, cfg, rate, control):
+                emitted = True
+                yield chunk
+            if emitted:
+                return
+        except Exception as exc:
+            if type(exc).__name__ == 'TurnCancelled' or getattr(control, 'cancelled', None) and control.cancelled.is_set():
+                raise
+            if emitted:
+                return
     deadline = time.monotonic() + 30
     while not _synthesis.acquire(timeout=.1):
         control.check()

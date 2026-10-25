@@ -97,7 +97,9 @@ config = integration_config(config)
 if os.environ.get('OPENROUTER_API_KEY') and not config.get('OPENROUTER_API_KEY'):
     config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
 if os.environ.get('FISH_API_KEY'):
-    config['FISH_API_KEY'] = os.environ['FISH_API_KEY'].strip()
+    env_fish_key = os.environ['FISH_API_KEY'].strip()
+    if not env_fish_key.startswith('sk-fish-') or not config.get('FISH_API_KEY'):
+        config['FISH_API_KEY'] = env_fish_key
 if os.environ.get('FISH_VOICE_ID'):
     config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
 else:
@@ -106,7 +108,18 @@ if os.environ.get('FISH_VOICE_NAME'):
     config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
 else:
     config.setdefault('FISH_VOICE_NAME', 'Jarvis')
-if not os.environ.get('CUSTOMER_FISH_VOICE_ID') or os.environ.get('CUSTOMER_FISH_VOICE_ID', '').strip() == '711cf3ed00ab441a8f54a45058047b7a':
+try:
+    from voice_setup import load_settings
+    saved_voice = load_settings({'HERMES_PROFILE_ROOT': '/opt/data'})
+    if isinstance(saved_voice, dict):
+        for k, v in saved_voice.items():
+            if k == 'FISH_API_KEY' and str(v or '').strip().startswith('sk-fish-') and config.get('FISH_API_KEY') and not str(config.get('FISH_API_KEY')).startswith('sk-fish-'):
+                continue
+            if v:
+                config[k] = v
+except Exception as exc:
+    print(f"[voice] Private voice settings load skipped: {exc}", flush=True)
+if not os.environ.get('CUSTOMER_FISH_VOICE_ID') or os.environ.get('CUSTOMER_FISH_VOICE_ID', '').strip() in {'711cf3ed00ab441a8f54a45058047b7a', 'bf342d9e9e5b44e0ade1ccfd1abb4815'}:
     os.environ['CUSTOMER_FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
 if os.environ.get('CENTRAL_AI_CALL_SPEECH'):
     config['CENTRAL_AI_CALL_SPEECH'] = os.environ['CENTRAL_AI_CALL_SPEECH'].strip()
@@ -425,24 +438,27 @@ def native(action, call, **extra):
 
 
 def speech(text):
-    if native_enabled(config):
+    fish_key = str(config.get('FISH_API_KEY') or '').strip()
+    if native_enabled(config) or not fish_key or fish_key.startswith('sk-fish-'):
         from native_call_speech import pcm
         from stream_conversation import TurnControl
         return b''.join(pcm(text[:1800], config, 16000, TurnControl()))
     payload = json.dumps({'text': text[:1800], 'reference_id': config['FISH_VOICE_ID'],
         'format': 'pcm', 'sample_rate': 16000, 'latency': 'balanced'}).encode()
-    tts_model = config.get('FISH_TTS_MODEL') or 's1'
-    if tts_model == 's2.1-pro-free':
-        tts_model = 's1'
     request = urllib.request.Request('https://api.fish.audio/v1/tts', data=payload,
-        headers={'Authorization': 'Bearer ' + config['FISH_API_KEY'],
+        headers={'Authorization': 'Bearer ' + fish_key,
                  'Content-Type': 'application/json',
-                 'model': tts_model})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        audio = response.read(16000 * 2 * 45 + 1)
-    if len(audio) > 16000 * 2 * 45 or len(audio) % 2:
-        raise RuntimeError('Invalid speech audio')
-    return audio
+                 'model': config.get('FISH_TTS_MODEL') or 's2.1-pro-free'})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            audio = response.read(16000 * 2 * 45 + 1)
+        if 0 < len(audio) <= 16000 * 2 * 45 and len(audio) % 2 == 0:
+            return audio
+    except Exception:
+        pass
+    from native_call_speech import pcm
+    from stream_conversation import TurnControl
+    return b''.join(pcm(text[:1800], config, 16000, TurnControl()))
 
 
 GREETING = "Hey Mark! It's Leo. I'm here. What can I help you with?"
@@ -456,10 +472,7 @@ def fixed_speech(text):
     if text not in {GREETING, RECOVERY, TASK_ACK}:
         raise ValueError('Only fixed phone phrases can be cached')
     speech_mode = 'piper-alan' if native_enabled(config) else ('fish-' + (config.get('FISH_VOICE_ID') or 'jarvis'))
-    tts_model = config.get('FISH_TTS_MODEL') or 's1'
-    if tts_model == 's2.1-pro-free':
-        tts_model = 's1'
-    stamp = hashlib.sha256((speech_mode + '\0' + tts_model + '\0' + text).encode()).hexdigest()
+    stamp = hashlib.sha256((speech_mode + '\0' + (config.get('FISH_TTS_MODEL') or 's2.1-pro-free') + '\0' + text).encode()).hexdigest()
     path = DATA / ('fixed-' + stamp + '.pcm')
     if path.exists():
         audio = path.read_bytes()
@@ -491,12 +504,9 @@ class StreamingSpeech:
 
     def receive(self):
         try:
-            tts_model = config.get('FISH_TTS_MODEL') or 's1'
-            if tts_model == 's2.1-pro-free':
-                tts_model = 's1'
             with connect_speech('wss://api.fish.audio/v1/tts/live',
                     additional_headers={'Authorization': 'Bearer ' + config['FISH_API_KEY'],
-                        'model': tts_model},
+                        'model': config.get('FISH_TTS_MODEL') or 's2.1-pro-free'},
                     open_timeout=8, close_timeout=2, max_size=4*1024*1024, max_queue=8) as socket:
                 self.socket = socket
                 socket.send(msgpack.packb({'event': 'start', 'request': {

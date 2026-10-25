@@ -14,13 +14,16 @@ def routing():
         if f.is_file():
             try:
                 data = json.loads(f.read_text(encoding='utf-8'))
-                if data.get('contacts') and len(data['contacts']) > 0:
-                    if not data.get('owner'):
+                if isinstance(data, dict) and (data.get('contacts') or data.get('customer_agent') or data.get('company_name') or data.get('owner')):
+                    contacts_list = data.get('contacts') if isinstance(data.get('contacts'), list) else []
+                    data['contacts'] = contacts_list
+                    if not data.get('owner') and contacts_list:
                         owner_contact = next(
-                            (c for c in data['contacts'] if c.get('role') == 'owner' or c.get('route') == 'owner' or c.get('profile') == 'leo'),
-                            data['contacts'][0],
+                            (c for c in contacts_list if c.get('role') == 'owner' or c.get('route') == 'owner' or c.get('profile') == 'leo'),
+                            contacts_list[0],
                         )
                         data['owner'] = re.sub(r'\D', '', str(owner_contact.get('number') or owner_contact.get('phone_number') or ''))
+                    data.setdefault('owner', '')
                     data.setdefault('business', '')
                     data.setdefault('group', '')
                     data.setdefault('group_profile', 'team-whatsapp-social')
