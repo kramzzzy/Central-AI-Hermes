@@ -1390,8 +1390,11 @@ class SocialWorkspace:
                 if platform == "facebook" and not post.startswith(account + "_"):
                     continue
                 identity = hashlib.sha256(f"{platform}:{account}:comment:{cid}".encode()).hexdigest()
+                sender_name = str((value.get("from") or {}).get("name") or (value.get("from") or {}).get("username") or "Visitor")[:200]
+                if sender_name and sender_name != "Visitor" and sender.isdigit():
+                    self._names[(org, platform, account, sender)] = (sender_name[:120], self.clock() + 86400)
                 item = {"id": identity, "kind": "comment", "platform": platform, "account_id": account,
-                        "sender_id": sender, "sender_name": str((value.get("from") or {}).get("name") or (value.get("from") or {}).get("username") or "Visitor")[:200], "comment_id": cid, "post_id": post, "text": text[:4000], "timestamp": self.clock()}
+                        "sender_id": sender, "sender_name": sender_name, "comment_id": cid, "post_id": post, "text": text[:4000], "timestamp": self.clock()}
                 with self.database() as db:
                     # Ignore our own replies even when Meta omits the Page/account author.
                     own = db.execute("SELECT encrypted FROM social_deliveries WHERE org=? AND encrypted IS NOT NULL", (org,)).fetchall()
@@ -1558,6 +1561,9 @@ class SocialWorkspace:
                     if isinstance(data, dict):
                         who = data.get("from") if isinstance(data.get("from"), dict) else {}
                         name = re.sub(r"\s+", " ", str(who.get("name") or data.get("username") or "")).strip()[:120]
+                        who_id = str(who.get("id") or event.get("sender_id") or "")
+                        if name and who_id.isdigit():
+                            self._names[(org, platform, account, who_id)] = (name, now + 86400)
                 except Exception as exc:
                     print(f"[social] comment author lookup failed ({platform}): {str(exc)[:200]}", flush=True)
                 self._names[key] = (name, now + (86400 if name else 900))
