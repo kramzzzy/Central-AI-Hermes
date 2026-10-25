@@ -85,6 +85,36 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertIn('OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR', sys_prompt)
         self.assertIn('PROACTIVE VALUE FIRST', sys_prompt)
 
+    def test_customer_call_prepare_speech_and_fish_rest_fallback_emit_pcm(self):
+        import stream_conversation
+        emitted = []
+        async def _check():
+            call = self.call(line='customer', role='customer')
+            call.prepare_speech()
+            control, speech, _framer, _output = call.prepared_speech
+            self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', speech.config['FISH_VOICE_ID'])
+            control.cancel()
+            rest_control = stream_conversation.TurnControl()
+            rest_speech = stream_conversation.FishRestSpeech(
+                call.speech_config,
+                lambda data, final=False: emitted.append((data, final)),
+                rest_control,
+                rate=16000,
+            )
+            rest_speech.text('Hi there! James speaking from Test Solar.')
+            rest_speech.finish()
+
+        def _fake_proxy_tts(_text, _voice_id, _rate, audio, _control=None):
+            if audio:
+                audio(b'\x01\x02' * 480)
+            return b''
+
+        with patch.dict(os.environ, {'HERMES_PHONE_CONVERSATION': 'true', 'CUSTOMER_FISH_VOICE_ID': ''}), \
+             patch.object(stream_conversation, '_hermes_proxy_tts', side_effect=_fake_proxy_tts) as mock_proxy:
+            asyncio.run(_check())
+            self.assertTrue(mock_proxy.called)
+            self.assertTrue(any(chunk == b'\x01\x02' * 480 for chunk, _ in emitted))
+
 
 if __name__ == '__main__':
     unittest.main()

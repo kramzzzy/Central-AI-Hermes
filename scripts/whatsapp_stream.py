@@ -908,79 +908,85 @@ class StreamPhoneCall:
     async def tick(self):
         while not self.closed:
             await asyncio.sleep(.03)
-            now=time.monotonic()
-            busy=self.worker and not self.worker.done()
-            if self.capture_rejected:
-                if (self.silence_frames>=8 or now-self.last_speech>=.85) and now-self.last_speech>=.65:
-                    self.capture_rejected=False
-                continue
-            if self.greeting_pending:
-                if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .15)) and not busy:
-                    self.greeting_pending=False;self.start_reply(greeting=True)
-                continue
-            # Start background local recognition + LLM prefetch early (~150ms into a pause)
-            # so both ASR and speculative tokens are already in flight at the endpoint.
-            early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .15) or (now - self.last_speech >= .24)
-            if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
-                self.prepare_recognition()
-            # Support both continuous silent RTP frames and WhatsApp Opus DTX
-            # silence suppression (where RTP packets stop arriving during quiet gaps).
-            quiet_enough = (self.silence_frames >= 5 and now - self.last_speech >= .32) or (now - self.last_speech >= .42)
-            if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
-                if not self.early_asr:
+            try:
+                now=time.monotonic()
+                busy=self.worker and not self.worker.done()
+                if self.capture_rejected:
+                    if (self.silence_frames>=8 or now-self.last_speech>=.85) and now-self.last_speech>=.65:
+                        self.capture_rejected=False
+                    continue
+                if self.greeting_pending:
+                    if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .15)) and not busy:
+                        self.greeting_pending=False;self.start_reply(greeting=True)
+                    continue
+                # Start background local recognition + LLM prefetch early (~150ms into a pause)
+                # so both ASR and speculative tokens are already in flight at the endpoint.
+                early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .15) or (now - self.last_speech >= .24)
+                if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
                     self.prepare_recognition()
-                audio={
-                    'pcm':bytes(self.capture),
-                    'stream':self.asr,
-                    'echo_text':self.capture_echo_text,
-                    'speech_ended':self.last_speech,
-                    'extended':self.capture_extended,
-                }
-                self.asr=None
-                self.capture_extended=False
-                if self.early_asr:
-                    early=self.early_asr;self.early_asr=None
-                    if early['version']==self.capture_version and audio['pcm']==early['pcm']:
-                        audio['prepared_asr']=early.get('recognizer')
-                        audio['confirmation_asr']=early.get('confirmation')
-                        audio['confirmation_source']=early.get('confirmation_source')
-                        audio['early_local_done']=early.get('local_done')
-                        audio['early_entry']=early
-                    elif early['version']==self.capture_version and audio['pcm'].startswith(early['pcm']):
-                        audio['prepared_asr']=early.get('recognizer')
-                        audio['confirmation_asr']=early.get('confirmation')
-                        audio['confirmation_source']=early.get('confirmation_source')
-                        audio['early_local_done']=early.get('local_done')
-                        audio['early_entry']=early
-                    else:
-                        self.close_asr(early.get('recognizer'))
-                        self.close_asr(early.get('confirmation'))
-                        if early.get('control'):
-                            early['control'].cancel()
-                self.capture_echo_text=''
-                self.capture.clear();self.voiced=0
-                self.silence_frames=0
-                self.start_reply(audio=audio);continue
-            if (self.capture and self.voiced<2 and now-self.last_speech>=.85 and self.input.empty()):
-                self.capture.clear();self.voiced=0;self.capture_extended=False;self.close_asr(self.asr);self.asr=None
-                self.discard_early_asr()
-            if not busy and now>=self.playback_until and self.state not in {'listening','idle'}:
-                self.change_state('listening')
-            if (self.pending_notice and not busy and not self.capture and now>=self.pending_notice['after']
-                    and self.rendered_generation==self.generation and now-self.last_rendered>=.4):
-                pending=self.pending_notice
-                if pending['generation']==self.generation and self.connected:
-                    self.jobs.announced(pending['notice'])
-                    if pending['notice']['kind']=='progress':self.last_progress=time.time()
-                    if self.callback_notice==pending['notice']:self.callback_notice=None
-                    self.service.metrics['background_updates_spoken']=self.service.metrics.get('background_updates_spoken',0)+1
-                self.pending_notice=None
-            if busy or self.capture or not self.connected or self.pending_notice or self.state!='listening':continue
-            if now-self.last_user_activity<1.5 or now-self.last_speaking_end<.8 or now-self.last_notice<3:continue
-            notice=self.callback_notice or self.jobs.notice(time.time(),self.last_progress,
-                **({'since':self.callback_new_tasks_since} if self.callback_new_tasks_since else {}))
-            if notice:
-                self.last_notice=now;self.start_reply(notice=notice)
+                # Support both continuous silent RTP frames and WhatsApp Opus DTX
+                # silence suppression (where RTP packets stop arriving during quiet gaps).
+                quiet_enough = (self.silence_frames >= 5 and now - self.last_speech >= .32) or (now - self.last_speech >= .42)
+                if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
+                    if not self.early_asr:
+                        self.prepare_recognition()
+                    audio={
+                        'pcm':bytes(self.capture),
+                        'stream':self.asr,
+                        'echo_text':self.capture_echo_text,
+                        'speech_ended':self.last_speech,
+                        'extended':self.capture_extended,
+                    }
+                    self.asr=None
+                    self.capture_extended=False
+                    if self.early_asr:
+                        early=self.early_asr;self.early_asr=None
+                        if early['version']==self.capture_version and audio['pcm']==early['pcm']:
+                            audio['prepared_asr']=early.get('recognizer')
+                            audio['confirmation_asr']=early.get('confirmation')
+                            audio['confirmation_source']=early.get('confirmation_source')
+                            audio['early_local_done']=early.get('local_done')
+                            audio['early_entry']=early
+                        elif early['version']==self.capture_version and audio['pcm'].startswith(early['pcm']):
+                            audio['prepared_asr']=early.get('recognizer')
+                            audio['confirmation_asr']=early.get('confirmation')
+                            audio['confirmation_source']=early.get('confirmation_source')
+                            audio['early_local_done']=early.get('local_done')
+                            audio['early_entry']=early
+                        else:
+                            self.close_asr(early.get('recognizer'))
+                            self.close_asr(early.get('confirmation'))
+                            if early.get('control'):
+                                early['control'].cancel()
+                    self.capture_echo_text=''
+                    self.capture.clear();self.voiced=0
+                    self.silence_frames=0
+                    self.start_reply(audio=audio);continue
+                if (self.capture and self.voiced<2 and now-self.last_speech>=.85 and self.input.empty()):
+                    self.capture.clear();self.voiced=0;self.capture_extended=False;self.close_asr(self.asr);self.asr=None
+                    self.discard_early_asr()
+                if not busy and now>=self.playback_until and self.state not in {'listening','idle'}:
+                    self.change_state('listening')
+                if (self.pending_notice and not busy and not self.capture and now>=self.pending_notice['after']
+                        and self.rendered_generation==self.generation and now-self.last_rendered>=.4):
+                    pending=self.pending_notice
+                    if pending['generation']==self.generation and self.connected:
+                        self.jobs.announced(pending['notice'])
+                        if pending['notice']['kind']=='progress':self.last_progress=time.time()
+                        if self.callback_notice==pending['notice']:self.callback_notice=None
+                        self.service.metrics['background_updates_spoken']=self.service.metrics.get('background_updates_spoken',0)+1
+                    self.pending_notice=None
+                if busy or self.capture or not self.connected or self.pending_notice or self.state!='listening':continue
+                if now-self.last_user_activity<1.5 or now-self.last_speaking_end<.8 or now-self.last_notice<3:continue
+                notice=self.callback_notice or self.jobs.notice(time.time(),self.last_progress,
+                    **({'since':self.callback_new_tasks_since} if self.callback_new_tasks_since else {}))
+                if notice:
+                    self.last_notice=now;self.start_reply(notice=notice)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.service.metrics['tick_errors']=self.service.metrics.get('tick_errors',0)+1
+                self.service.metrics['last_tick_error']=f"{type(exc).__name__}:{exc}"
 
     async def close(self):
         self.closed=True

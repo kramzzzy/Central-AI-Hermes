@@ -4,6 +4,7 @@ Provider credentials remain private. Only completed caller turns may delegate
 jobs; runtime notices cannot call tools. Interrupting speech never cancels work.
 """
 import json
+import os
 import re
 import threading
 import time
@@ -154,6 +155,15 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
     global _fish_working_model
     from voice_http import client as http_client
     key = (config.get('FISH_API_KEY') or '').strip()
+    if not key:
+        try:
+            from central_ai_integrations import discover_fish_credentials, valid_fish_key
+            discovered = discover_fish_credentials('/opt/data')
+            key = valid_fish_key(discovered.get('FISH_API_KEY'))
+            if key and isinstance(config, dict):
+                config['FISH_API_KEY'] = key
+        except Exception:
+            pass
     voice_id = (config.get('FISH_VOICE_ID') or '').strip()
     if not voice_id or not text or not text.strip():
         return b''
@@ -371,6 +381,15 @@ class FreeSpeech:
         self.abandoned = False
         self.connect_deadline = time.monotonic() + 4.0
         fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
+        if not fish_key:
+            try:
+                from central_ai_integrations import discover_fish_credentials, valid_fish_key
+                discovered = discover_fish_credentials('/opt/data')
+                fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
+                if fish_key and isinstance(self.config, dict):
+                    self.config['FISH_API_KEY'] = fish_key
+            except Exception:
+                pass
         can_use_hermes_ws = os.environ.get('HERMES_PHONE_CONVERSATION') == 'true'
         if (not fish_key and not can_use_hermes_ws) or time.monotonic() < _fish_ws_cooldown_until:
             self.abandoned = True
@@ -406,6 +425,10 @@ class FreeSpeech:
                 try:
                     with connect(ws_url, additional_headers=ws_headers, open_timeout=3.5, close_timeout=1,
                             max_size=4*1024*1024, max_queue=8) as socket:
+                        if ws_url.endswith('/voice/live'):
+                            handshake = socket.recv(timeout=3.5)
+                            if not isinstance(handshake, str) or not json.loads(handshake).get('ready'):
+                                raise RuntimeError('Hermes live voice relay not ready')
                         with self.transport_guard:
                             if self.abandoned:
                                 return
@@ -449,7 +472,7 @@ class FreeSpeech:
                         raise RuntimeError('Speech deadline exceeded')
                 except Exception as exc:
                     last_exc = exc
-                    if self.bytes or self.started or self.abandoned or self.control.cancelled.is_set():
+                    if self.bytes or self.ready.is_set() or self.abandoned or self.control.cancelled.is_set():
                         raise
                     continue
             if last_exc:
