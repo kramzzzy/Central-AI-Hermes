@@ -16,6 +16,262 @@ from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCance
 from fish_conversation import filter_playback_input, normalize_voice_greeting
 from whatsapp_audio import PhoneAudioFilter
 
+_NON_NAME_WORDS = {
+    'interested', 'calling', 'looking', 'good', 'fine', 'great', 'okay', 'ok', 'sure',
+    'here', 'asking', 'wondering', 'just', 'from', 'in', 'at', 'not', 'a', 'an', 'the',
+    'happy', 'ready', 'sorry', 'yes', 'yeah', 'yep', 'no', 'nah', 'nope', 'solar',
+    'panels', 'panel', 'battery', 'batteries', 'home', 'house', 'business', 'system',
+    'actually', 'still', 'also', 'well', 'right', 'now', 'today', 'speaking', 'calling',
+    'there', 'back', 'again', 'doing', 'going', 'having', 'trying', 'checking', 'about',
+    'you', 'me', 'my', 'your', 'remember', 'forgot', 'told', 'already', 'called',
+    'before', 'earlier', 'last', 'time', 'name', 'is', 'was', 'am', 'are', 'with',
+}
+
+
+def _cleanup_customer_call_audio(max_age_days=7, max_total_mb=500):
+    """Auto-delete customer call audio recordings older than 1 week (7 days) and cap total storage."""
+    from pathlib import Path
+    now_ts = time.time()
+    cutoff = now_ts - (max_age_days * 86400)
+    max_bytes = max_total_mb * 1024 * 1024
+    for base_dir in (Path('/data/customer/call_audio'), Path('/data/call_audio')):
+        try:
+            if not base_dir.is_dir():
+                continue
+            kept = []
+            for f in base_dir.iterdir():
+                if not f.is_file() or f.suffix.lower() not in {'.wav', '.pcm', '.mp3', '.ogg'}:
+                    continue
+                try:
+                    st = f.stat()
+                    if st.st_mtime < cutoff:
+                        f.unlink(missing_ok=True)
+                    else:
+                        kept.append((st.st_mtime, st.st_size, f))
+                except Exception:
+                    pass
+            total_bytes = sum(sz for _, sz, _ in kept)
+            if total_bytes > max_bytes:
+                kept.sort(key=lambda item: item[0])
+                for _, sz, f in kept:
+                    if total_bytes <= max_bytes:
+                        break
+                    try:
+                        f.unlink(missing_ok=True)
+                        total_bytes -= sz
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+
+def _extract_spoken_caller_name(caller_text, last_assistant_text=''):
+    """Extract caller's name when they introduce themselves or answer a name prompt."""
+    if not caller_text or not isinstance(caller_text, str):
+        return ''
+    cleaned = re.sub(r'[^\w\s\'-]', ' ', caller_text).strip()
+    if not cleaned:
+        return ''
+
+    def _valid_name_tokens(raw_candidate):
+        tokens = [t.strip("'-") for t in raw_candidate.split() if t.strip("'-")]
+        valid = []
+        for t in tokens[:3]:
+            low = t.lower()
+            if len(t) < 2 or len(t) > 20 or not t.isalpha() or low in _NON_NAME_WORDS:
+                break
+            valid.append(t.capitalize())
+        return ' '.join(valid)
+
+    for pat in (
+        r"\b(?:my\s+name\s+is|my\s+name's|i\s+am|i'm|im|this\s+is|it\s+is|it's|its|call\s+me)\s+([A-Za-z][a-z']{1,18}(?:\s+[A-Za-z][a-z']{1,18})?)\b",
+        r"\b([A-Za-z][a-z']{1,18})\s+(?:speaking|here|calling)\b",
+    ):
+        for m in re.finditer(pat, cleaned, flags=re.I):
+            cand = _valid_name_tokens(m.group(1))
+            if cand:
+                return cand
+
+    if last_assistant_text and re.search(
+        r"\b(?:your\s+name|who\s+am\s+i\s+speaking|who's\s+calling|may\s+i\s+ask\s+who|what\s+should\s+i\s+call\s+you|who\s+i'm\s+speaking\s+with)\b",
+        last_assistant_text,
+        flags=re.I,
+    ):
+        stripped = re.sub(r"^(?:yes|yeah|yep|sure|hi|hello|hey|oh|uh|um|it's|its|i'm|im|this\s+is)\b[\s,]*", '', cleaned, flags=re.I).strip()
+        words = stripped.split()
+        if 1 <= len(words) <= 3:
+            cand = _valid_name_tokens(stripped)
+            if cand:
+                return cand
+    return ''
+
+
+def _load_customer_caller_memory(caller_digits, snap=None):
+    """Load persistent per-number customer caller profile and conversation history."""
+    from pathlib import Path
+    digits = re.sub(r'\D', '', str(caller_digits or ''))
+    mem = {'number': digits, 'name': '', 'history': [], 'calls': [], 'updated_at': ''}
+    if not digits:
+        return mem
+    for p in (Path(f'/data/customer/callers/{digits}.json'), Path(f'/data/callers/{digits}.json')):
+        try:
+            if p.is_file():
+                loaded = json.loads(p.read_text(encoding='utf-8'))
+                if isinstance(loaded, dict):
+                    mem.update(loaded)
+                    break
+        except Exception:
+            pass
+    if not mem.get('name'):
+        # Check customer WhatsApp processed_inbox_ids.json / processed_messages.json or box3_snapshot for a known name on this number
+        for proc_path in (
+            Path('/data/customer/processed_inbox_ids.json'),
+            Path('/data/customer/processed_messages.json'),
+            Path('/data/processed_messages.json'),
+        ):
+            try:
+                if proc_path.is_file():
+                    pmap = json.loads(proc_path.read_text(encoding='utf-8'))
+                    if isinstance(pmap, dict):
+                        for info in reversed(list(pmap.values())):
+                            if not isinstance(info, dict):
+                                continue
+                            sid = re.sub(r'\D', '', str(info.get('sender_id') or ''))
+                            sname = str(info.get('sender_name') or '').strip()
+                            if sid == digits and sname and not re.match(r'^(?:Caller|Visitor|Customer)\b', sname, re.I) and not sname.replace('+', '').isdigit():
+                                mem['name'] = sname
+                                break
+                if mem.get('name'):
+                    break
+            except Exception:
+                pass
+    if not mem.get('name') and isinstance(snap, dict):
+        for section in ('crm', 'contacts'):
+            for row in (snap.get(section) or []):
+                if not isinstance(row, dict):
+                    continue
+                rphone = re.sub(r'\D', '', str(row.get('phone') or row.get('number') or ''))
+                rname = str(row.get('name') or '').strip()
+                if rphone and rphone == digits and rname and not re.match(r'^(?:Caller|Visitor|Customer)\b', rname, re.I):
+                    mem['name'] = rname
+                    break
+            if mem.get('name'):
+                break
+    return mem
+
+
+def _save_customer_caller_memory(caller_digits, mem):
+    """Persist per-number customer caller profile and conversation history."""
+    from pathlib import Path
+    digits = re.sub(r'\D', '', str(caller_digits or ''))
+    if not digits or not isinstance(mem, dict):
+        return
+    mem['number'] = digits
+    mem['updated_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    if isinstance(mem.get('history'), list):
+        mem['history'] = mem['history'][-24:]
+    if isinstance(mem.get('calls'), list):
+        mem['calls'] = mem['calls'][-20:]
+    for base in (Path('/data/customer/callers'), Path('/data/callers')):
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            target = base / f'{digits}.json'
+            target.write_text(json.dumps(mem, ensure_ascii=False, indent=2), encoding='utf-8')
+        except Exception:
+            pass
+
+
+def _save_customer_call_wav(call_id, pcm_bytes):
+    """Write 16kHz 16-bit mono WAV recording for customer call and prune recordings older than 7 days."""
+    if not call_id or not pcm_bytes:
+        return ''
+    import wave
+    from pathlib import Path
+    _cleanup_customer_call_audio(max_age_days=7, max_total_mb=500)
+    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', str(call_id)) or str(int(time.time()))
+    for base in (Path('/data/customer/call_audio'), Path('/data/call_audio')):
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            wav_path = base / f'{safe_id}.wav'
+            with wave.open(str(wav_path), 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(bytes(pcm_bytes[:16000 * 2 * 1800]))
+            return str(wav_path)
+        except Exception:
+            continue
+    return ''
+
+
+def _sync_customer_call_turn_to_box3(caller_digits, caller_name, call_id, turn_idx, caller_utt, assistant_utt, created_at):
+    """Sync customer service voice call turn to App OS Communications so operators can review the conversation."""
+    digits = re.sub(r'\D', '', str(caller_digits or ''))
+    if not digits or (not caller_utt and not assistant_utt):
+        return
+    msg_id = f'call-{call_id}-turn-{turn_idx}'
+    user_text = f'📞 [Voice Call] {caller_utt}' if caller_utt and caller_utt != '[Call Answered]' else '📞 [Incoming WhatsApp Voice Call]'
+    reply_text = f'📞 [Voice Call] {assistant_utt}' if assistant_utt else ''
+    item = {
+        'sender_id': digits,
+        'sender_name': str(caller_name or '').strip(),
+        'wire_chat': f'{digits}@s.whatsapp.net',
+        'message_id': msg_id,
+        'text': user_text,
+        'reply': reply_text,
+        'created_at': created_at,
+    }
+    try:
+        from hermes_plugins.central_ai_whatsapp.adapter import _append_customer_sync_queue
+        _append_customer_sync_queue(item)
+    except Exception:
+        pass
+    try:
+        import urllib.request
+        from pathlib import Path
+        urls = []
+        for p in ('/data/app_os_url.json', '/opt/data/app_os_url.json', '/opt/os-adapter/.runtime/app_os_url.json'):
+            f = Path(p)
+            if f.is_file():
+                try:
+                    j = json.loads(f.read_text(encoding='utf-8'))
+                    if isinstance(j.get('urls'), list):
+                        urls.extend(str(u).rstrip('/') for u in j['urls'] if u)
+                    elif j.get('url'):
+                        urls.append(str(j['url']).rstrip('/'))
+                except Exception:
+                    pass
+        for env_k in ('APP_OS_URL', 'MICHAEL_OS_URL'):
+            v = os.environ.get(env_k, '').strip().rstrip('/')
+            if v:
+                urls.append(v)
+        urls.extend(['http://web:3000', 'http://127.0.0.1:3000'])
+        api_key = (os.environ.get('HERMES_API_KEY') or 'hermes_standalone_secret_token_32chars').strip().strip('"\'')
+        payload = json.dumps({
+            **item,
+            'line': 'customer',
+            'precomputed_reply': reply_text,
+        }).encode('utf-8')
+        for base_url in dict.fromkeys(u for u in urls if u.startswith('http')):
+            try:
+                req = urllib.request.Request(
+                    f'{base_url}/api/connections/whatsapp/webhook',
+                    data=payload,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Bearer {api_key}',
+                        'User-Agent': 'CentralAI-Hermes/1.0',
+                    },
+                    method='POST',
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:
+                continue
+    except Exception:
+        pass
+
 class PhonePCM:
     """Keep provider chunks continuous; pad only the final transport frame."""
     frame_bytes = 1920
@@ -129,11 +385,21 @@ class StreamPhoneCall:
         self.conversation = None
         self.fallback_conversation = None
         self._agent_conv_mtime = None
+        self.caller_digits = re.sub(r'\D', '', str(self.member.get('number') or ''))
+        self.call_audio_pcm = bytearray()
+        if self.customer:
+            _cleanup_customer_call_audio(max_age_days=7, max_total_mb=500)
+            self.caller_memory = _load_customer_caller_memory(self.caller_digits)
+            self.caller_name = str(self.caller_memory.get('name') or '').strip()
+        else:
+            self.caller_memory = {}
+            self.caller_name = ''
         self.call_turns = []
         self.call_started_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         self.service.metrics['last_call_transcript'] = {
             'call_id': self.call,
             'caller': self.member.get('number'),
+            'caller_name': self.caller_name,
             'line': 'customer' if self.customer else 'owner',
             'started_at': self.call_started_at,
             'turns': self.call_turns,
@@ -303,6 +569,11 @@ class StreamPhoneCall:
 
         prompt = central_ai_identity("\n\n".join(p for p in identity_parts if p))
         if self.customer:
+            if not self.caller_name:
+                refreshed_mem = _load_customer_caller_memory(self.caller_digits, snap)
+                if refreshed_mem.get('name'):
+                    self.caller_name = str(refreshed_mem['name']).strip()
+                    self.caller_memory['name'] = self.caller_name
             prompt = self._customer_prompt(company, snap)
         conv_config = dict(self.service.config or {})
         if not conv_config.get('OPENROUTER_API_KEY') and os.environ.get('OPENROUTER_API_KEY'):
@@ -340,6 +611,13 @@ class StreamPhoneCall:
             self.fallback_conversation.config = conv_config
         else:
             self.fallback_conversation = Conversation(conv_config, prompt, dispatch_tool, names=set() if self.customer else None)
+            if self.customer and isinstance(self.caller_memory.get('history'), list):
+                for h_item in self.caller_memory['history'][-12:]:
+                    if isinstance(h_item, dict) and h_item.get('role') in {'user', 'assistant'} and h_item.get('content'):
+                        self.fallback_conversation.history.append({
+                            'role': h_item['role'],
+                            'content': str(h_item['content'])[:600],
+                        })
         self._agent_conv_mtime = mtime_key
         return self.fallback_conversation
 
@@ -370,22 +648,38 @@ class StreamPhoneCall:
 
         cards = [f"- [{c.get('category') or 'General'}] {c.get('title') or ''}: {str(c.get('content') or '')[:1200]}"
                  for c in raw_kb[:15] if isinstance(c, dict)]
+        caller_mem_lines = []
+        if self.caller_name:
+            first_n = self.caller_name.split()[0]
+            caller_mem_lines.append(
+                f"- Caller's Name: {self.caller_name} (Phone: +{self.caller_digits}). You ALREADY know their name from your conversation—address them warmly as {first_n} when natural and NEVER ask for their name again."
+            )
+        prior_hist = self.caller_memory.get('history') if isinstance(self.caller_memory.get('history'), list) else []
+        if prior_hist:
+            recent_lines = []
+            for h in prior_hist[-8:]:
+                if isinstance(h, dict) and h.get('content'):
+                    who = (self.caller_name or 'Caller') if h.get('role') == 'user' else (agent_name or 'James')
+                    recent_lines.append(f"  {who}: {str(h['content'])[:240]}")
+            if recent_lines:
+                caller_mem_lines.append("- Previous Call Conversation with this Caller:\n" + "\n".join(recent_lines))
+        caller_mem_block = (
+            "[Returning Caller Memory]\n" + "\n".join(caller_mem_lines) + "\n[/Returning Caller Memory]"
+            if caller_mem_lines else ""
+        )
         parts = [f"You are {agent_name or 'the customer service assistant'}"
-                 f"{', ' + role if role else ''}{' for ' + company if company else ''}, answering a customer on a live WhatsApp voice call.",
+                 f"{', ' + role if role else ''}{' for ' + company if company else ''}, speaking as a real human specialist with a customer on a live WhatsApp phone call.",
+                 caller_mem_block,
                  instructions,
                  '[Assigned Knowledge Base]\n' + '\n'.join(cards) + '\n[/Assigned Knowledge Base]' if cards else '',
-                 'You have no tools on this call: never claim to book, send, look up or change anything.',
                  # The shared voice note carries owner tool guidance, so customer calls get delivery rules only.
                  '[Live call communication & personality rules:\n'
+                 '- 100% REAL HUMAN FEEL (NEVER MENTION AI, MEMORY SYSTEMS, OR TECHNICAL ERRORS): Speak strictly as a real human specialist at the company. NEVER say or imply that you are an AI, bot, virtual assistant, language model, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, databases, or say things like "my memory of you hasn\'t been saved" or "I don\'t store memory between calls". If you ever don\'t recall a detail the caller mentioned earlier, respond naturally like a real human: "I\'m sorry, I can\'t remember—could you remind me?" or "Sorry, that slipped my mind—what was your name again?".\n'
                  '- IMMEDIATE 2-TO-4-WORD MICRO-OPENER FOR REAL-TIME TURN-TAKING: Begin every reply with a short, natural 2-to-4-word human reaction followed immediately by a period or comma (for example: "Oh, no worries at all.", "Yeah, that makes sense.", "That\'s totally fair.", "Right, gotcha.", "All right, let\'s see.", "Oh, I hear you.") before your main sentence. This lets the voice stream start speaking within milliseconds while the rest of your sentence follows seamlessly.\n'
                  '- REAL-TIME CONVERSATIONAL CADENCE & ACTIVE LISTENING: Keep every turn to one or two short, natural spoken sentences (10–25 words total) with everyday contractions; no lists, markdown, URLs or bracketed stage cues. Listen closely to the caller\'s tone, pace, and personal context—if they hesitate, correct themselves, or share what they have going on, acknowledge it warmly and unhurriedly first, then ask at most one simple follow-up question.\n'
                  '- PROACTIVE VALUE FIRST (NEVER ASK PERMISSION TO SHARE INFO): Never ask "Would you like to know...?", "Do you want me to explain...?", "Shall I calculate that for you?", or "Would you like to hear how much you can save?". Every caller wants to know! Always deliver the actual answer, recommended solar size (kW and number of panels), estimated savings, and key facts upfront immediately, then ask one natural follow-up question to keep the conversation moving.\n'
                  '- 10/10 HUMAN WARMTH & EFFORTLESS DRY WIT: Sound like a sharp, warm, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. React with natural, relatable human warmth or dry wit when appropriate (for example, when they mention a high power bill: "Oof, at that rate your power company probably has your photo framed on their wall—let\'s cut that right down"), and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
-        try:
-            from central_ai_identity import central_ai_identity
-        except Exception:
-            def central_ai_identity(x): return x
-        return central_ai_identity("\n\n".join(p for p in parts if p))
+        return "\n\n".join(p for p in parts if p)
 
     def task(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -615,7 +909,12 @@ class StreamPhoneCall:
                         r = routing()
                         c_agent = str(r.get('customer_agent') or '').strip()
                         c_comp = str(r.get('company_name') or '').strip()
-                        if c_agent and c_comp:
+                        first_n = self.caller_name.split()[0] if self.caller_name else ''
+                        if first_n and c_agent and c_comp:
+                            speak(f"Hi {first_n}! Good to hear from you again, it's {c_agent} from {c_comp}. How can I help you out today?")
+                        elif first_n and c_agent:
+                            speak(f"Hi {first_n}! Good to hear from you again, it's {c_agent}. How can I help you out today?")
+                        elif c_agent and c_comp:
                             speak(f"Hi there! {c_agent} speaking from {c_comp}. How can I help you out today?")
                         elif c_agent:
                             speak(f"Hi there! {c_agent} speaking. How can I help you out today?")
@@ -703,7 +1002,11 @@ class StreamPhoneCall:
                         return
                     filtered = filter_playback_input(text, [echo_text] if echo_text else [])
                     if filtered is None:
-                        speak('Speaker audio mixed with your words. Please repeat your request; no new work was started.')
+                        speak(
+                            "Sorry, the line got a bit noisy there. Could you say that again?"
+                            if self.customer
+                            else 'Speaker audio mixed with your words. Please repeat your request; no new work was started.'
+                        )
                         speech.finish(); output(b'', final=True)
                         return 'complete'
                     text = normalize_voice_greeting(filtered)
@@ -736,6 +1039,15 @@ class StreamPhoneCall:
                         self.service.metrics['user_turns']=self.service.metrics.get('user_turns',0)+1
                         stage='hermes'
                         hermes_started=time.monotonic()
+                        if self.customer:
+                            prev_asst = str(self.call_turns[-1].get('assistant') or '') if self.call_turns else ''
+                            extracted_name = _extract_spoken_caller_name(text, prev_asst)
+                            if extracted_name and extracted_name != self.caller_name:
+                                self.caller_name = extracted_name
+                                self.caller_memory['name'] = extracted_name
+                                _save_customer_caller_memory(self.caller_digits, self.caller_memory)
+                                if self.fallback_conversation is not None:
+                                    self.fallback_conversation.prompt = self._customer_prompt('', None)
                         # Use ultra-low-latency direct streaming Conversation (~220ms first token)
                         # as primary for live phone turn-taking, falling back to native_conversation if needed.
                         conv = self._get_fallback_conversation() or self.conversation
@@ -790,12 +1102,18 @@ class StreamPhoneCall:
                         stage=stage, cancelled=control.cancelled.is_set())
                     self.service.metrics['last_turn_timing']=timing
                     print(json.dumps({'phone_voice_timing':timing}),flush=True)
+                    if self.customer:
+                        turn_pcm = audio['pcm'] if isinstance(audio, dict) else audio
+                        if isinstance(turn_pcm, (bytes, bytearray)) and len(self.call_audio_pcm) < 16000 * 2 * 1800:
+                            self.call_audio_pcm.extend(turn_pcm)
+                            self.call_audio_pcm.extend(b'\x00' * (16000 * 2 * 15 // 100))
                 if greeting or (audio is not None and (spoke_any or locals().get('text'))):
                     caller_utt = '[Call Answered]' if greeting else str(locals().get('text') or '').strip()
                     assistant_utt = self.spoken_text.strip()
                     if caller_utt or assistant_utt:
+                        turn_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                         self.call_turns.append({
-                            'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                            'at': turn_at,
                             'caller': caller_utt,
                             'assistant': assistant_utt,
                             'timing': dict(timing),
@@ -803,6 +1121,7 @@ class StreamPhoneCall:
                         transcript_snap = {
                             'call_id': self.call,
                             'caller': self.member.get('number'),
+                            'caller_name': self.caller_name,
                             'line': 'customer' if self.customer else 'owner',
                             'started_at': self.call_started_at,
                             'turns': list(self.call_turns),
@@ -813,6 +1132,19 @@ class StreamPhoneCall:
                                 json.dump(transcript_snap, tf, ensure_ascii=False, indent=2)
                         except Exception:
                             pass
+                        if self.customer:
+                            hist = self.caller_memory.setdefault('history', [])
+                            if not greeting and caller_utt:
+                                hist.append({'role': 'user', 'content': caller_utt, 'at': turn_at})
+                            if assistant_utt:
+                                hist.append({'role': 'assistant', 'content': assistant_utt, 'at': turn_at})
+                            _save_customer_caller_memory(self.caller_digits, self.caller_memory)
+                            import threading
+                            threading.Thread(
+                                target=_sync_customer_call_turn_to_box3,
+                                args=(self.caller_digits, self.caller_name, self.call, len(self.call_turns), caller_utt, assistant_utt, turn_at),
+                                daemon=True,
+                            ).start()
                 if pending_input:
                     self.close_asr(pending_input.get('stream'))
                     self.close_asr(pending_input.get('prepared_asr'))
@@ -869,6 +1201,8 @@ class StreamPhoneCall:
 
     async def enqueue(self,data,generation,control,framer=None,final=True):
         control.check()
+        if self.customer and data and len(self.call_audio_pcm) < 16000 * 2 * 1800:
+            self.call_audio_pcm.extend(data)
         framer=framer or PhonePCM()
         for pcm in framer.frames(data,final=final):
             control.check()
@@ -1028,6 +1362,20 @@ class StreamPhoneCall:
 
     async def close(self):
         self.closed=True
+        if self.customer:
+            try:
+                wav_file = await asyncio.to_thread(_save_customer_call_wav, self.call, self.call_audio_pcm)
+                self.caller_memory.setdefault('calls', []).append({
+                    'call_id': self.call,
+                    'started_at': self.call_started_at,
+                    'ended_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                    'turns_count': len(self.call_turns),
+                    'audio_wav': wav_file,
+                    'turns': list(self.call_turns[-20:]),
+                })
+                await asyncio.to_thread(_save_customer_caller_memory, self.caller_digits, self.caller_memory)
+            except Exception:
+                pass
         self.close_asr(self.asr);self.asr=None
         self.discard_early_asr()
         if self.pending_input:

@@ -499,7 +499,7 @@ def speech(text):
 
 
 GREETING = "Hey Mark! It's Leo. I'm here. What can I help you with?"
-RECOVERY = "Sorry, I had a brief connection hiccup. Could you say that again?"
+RECOVERY = "Sorry, I missed that. Could you say that again?"
 TASK_ACK = "Let me check that."
 
 
