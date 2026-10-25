@@ -499,6 +499,11 @@ func main() {
    pn,e:=socket.Store.LIDs.GetPNForLID(ctx,peer);if e==nil && pn.User!="" {resolved=pn.User}
   }
   current.Lock()
+  if !customerCallsAllowed() {
+   current.Unlock()
+   log.Printf("incoming customer call ignored (customer_calls_enabled=false): peer=%s resolved=%s",peer.String(),resolved)
+   return
+  }
   member:=admittedCaller(peer.User,resolved)
   busy:=current.busy
   isVideo:=call.IsVideo()

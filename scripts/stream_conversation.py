@@ -90,7 +90,71 @@ _fish_failed_models = set()
 
 def _resolve_fish_tts_model(config):
     raw = str((config or {}).get('FISH_TTS_MODEL') or '').strip()
-    return raw or 's2.1-pro-free'
+    return raw or 's1'
+
+
+def _hermes_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=None):
+    import audioop
+    import urllib.request
+    bridge_key = (
+        os.environ.get('HERMES_API_KEY')
+        or 'hermes_standalone_secret_token_32chars'
+    ).strip().strip('\'"')
+    payload = json.dumps({
+        'text': cleaned_text,
+        'voice_id': voice_id,
+        'voice': 'michael' if voice_id == 'a30d099a643d4173836cfee1d8ae6c13' else 'jarvis',
+    }).encode('utf-8')
+    headers = {
+        'Authorization': 'Bearer ' + bridge_key,
+        'Content-Type': 'application/json',
+    }
+    last_err = None
+    for base_url in ('http://hermes:8642', 'http://127.0.0.1:8642'):
+        try:
+            req = urllib.request.Request(f'{base_url}/voice/tts', data=payload, headers=headers, method='POST')
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                if resp.status != 200:
+                    continue
+                if audio is None:
+                    raw_pcm = resp.read()
+                    if rate != 24000 and raw_pcm:
+                        raw_pcm, _ = audioop.ratecv(raw_pcm, 2, 1, 24000, rate, None)
+                    return raw_pcm
+                if control:
+                    control.track(resp)
+                carry, state, size, deadline = b'', None, 0, time.monotonic() + 180
+                while True:
+                    if control:
+                        control.check()
+                    if time.monotonic() > deadline:
+                        raise RuntimeError('Speech deadline exceeded')
+                    chunk = resp.read(4096)
+                    if not chunk:
+                        break
+                    data = carry + chunk
+                    cut = len(data) - len(data) % 2
+                    carry = data[cut:]
+                    if cut:
+                        pcm_chunk = data[:cut]
+                        if rate != 24000:
+                            pcm_chunk, state = audioop.ratecv(pcm_chunk, 2, 1, 24000, rate, state)
+                            if len(pcm_chunk) % 2:
+                                pcm_chunk = pcm_chunk[:-1]
+                        if pcm_chunk:
+                            size += len(pcm_chunk)
+                            if size > rate * 2 * 180:
+                                raise RuntimeError('Speech size exceeded')
+                            if control:
+                                control.check()
+                            audio(pcm_chunk)
+                return b''
+        except Exception as exc:
+            last_err = exc
+            continue
+    if last_err:
+        raise last_err
+    raise RuntimeError('Hermes TTS proxy unavailable')
 
 
 def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
@@ -98,12 +162,14 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
     from voice_http import client as http_client
     key = (config.get('FISH_API_KEY') or '').strip()
     voice_id = (config.get('FISH_VOICE_ID') or '').strip()
-    if not key or not voice_id or not text or not text.strip():
+    if not voice_id or not text or not text.strip():
         return b''
-    if key.startswith('sk-fish-'):
-        raise RuntimeError('Invalid Fish API token format')
     cleaned_text = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', text, flags=re.I).strip()
     if not cleaned_text:
+        return b''
+    if not key:
+        if os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
+            return _hermes_proxy_tts(cleaned_text, voice_id, rate, audio, control)
         return b''
     payload = json.dumps({
         'text': cleaned_text,
@@ -116,17 +182,15 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
     if _fish_working_model and configured_model in _fish_failed_models:
         models_to_try = [_fish_working_model]
     else:
-        models_to_try = [configured_model]
-        if configured_model != 's1':
-            models_to_try.append('s1')
+        models_to_try = list(dict.fromkeys([configured_model, 's1', 's2.1-pro-free']))
     last_exc = None
+    emitted_any = False
     for idx, model in enumerate(models_to_try):
         headers = {
             'Authorization': 'Bearer ' + key,
             'Content-Type': 'application/json',
             'model': model
         }
-        emitted_any = False
         try:
             with http_client().stream('POST', 'https://api.fish.audio/v1/tts',
                     content=payload, headers=headers, timeout=8.0) as resp:
@@ -164,12 +228,16 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
                 return b''
         except Exception as exc:
             last_exc = exc
+            if emitted_any or (control and control.cancelled.is_set()) or isinstance(exc, TurnCancelled):
+                raise
             status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
             if status_code in {400, 404, 422}:
                 _fish_failed_models.add(model)
-                if not emitted_any and idx + 1 < len(models_to_try):
+                if idx + 1 < len(models_to_try):
                     continue
-            raise
+            break
+    if not emitted_any and os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
+        return _hermes_proxy_tts(cleaned_text, voice_id, rate, audio, control)
     if last_exc:
         raise last_exc
     return b''
@@ -201,7 +269,8 @@ class FishRestSpeech:
         global _fish_http_cooldown_until
         self.control.check()
         fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
-        if self._native_fallback is None and fish_key and not fish_key.startswith('sk-fish-') and time.monotonic() >= _fish_http_cooldown_until:
+        can_try_fish = bool(fish_key or os.environ.get('HERMES_PHONE_CONVERSATION') == 'true')
+        if self._native_fallback is None and can_try_fish and time.monotonic() >= _fish_http_cooldown_until:
             clause_bytes_before = self.bytes
             try:
                 fish_rest_tts(clause, self.config, self.rate, self._emit_chunk, self.control)
@@ -309,7 +378,7 @@ class FreeSpeech:
         self.abandoned = False
         self.connect_deadline = time.monotonic() + 4.0
         fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
-        if not fish_key or fish_key.startswith('sk-fish-') or time.monotonic() < _fish_ws_cooldown_until:
+        if not fish_key or time.monotonic() < _fish_ws_cooldown_until:
             self.abandoned = True
             self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
             self.ready.set()

@@ -58,10 +58,20 @@ class StreamPhoneCall:
         self.jobs = self.member['jobs']
         # Customer-line calls: customer agent persona and voice, no tools, never the owner's native session.
         self.customer = self.member.get('line') == 'customer'
+        base_cfg = dict(service.config)
+        try:
+            from voice_setup import load_settings
+            saved_voice = load_settings({'HERMES_PROFILE_ROOT': '/opt/data'})
+            if isinstance(saved_voice, dict):
+                for k, v in saved_voice.items():
+                    if v:
+                        base_cfg[k] = v
+        except Exception:
+            pass
         customer_voice = os.environ.get('CUSTOMER_FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13').strip()
         if customer_voice in {'711cf3ed00ab441a8f54a45058047b7a', 'bf342d9e9e5b44e0ade1ccfd1abb4815'}:
             customer_voice = 'a30d099a643d4173836cfee1d8ae6c13'
-        self.speech_config = ({**service.config, 'FISH_VOICE_ID': customer_voice, 'FISH_ENGLISH_FALLBACK_VOICE_ID': customer_voice, 'FISH_VOICE_NAME': 'Michael'}
+        self.speech_config = ({**base_cfg, 'FISH_VOICE_ID': customer_voice, 'FISH_ENGLISH_FALLBACK_VOICE_ID': customer_voice, 'FISH_VOICE_NAME': 'Michael'}
                               if self.customer and customer_voice else service.config)
         self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=512)
         self.closed = self.connected = False

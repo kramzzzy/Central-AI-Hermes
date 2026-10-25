@@ -1,79 +1,81 @@
 package main
 
 import (
- "context"
- "log"
- "strconv"
- "sync"
- "time"
- meow "github.com/purpshell/meowcaller"
+	"context"
+	"log"
+	"strconv"
+	"sync"
+	"time"
+	meow "github.com/purpshell/meowcaller"
 )
 
 // Complete WhatsApp's answer handshake before slow native/TTS preparation.
 // Register lifecycle listeners first, retaining readiness if it arrives early.
 type incomingHandle interface {
- OnReady(func())
- OnEnd(func(string))
- Answer() error
- Hangup() error
- State() meow.CallPhase
- Receive(meow.AudioSink)
- Play(meow.AudioSource) *meow.Player
+	OnReady(func())
+	OnEnd(func(string))
+	Answer() error
+	Hangup() error
+	State() meow.CallPhase
+	Receive(meow.AudioSink)
+	Play(meow.AudioSource) *meow.Player
 }
 func answerIncoming(ctx context.Context,call *meow.Call) {answerIncomingWithVoice(ctx,call,prepareVoice)}
 
 // Let the line ring first (WHATSAPP_ANSWER_DELAY_SECONDS, ~3s per ring) so staff on the handset can pick up.
 // False when the caller hung up, the call was taken elsewhere, or the service is stopping.
 func waitBeforeAnswer(ctx context.Context,call incomingHandle) bool {
- secs,_:=strconv.Atoi(getEnv("WHATSAPP_ANSWER_DELAY_SECONDS"))
- deadline:=time.Now().Add(time.Duration(secs)*time.Second)
- for time.Now().Before(deadline) {
-  if call.State()==meow.CallPhaseEnded {return false}
-  select {case <-ctx.Done():return false;case <-time.After(250*time.Millisecond):}
- }
- return call.State()!=meow.CallPhaseEnded
+	if !customerCallsAllowed() {return false}
+	secs,_:=strconv.Atoi(getEnv("WHATSAPP_ANSWER_DELAY_SECONDS"))
+	if secs<=0 && getEnv("WHATSAPP_LINE_ID")=="customer" {secs=9}
+	deadline:=time.Now().Add(time.Duration(secs)*time.Second)
+	for time.Now().Before(deadline) {
+		if call.State()==meow.CallPhaseEnded || !customerCallsAllowed() {return false}
+		select {case <-ctx.Done():return false;case <-time.After(250*time.Millisecond):}
+	}
+	return call.State()!=meow.CallPhaseEnded && customerCallsAllowed()
 }
 func answerIncomingWithVoice(ctx context.Context,call incomingHandle,prepare func(context.Context)(*voiceAudio,error)) {
- callCtx,stop:=context.WithCancel(ctx)
- var link sync.Mutex
- var voice *voiceAudio
- mediaReady:=false
- // A receiver must be installed before Answer starts media; attaching it
- // after greeting preparation discards the caller's initial decoded audio.
- call.Receive(meow.SinkFunc(func(frame []float32){
-  link.Lock();v:=voice;link.Unlock()
-  if v!=nil {v.Receive(frame)} else {current.Lock();current.Received++;current.Unlock()}
- }))
- call.OnReady(func(){
-  link.Lock();mediaReady=true;if voice!=nil{voice.markReady()};link.Unlock()
-  current.Lock();current.Call="audio_ready";current.Answered=true;current.AnsweredAt=time.Now().UTC().Format(time.RFC3339);current.Unlock()
-  log.Print("incoming owner call media ready")
- })
- call.OnEnd(func(reason string){
-  stop();link.Lock();v:=voice;link.Unlock();if v!=nil{v.Close()}
-  if reason==""{reason="remote_end"}
-  current.Lock();current.Call="ended";current.EndReason=reason;current.busy=false;current.activeHangup=nil;current.Unlock()
-  log.Print("incoming owner call ended")
- })
- if err:=call.Answer();err!=nil {
-  call.Hangup();stop();current.Lock();current.Call="answer_failed";current.EndReason="incoming_handshake_failed";current.busy=false;current.activeHangup=nil;current.Unlock();log.Print("incoming answer failed");return
- }
- current.Lock();if current.Call=="answering"{current.Call="connecting"};current.activeHangup=call.Hangup;current.Unlock()
- log.Print("incoming owner answer requested before voice preparation")
- go func(){
-  v,err:=prepare(callCtx)
-  if err!=nil {
-   if callCtx.Err()==nil{current.Lock();current.EndReason="incoming_voice_unavailable";current.busy=false;current.Unlock();call.Hangup();log.Printf("incoming voice preparation failed: %v",err)}
-   return
-  }
-  link.Lock()
-  if callCtx.Err()!=nil || call.State()==meow.CallPhaseEnded {link.Unlock();v.Close();return}
-  voice=v
-  if mediaReady{v.markReady()}
-  call.Play(v)
-  link.Unlock()
-  log.Print("incoming owner voice attached")
-  select {case <-callCtx.Done():return;case <-v.ctx.Done():call.Hangup()}
- }()
- go func(){select{case <-callCtx.Done():return;case <-time.After(30*time.Minute):call.Hangup()}}()
+	callCtx,stop:=context.WithCancel(ctx)
+	var link sync.Mutex
+	var voice *voiceAudio
+	mediaReady:=false
+	// A receiver must be installed before Answer starts media; attaching it
+	// after greeting preparation discards the caller's initial decoded audio.
+	call.Receive(meow.SinkFunc(func(frame []float32){
+		link.Lock();v:=voice;link.Unlock()
+		if v!=nil {v.Receive(frame)} else {current.Lock();current.Received++;current.Unlock()}
+	}))
+	call.OnReady(func(){
+		link.Lock();mediaReady=true;if voice!=nil{voice.markReady()};link.Unlock()
+		current.Lock();current.Call="audio_ready";current.Answered=true;current.AnsweredAt=time.Now().UTC().Format(time.RFC3339);current.Unlock()
+		log.Print("incoming owner call media ready")
+	})
+	call.OnEnd(func(reason string){
+		stop();link.Lock();v:=voice;link.Unlock();if v!=nil{v.Close()}
+		if reason==""{reason="remote_end"}
+		current.Lock();current.Call="ended";current.EndReason=reason;current.busy=false;current.activeHangup=nil;current.Unlock()
+		log.Print("incoming owner call ended")
+	})
+	if err:=call.Answer();err!=nil {
+		call.Hangup();stop();current.Lock();current.Call="answer_failed";current.EndReason="incoming_handshake_failed";current.busy=false;current.activeHangup=nil;current.Unlock();log.Print("incoming answer failed");return
+	}
+	current.Lock();if current.Call=="answering"{current.Call="connecting"};current.activeHangup=call.Hangup;current.Unlock()
+	log.Print("incoming owner answer requested before voice preparation")
+	go func(){
+		v,err:=prepare(callCtx)
+		if err!=nil {
+			if callCtx.Err()==nil{current.Lock();current.EndReason="incoming_voice_unavailable";current.busy=false;current.Unlock();call.Hangup();log.Printf("incoming voice preparation failed: %v",err)}
+			return
+		}
+		link.Lock()
+		if callCtx.Err()!=nil || call.State()==meow.CallPhaseEnded {link.Unlock();v.Close();return}
+		voice=v
+		if mediaReady{v.markReady()}
+		call.Play(v)
+		link.Unlock()
+		log.Print("incoming owner voice attached")
+		select {case <-callCtx.Done():return;case <-v.ctx.Done():call.Hangup()}
+	}()
+	go func(){select{case <-callCtx.Done():return;case <-time.After(30*time.Minute):call.Hangup()}}()
 }

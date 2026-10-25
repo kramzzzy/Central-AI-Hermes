@@ -458,7 +458,18 @@ class Handler(BaseHTTPRequestHandler):
        p=Path(cf);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(body,indent=2),encoding='utf-8')
        os.chmod(cf,0o666)
       except Exception:pass
-     return self.reply(200,{'ok':True,'count':len(body.get('contacts',[])),'customer_auto_reply':body.get('customer_auto_reply',True)})
+     import urllib.request
+     for cu in ['http://customer-caller:8080',os.environ.get('CALLER_URL','http://caller:8080')]:
+      try:
+       creq=urllib.request.Request(f"{cu}/contacts",data=json.dumps(body).encode('utf-8'),headers={'Content-Type':'application/json'})
+       urllib.request.urlopen(creq,timeout=2).read()
+      except Exception:pass
+     if body.get('customer_calls_enabled') is False:
+      try:
+       dreq=urllib.request.Request("http://customer-caller:8080/call/drop",data=b'{}',headers={'Content-Type':'application/json'})
+       urllib.request.urlopen(dreq,timeout=2).read()
+      except Exception:pass
+     return self.reply(200,{'ok':True,'count':len(body.get('contacts',[])),'customer_auto_reply':body.get('customer_auto_reply',True),'customer_calls_enabled':body.get('customer_calls_enabled',True)})
     if self.path in {'/os/call/drop','/os/call/hangup'} or (self.path=='/os/call' and body.get('action') in {'drop','hangup','terminate'}):
      caller_urls=[os.environ.get('CALLER_URL','http://caller:8080'),'http://127.0.0.1:8080','http://whatsapp-connector:8080','http://meowcaller:8080']
      import urllib.request

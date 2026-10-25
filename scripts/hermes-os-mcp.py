@@ -550,6 +550,29 @@ def end_call() -> dict:
     return {'ok': True, 'action': 'end_call', 'status': 'Call termination signal dispatched.'}
 
 
+@server.tool(name='manage_whatsapp_customer_line')
+def manage_whatsapp_customer_line(
+    action: str = 'status',
+    auto_reply: bool | None = None,
+    calls_enabled: bool | None = None,
+    assigned_agent: str = '',
+) -> dict:
+    """Inspect or update the Customer WhatsApp Line settings (enable/disable customer voice call answering, enable/disable public solar inquiry text auto-reply, or change the assigned customer inquiry agent)."""
+    payload = {
+        k: v for k, v in {
+            'action': action,
+            'auto_reply': auto_reply,
+            'calls_enabled': calls_enabled,
+            'assigned_agent': assigned_agent,
+        }.items() if v not in ('', None)
+    }
+    try:
+        raw = _plugin_client.manage_whatsapp_customer_line(payload)
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        return {'error': f'Customer line update failed: {str(exc)}'}
+
+
 @server.tool(name='calculate_solar')
 def calculate_solar(
     bill_amount_aud: float | None = None,

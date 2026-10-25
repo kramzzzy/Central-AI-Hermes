@@ -989,3 +989,57 @@ def end_call(arguments=None, **kwargs):
             except Exception:
                 continue
     return json.dumps({"ok": True, "action": "end_call", "status": "Call termination signal dispatched."})
+
+
+def manage_whatsapp_customer_line(arguments=None, **kwargs):
+    params = dict(arguments or kwargs or {})
+    raw = _call_app_os_mcp("central_ai_manage_whatsapp_customer_line", params, timeout=10)
+    if raw:
+        return raw
+    # Local fallback using /data/contacts.json and /os/contacts
+    root_dir = Path(__file__).resolve().parent.parent.parent
+    contacts_data = {}
+    for candidate in (
+        Path("/data/customer/contacts.json"),
+        Path("/data/contacts.json"),
+        root_dir / ".runtime" / "contacts.json",
+    ):
+        try:
+            if candidate.is_file():
+                contacts_data = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(contacts_data, dict):
+                    break
+        except Exception:
+            pass
+    act = str(params.get("action") or "status").strip().lower()
+    has_updates = (
+        isinstance(params.get("auto_reply"), bool)
+        or isinstance(params.get("calls_enabled"), bool)
+        or bool(str(params.get("assigned_agent") or "").strip())
+    )
+    if act == "update" or has_updates:
+        if isinstance(params.get("auto_reply"), bool):
+            contacts_data["customer_auto_reply"] = params["auto_reply"]
+        if isinstance(params.get("calls_enabled"), bool):
+            contacts_data["customer_calls_enabled"] = params["calls_enabled"]
+        if str(params.get("assigned_agent") or "").strip():
+            contacts_data["customer_agent"] = str(params["assigned_agent"]).strip()
+        token = process_token() or _hermes_api_key()
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        for bridge_url in _bridge_urls("/os/contacts"):
+            try:
+                req = urllib.request.Request(
+                    bridge_url,
+                    data=json.dumps(contacts_data).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
+                )
+                with opener.open(req, timeout=5):
+                    break
+            except Exception:
+                continue
+    return json.dumps({
+        "ok": True,
+        "customer_auto_reply": bool(contacts_data.get("customer_auto_reply", True)),
+        "customer_calls_enabled": bool(contacts_data.get("customer_calls_enabled", True)),
+        "assigned_agent": str(contacts_data.get("customer_agent") or "james"),
+    })

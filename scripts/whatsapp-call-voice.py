@@ -98,7 +98,7 @@ if os.environ.get('OPENROUTER_API_KEY') and not config.get('OPENROUTER_API_KEY')
     config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
 if os.environ.get('FISH_API_KEY'):
     env_fish_key = os.environ['FISH_API_KEY'].strip()
-    if not env_fish_key.startswith('sk-fish-') or not config.get('FISH_API_KEY'):
+    if env_fish_key:
         config['FISH_API_KEY'] = env_fish_key
 if os.environ.get('FISH_VOICE_ID'):
     config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
@@ -113,8 +113,6 @@ try:
     saved_voice = load_settings({'HERMES_PROFILE_ROOT': '/opt/data'})
     if isinstance(saved_voice, dict):
         for k, v in saved_voice.items():
-            if k == 'FISH_API_KEY' and str(v or '').strip().startswith('sk-fish-') and config.get('FISH_API_KEY') and not str(config.get('FISH_API_KEY')).startswith('sk-fish-'):
-                continue
             if v:
                 config[k] = v
 except Exception as exc:
@@ -686,8 +684,8 @@ class Handler(BaseHTTPRequestHandler):
                     if active:
                         return self.reply(409, {})
                     customer_line = customer_auth
-                    if customer_line and (callback_id or not fish_service):
-                        # Customer calls have no owner callbacks or native owner session.
+                    if customer_line and (callback_id or not fish_service or not _customer_calls_allowed()):
+                        # Customer calls have no owner callbacks or native owner session, and respect call toggle.
                         return self.reply(403, {})
                     try:
                         caller_header = self.headers.get('X-Caller-Number') or ('' if customer_line else OWNER) or ''
@@ -960,6 +958,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.reply(503, {'error': 'Phone voice operation unavailable'})
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+
+def _customer_calls_allowed():
+    for cf in ('/data/customer/contacts.json', '/data/contacts.json'):
+        try:
+            if os.path.exists(cf):
+                with open(cf, 'r', encoding='utf-8') as f:
+                    cdata = json.load(f)
+                if isinstance(cdata, dict) and 'customer_calls_enabled' in cdata:
+                    return bool(cdata.get('customer_calls_enabled', True))
+        except Exception:
+            pass
+    return True
 
 
 def allowed_audio_call(call):

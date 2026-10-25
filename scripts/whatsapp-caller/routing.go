@@ -19,13 +19,31 @@ type phoneContact struct {
 	Role          string `json:"role,omitempty"`
 }
 type phoneRouting struct {
-	Group    string         `json:"group,omitempty"`
-	Contacts []phoneContact `json:"contacts"`
+	Group                string         `json:"group,omitempty"`
+	CustomerCallsEnabled *bool          `json:"customer_calls_enabled,omitempty"`
+	Contacts             []phoneContact `json:"contacts"`
 }
 var phoneRoutingPath = "/run/secrets/whatsapp_routing"
 var dynamicRoutingPaths = []string{
 	"/data/contacts.json",
 	".runtime/contacts.json",
+}
+
+func customerCallsAllowed() bool {
+	if getEnv("WHATSAPP_LINE_ID") != "customer" {
+		return true
+	}
+	for _, dynamicPath := range dynamicRoutingPaths {
+		if data, err := os.ReadFile(dynamicPath); err == nil && len(data) > 0 {
+			var cfg struct {
+				CustomerCallsEnabled *bool `json:"customer_calls_enabled"`
+			}
+			if json.Unmarshal(data, &cfg) == nil && cfg.CustomerCallsEnabled != nil {
+				return *cfg.CustomerCallsEnabled
+			}
+		}
+	}
+	return true
 }
 
 func managedPhoneRouting() (*phoneRouting, bool) {
