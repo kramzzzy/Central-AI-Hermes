@@ -287,6 +287,7 @@ class SocialTests(unittest.TestCase):
         body={"org":ORG,"action":"private_reply","platform":"facebook","account_id":"101","comment_id":"101_555","message":"Thanks for your interest!"}
         result=self.social.handle(body)
         self.assertEqual("sent-1",result["message_id"])
+        self.assertEqual("999",result["recipient_id"])
         self.assertEqual(result,self.social.handle(body))
         sent=[c for c in self.calls if c[0].endswith('/101/messages')]
         self.assertEqual(1,len(sent))

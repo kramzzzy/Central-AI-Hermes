@@ -1444,7 +1444,7 @@ class SocialWorkspace:
                 "post_id": event["post_id"], "account_name": page.get("name", ""),
                 "post_url": post.get("permalink_url") or post.get("permalink") or (f"https://www.facebook.com/{event['post_id']}" if facebook else ""),
                 "image_url": post.get("full_picture") or (post.get("media_url") if post.get("media_type") != "VIDEO" else ""),
-                "sender_name": self._event_name(org, event)}
+                "sender_name": self._event_name(org, event), "sender_id": str(event.get("sender_id") or "")}
 
     def send_comment(self, org, body):
         page, event = self.verified_comment(org, body)
@@ -1485,7 +1485,7 @@ class SocialWorkspace:
                 data={"recipient": {"comment_id": event["comment_id"]}, "message": {"text": message}})
             if not result.get("message_id"):
                 raise SocialError("Meta did not confirm the private reply.", 502)
-            recipient = str(result.get("recipient_id") or "")
+            recipient = str(result.get("recipient_id") or event.get("sender_id") or "")
             return {"ok": True, "message_id": result["message_id"], "recipient_id": recipient if recipient.isdigit() else ""}
         return self.deliver_once(org, {**body, "delivery_id": f"private:{event['id']}"}, send)
 
