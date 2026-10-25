@@ -138,6 +138,18 @@ def _load_customer_caller_memory(caller_digits, snap=None):
                     break
         except Exception:
             pass
+    cached_name = str(mem.get('name') or '').strip()
+    if cached_name:
+        name_words = [w.strip("'-").lower() for w in cached_name.split() if w.strip("'-")]
+        if not name_words or any(w in _NON_NAME_WORDS or not w.isalpha() for w in name_words):
+            mem['name'] = ''
+    if not mem.get('name') and isinstance(mem.get('history'), list):
+        for h in reversed(mem['history']):
+            if isinstance(h, dict) and h.get('role') == 'assistant':
+                cand = _extract_spoken_caller_name('yes', str(h.get('content') or ''))
+                if cand:
+                    mem['name'] = cand
+                    break
     if not mem.get('name'):
         # Check customer WhatsApp processed_inbox_ids.json / processed_messages.json or box3_snapshot for a known name on this number
         for proc_path in (

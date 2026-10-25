@@ -340,7 +340,8 @@ _NON_NAME_WORDS = {
     'perth', 'adelaide', 'queensland', 'qld', 'nsw', 'vic', 'wa', 'sa', 'tas', 'act',
     'nt', 'hello', 'hi', 'hey', 'yes', 'yeah', 'yep', 'no', 'nah', 'thanks', 'thank',
     'poor', 'correction', 'all', 'correct', 'everything', 'perfect', 'accurate', 'right',
-    'first', 'last', 'full', 'name', 'is', 'my',
+    'first', 'last', 'full', 'name', 'is', 'my', 'time', 'your', 'our', 'this', 'that',
+    'it', 'caller', 'number', 'maybe',
 }
 _STREET_SUFFIX_RE = re.compile(
     r'^(street|st|road|rd|avenue|ave|drive|dr|court|ct|place|pl|lane|ln|way|circuit|cct|crescent|cres|boulevard|blvd|terrace|tce|highway|hwy|parade|pde|close|cl|esplanade|esp)$',
@@ -405,11 +406,18 @@ def _is_valid_confirmed_street_address(val: str) -> bool:
         return False
     if _BILL_OR_NOISE_IN_ADDRESS_RE.search(raw):
         return False
+    if re.match(r'^(?:yeah|yes|yep|no|nah|my\s+property|i\s+live|it\s+is|this\s+is)\b', raw, re.I):
+        return False
     if re.search(r'\b\d{1,3},\d{3}\b', raw):
         return False
     if not re.search(r'(?:^|[\s,/])\d{1,5}[A-Za-z]?\b', raw):
         return False
-    cleaned_alpha = re.sub(r'\b(?:unit|apt|suite|lot|level|flat|no|qld|nsw|vic|wa|sa|tas|act|nt)\b', ' ', raw, flags=re.I)
+    cleaned_alpha = re.sub(
+        r'\b(?:unit|apt|suite|lot|level|flat|no|qld|nsw|vic|wa|sa|tas|act|nt|yeah|yes|yep|my|our|the|property|address|is|in|at|on|of|this|that|it|its|located|living|live|house|home)\b',
+        ' ',
+        raw,
+        flags=re.I,
+    )
     alpha_words = re.findall(r'[A-Za-z]{2,}', cleaned_alpha)
     if not alpha_words:
         return False
