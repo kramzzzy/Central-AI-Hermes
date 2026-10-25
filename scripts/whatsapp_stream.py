@@ -638,8 +638,8 @@ class StreamPhoneCall:
                             speak("Sorry, I missed that. Could you say that again?")
                         else:
                             return
-                    elif (not already_extended and not text.rstrip().endswith('?')
-                            and re.search(r'\b(and|because|but|if|with|to|the|my|a|an|or|about|so|well|like|um|uh|er|hmm|thinking)\W*$',text,re.I)):
+                    elif (not already_extended and len(pcm) < 16000 * 2 * 1.5 and not text.rstrip().endswith('?')
+                            and re.search(r'\b(um|uh|er|hmm)\W*$',text,re.I)):
                         # Obvious unfinished clauses or hesitations get one short opportunity
                         # to continue, rather than dispatching a draft request.
                         return 'continue'
@@ -795,9 +795,9 @@ class StreamPhoneCall:
             if speaking and len(pcm) == 1920:
                 samples = struct.unpack('<960h', pcm)
                 rms = (sum(s * s for s in samples) / 960) ** 0.5 / 32768.0
-                if is_playing and rms < 0.015:
+                if (is_playing or self.state == 'thinking') and rms < 0.015:
                     speaking = False
-                elif self.capture and (rms < 0.0025 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.006)):
+                elif rms < 0.005 or (self.silence_frames >= 1 and self.speech_run == 0 and rms < 0.008):
                     speaking = False
             self.silence_frames=0 if speaking else min(self.silence_frames+1,20)
             self.service.metrics['processed_frames']=self.service.metrics.get('processed_frames',0)+1
@@ -810,11 +810,10 @@ class StreamPhoneCall:
                     self.capture_version+=1
                     self.discard_early_asr()
                     if self.speculative:self.speculative.cancel();self.speculative=None
-                # Resume before committing a prepared final turn, even if the
-                # caller has only just resumed. During active speech playback,
-                # require 4 strong frames (240ms) so speaker echo cannot cut off Leo.
-                if self.state=='thinking' and self.pending_input:self.resume_input()
-                barge_frames = 4 if is_playing else 2
+                # Require 3 consecutive voiced frames (180ms) before resuming a thinking
+                # turn so single-frame phone comfort noise never cancels in-flight ASR/LLM.
+                if self.speech_run>=3 and self.state=='thinking' and self.pending_input:self.resume_input()
+                barge_frames = 4 if is_playing else 3
                 if self.speech_run>=barge_frames and (self.state in {'speaking','thinking'} or self.playback_until>time.monotonic()):
                     if not self.resume_input():self.flush()
             else: self.speech_run=0

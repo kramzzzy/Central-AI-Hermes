@@ -386,7 +386,7 @@ def recognize(samples):
     segments, _ = model.transcribe(samples, language='en', task='transcribe',
         # Go already selects a voiced utterance with pre-roll. A second VAD
         # removed quiet opening words in the synthetic phone-band test.
-        beam_size=2 if CONVERSATION_MODE == 'stream' else 5, temperature=0, vad_filter=False,
+        beam_size=1 if CONVERSATION_MODE == 'stream' else 5, temperature=0, vad_filter=False,
         condition_on_previous_text=False, initial_prompt='Hello, how are you? What is up. Central AI assistant.',
         log_prob_threshold=-1.8 if CONVERSATION_MODE == 'stream' else -1.0,
         no_speech_threshold=0.85 if CONVERSATION_MODE == 'stream' else 0.6,
