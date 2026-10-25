@@ -179,7 +179,7 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
         'reference_id': voice_id,
         'format': 'pcm',
         'sample_rate': rate,
-        'latency': 'balanced'
+        'latency': 'low'
     }).encode('utf-8')
     configured_model = _resolve_fish_tts_model(config)
     if _fish_working_model and configured_model in _fish_failed_models:
@@ -208,7 +208,7 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
                 if control:
                     control.track(resp)
                 carry, size, deadline = b'', 0, time.monotonic() + 180
-                for chunk in resp.iter_bytes(chunk_size=4096):
+                for chunk in resp.iter_bytes(chunk_size=1920):
                     if control:
                         control.check()
                     if time.monotonic() > deadline:
@@ -325,8 +325,10 @@ class FishRestSpeech:
 
     def _drain_ready_clauses(self):
         while self.pending:
-            min_len = 10 if self.first_flush is None else 36
-            m = re.search(rf'^(\s*.{{{min_len},}}?(?<!\d)[.!?;:]\s+)', self.pending, re.S)
+            if self.first_flush is None:
+                m = re.search(r'^(\s*.{4,}?(?<!\d)[,!?;:.]\s+)', self.pending, re.S)
+            else:
+                m = re.search(r'^(\s*.{28,}?(?<!\d)[.!?;:]\s+)', self.pending, re.S)
             if not m:
                 break
             clause = m.group(1).strip()
@@ -437,7 +439,7 @@ class FreeSpeech:
                         # stalled start must not block the bounded HTTP handover.
                         socket.send(msgpack.packb({'event': 'start', 'request': {'text': '',
                             'reference_id': self.config.get('FISH_VOICE_ID') or '', 'format': 'pcm',
-                            'sample_rate': self.rate, 'latency': 'low', 'chunk_length': 100,
+                            'sample_rate': self.rate, 'latency': 'low', 'chunk_length': 60,
                             'condition_on_previous_chunks': True}}, use_bin_type=True))
                         self.ready.set()
                         opened = time.monotonic()
@@ -584,12 +586,12 @@ class FreeSpeech:
         self.started = self.started or time.monotonic()
         self.send({'event': 'text', 'text': phrase})
         if not self.fallback:
-            # Flush the first usable phrase (at least 2 words / 12 chars or clause comma) while subsequent model words arrive.
+            # Flush the first usable phrase (short micro-opener or 2+ words) immediately while subsequent tokens stream.
             first_phrase = (self.first_flush is None and (
-                            (len(self.unflushed.strip()) >= 12 and len(self.unflushed.split()) >= 2) or
-                            (len(self.unflushed.strip()) >= 8 and bool(re.search(r'[,!?;:.]\s*$', self.unflushed)))))
-            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed)) or (len(self.unflushed.strip()) >= 24 and bool(re.search(r',\s*$', self.unflushed)))
-            overflow = len(self.unflushed) >= 75
+                            (len(self.unflushed.strip()) >= 8 and len(self.unflushed.split()) >= 2) or
+                            (len(self.unflushed.strip()) >= 4 and bool(re.search(r'[,!?;:.—–-]\s*$', self.unflushed)))))
+            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed)) or (len(self.unflushed.strip()) >= 18 and bool(re.search(r',\s*$', self.unflushed)))
+            overflow = len(self.unflushed) >= 60
 
             if punct_boundary or first_phrase or overflow:
                 self.send({'event': 'flush'})
@@ -674,8 +676,11 @@ def _is_valid_openrouter_voice_model(model_id):
 def openrouter_stream(config, messages, tools, control):
     import os
     custom = None
+    openai_key = (config.get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
     key = (config.get('OPENROUTER_API_KEY') or os.environ.get('OPENROUTER_API_KEY') or '').strip()
     agent_model = (config.get('AGENT_MODEL') or os.environ.get('HERMES_VOICE_MODEL') or config.get('HERMES_VOICE_MODEL') or '').strip()
+    if agent_model == 'google/gemini-2.5-flash-lite':
+        agent_model = 'openai/gpt-4o-mini'
     if _is_valid_openrouter_voice_model(agent_model) and key:
         custom = {'base_url': 'https://openrouter.ai/api/v1', 'model': agent_model, 'api_key': key}
     if not custom:
@@ -689,30 +694,51 @@ def openrouter_stream(config, messages, tools, control):
             model = 'openai/gpt-4o-mini'
         if key:
             custom = {'base_url': 'https://openrouter.ai/api/v1', 'model': model, 'api_key': key}
+    if not custom and openai_key and not openai_key.startswith('sk-or-'):
+        custom = {'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o-mini', 'api_key': openai_key}
     if not custom: raise ValueError('A configured economical conversation model is required')
 
     primary_model = custom['model']
     candidates = [primary_model]
-    if primary_model != 'openai/gpt-4o-mini':
+    if primary_model != 'openai/gpt-4o-mini' and primary_model != 'gpt-4o-mini':
         candidates.append('openai/gpt-4o-mini')
+
+    use_direct_openai = (
+        bool(openai_key)
+        and not openai_key.startswith('sk-or-')
+        and (custom.get('base_url') == 'https://api.openai.com/v1' or primary_model in {'openai/gpt-4o-mini', 'gpt-4o-mini', 'openai/gpt-4.1-mini', 'gpt-4.1-mini'})
+    )
 
     last_exc = None
     for idx, candidate_model in enumerate(candidates):
-        payload = {'model': candidate_model, 'messages': messages, 'stream': True,
-                   'max_tokens': 900 if tools else 220, 'temperature': .4,
-                   'provider': {'sort': 'latency', 'allow_fallbacks': True}}
-        if not tools and 'gemini' in candidate_model.lower():
-            payload['reasoning'] = {'effort': 'none'}
-        if candidate_model in {'openai/gpt-4o-mini', 'openai/gpt-4.1-mini'}:
-            fallback = 'openai/gpt-4.1-mini' if candidate_model == 'openai/gpt-4o-mini' else 'openai/gpt-4o-mini'
-            payload['models'] = [candidate_model, fallback]
-        if tools:
-            payload['tools'] = tools
-            if candidate_model in {'openai/gpt-4o-mini', 'openai/gpt-4.1-mini'}:
+        if use_direct_openai and idx == 0:
+            direct_model = candidate_model.split('/', 1)[-1] if candidate_model.startswith('openai/') else candidate_model
+            if direct_model not in {'gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o'}:
+                direct_model = 'gpt-4o-mini'
+            payload = {'model': direct_model, 'messages': messages, 'stream': True,
+                       'max_tokens': 700 if tools else 150, 'temperature': .35}
+            if tools:
+                payload['tools'] = tools
                 payload['parallel_tool_calls'] = False
-        request = urllib.request.Request('https://openrouter.ai/api/v1/chat/completions',
-            data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + custom['api_key'],
-            'Content-Type': 'application/json', 'X-Title': 'Central AI voice'})
+            request = urllib.request.Request('https://api.openai.com/v1/chat/completions',
+                data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + openai_key,
+                'Content-Type': 'application/json'})
+        else:
+            payload = {'model': candidate_model, 'messages': messages, 'stream': True,
+                       'max_tokens': 700 if tools else 150, 'temperature': .35,
+                       'provider': {'sort': 'latency', 'allow_fallbacks': True}}
+            if not tools and 'gemini' in candidate_model.lower():
+                payload['reasoning'] = {'effort': 'none'}
+            if candidate_model in {'openai/gpt-4o-mini', 'openai/gpt-4.1-mini'}:
+                fallback = 'openai/gpt-4.1-mini' if candidate_model == 'openai/gpt-4o-mini' else 'openai/gpt-4o-mini'
+                payload['models'] = [candidate_model, fallback]
+            if tools:
+                payload['tools'] = tools
+                if candidate_model in {'openai/gpt-4o-mini', 'openai/gpt-4.1-mini'}:
+                    payload['parallel_tool_calls'] = False
+            request = urllib.request.Request('https://openrouter.ai/api/v1/chat/completions',
+                data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + custom['api_key'],
+                'Content-Type': 'application/json', 'X-Title': 'Central AI voice'})
         emitted_any = False
         try:
             with open_request(request, timeout=20) as response:

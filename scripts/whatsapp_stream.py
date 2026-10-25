@@ -19,7 +19,7 @@ from whatsapp_audio import PhoneAudioFilter
 class PhonePCM:
     """Keep provider chunks continuous; pad only the final transport frame."""
     frame_bytes = 1920
-    prefill_frames = 2
+    prefill_frames = 1
     single_burst_frames = 4
 
     def __init__(self):
@@ -298,6 +298,8 @@ class StreamPhoneCall:
         conv_config = dict(self.service.config or {})
         if not conv_config.get('OPENROUTER_API_KEY') and os.environ.get('OPENROUTER_API_KEY'):
             conv_config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
+        if not conv_config.get('OPENAI_API_KEY') and os.environ.get('OPENAI_API_KEY'):
+            conv_config['OPENAI_API_KEY'] = os.environ['OPENAI_API_KEY'].strip()
         resolved_model = ''
         for candidate_model in (
             os.environ.get('HERMES_VOICE_MODEL', ''),
@@ -312,8 +314,10 @@ class StreamPhoneCall:
                 resolved_model = m
                 break
         if self.customer:
-            # Customer calls favour first-token latency over depth: short answers, no tools.
-            fast = os.environ.get('CUSTOMER_VOICE_MODEL', '').strip() or 'google/gemini-2.5-flash-lite'
+            # Customer calls use OpenAI's fastest voice-turn model (openai/gpt-4o-mini) for sub-300ms first token.
+            fast = os.environ.get('CUSTOMER_VOICE_MODEL', '').strip() or 'openai/gpt-4o-mini'
+            if fast == 'google/gemini-2.5-flash-lite':
+                fast = 'openai/gpt-4o-mini'
             if _is_valid_openrouter_voice_model(fast):
                 resolved_model = fast
         if resolved_model:
@@ -364,9 +368,10 @@ class StreamPhoneCall:
                  'You have no tools on this call: never claim to book, send, look up or change anything.',
                  # The shared voice note carries owner tool guidance, so customer calls get delivery rules only.
                  '[Live call communication & personality rules:\n'
-                 '- Speak in one or two short, warm, natural sentences with everyday contractions; no lists, markdown, URLs or bracketed stage cues. Ask at most one question at a time.\n'
+                 '- IMMEDIATE 2-TO-4-WORD MICRO-OPENER FOR REAL-TIME TURN-TAKING: Begin every reply with a short, natural 2-to-4-word human reaction followed immediately by a period or comma (for example: "Oh, no worries at all.", "Yeah, that makes sense.", "That\'s totally fair.", "Right, gotcha.", "All right, let\'s see.", "Oh, I hear you.") before your main sentence. This lets the voice stream start speaking within milliseconds while the rest of your sentence follows seamlessly.\n'
+                 '- REAL-TIME CONVERSATIONAL CADENCE & ACTIVE LISTENING: Keep every turn to one or two short, natural spoken sentences (10–25 words total) with everyday contractions; no lists, markdown, URLs or bracketed stage cues. Listen closely to the caller\'s tone, pace, and personal context—if they hesitate, correct themselves, or share what they have going on, acknowledge it warmly and unhurriedly first, then ask at most one simple follow-up question.\n'
                  '- PROACTIVE VALUE FIRST (NEVER ASK PERMISSION TO SHARE INFO): Never ask "Would you like to know...?", "Do you want me to explain...?", "Shall I calculate that for you?", or "Would you like to hear how much you can save?". Every caller wants to know! Always deliver the actual answer, recommended solar size (kW and number of panels), estimated savings, and key facts upfront immediately, then ask one natural follow-up question to keep the conversation moving.\n'
-                 '- 10/10 HUMAN WARMTH & EFFORTLESS DRY WIT: Sound like a sharp, warm, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. React with natural, relatable, dry human wit when appropriate (for example, when they mention a high power bill: "Oof, at that rate your power company probably has your photo framed on their wall—let\'s cut that right down"), and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
+                 '- 10/10 HUMAN WARMTH & EFFORTLESS DRY WIT: Sound like a sharp, warm, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. React with natural, relatable human warmth or dry wit when appropriate (for example, when they mention a high power bill: "Oof, at that rate your power company probably has your photo framed on their wall—let\'s cut that right down"), and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
         try:
             from central_ai_identity import central_ai_identity
         except Exception:
@@ -490,12 +495,11 @@ class StreamPhoneCall:
                             and not control.cancelled.is_set()
                             and self.generation==generation
                             and self.capture_version==version):
-                        if not (self.worker and not self.worker.done()):
-                            conv=self._get_fallback_conversation()
-                            if conv and not self.speculative:
-                                spec=conv.prefetch(l_text,control)
-                                early_entry['speculative']=spec
-                                self.speculative=spec
+                        conv=self._get_fallback_conversation()
+                        if conv and not self.speculative:
+                            spec=conv.prefetch(l_text,control)
+                            early_entry['speculative']=spec
+                            self.speculative=spec
                     elif (hasattr(cloud,'prepare')
                             and not control.cancelled.is_set()
                             and self.generation==generation):
@@ -919,14 +923,14 @@ class StreamPhoneCall:
                     if self.connected and (self.received_input or (self.connected_at and now - self.connected_at >= .15)) and not busy:
                         self.greeting_pending=False;self.start_reply(greeting=True)
                     continue
-                # Start background local recognition + LLM prefetch early (~150ms into a pause)
+                # Start background local recognition + LLM prefetch early (~120ms into a pause)
                 # so both ASR and speculative tokens are already in flight at the endpoint.
-                early_quiet = (self.silence_frames >= 3 and now - self.last_speech >= .15) or (now - self.last_speech >= .24)
+                early_quiet = (self.silence_frames >= 2 and now - self.last_speech >= .12) or (now - self.last_speech >= .20)
                 if self.capture and self.voiced >= 2 and early_quiet and not self.early_asr and not busy:
                     self.prepare_recognition()
                 # Support both continuous silent RTP frames and WhatsApp Opus DTX
                 # silence suppression (where RTP packets stop arriving during quiet gaps).
-                quiet_enough = (self.silence_frames >= 5 and now - self.last_speech >= .32) or (now - self.last_speech >= .42)
+                quiet_enough = (self.silence_frames >= 4 and now - self.last_speech >= .24) or (now - self.last_speech >= .32)
                 if (self.capture and self.voiced>=2 and quiet_enough and self.input.empty() and not busy):
                     if not self.early_asr:
                         self.prepare_recognition()

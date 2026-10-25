@@ -49,7 +49,9 @@ class Response:
 def open_request(request, timeout):
     if request.full_url not in {
             'https://openrouter.ai/api/v1/chat/completions',
-            'https://openrouter.ai/api/v1/audio/transcriptions'}:
+            'https://openrouter.ai/api/v1/audio/transcriptions',
+            'https://api.openai.com/v1/chat/completions',
+            'https://api.openai.com/v1/audio/transcriptions'}:
         raise ValueError('Unknown private voice provider route')
     # No automatic retries: interruption or an uncertain action cannot cause a
     # second provider submission. HTTP errors stay private at the caller layer.

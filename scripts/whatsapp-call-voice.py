@@ -428,10 +428,13 @@ def recognize(samples):
                    no_speech_prob=round(max(s.no_speech_prob for s in parts), 3),
                    compression_ratio=round(max(s.compression_ratio for s in parts), 3))
     # These scores signal decoding failures, not proof of factual correctness.
-    # Reject the entire utterance instead of silently dropping uncertain words.
-    min_logprob = -1.6 if CONVERSATION_MODE == 'stream' else -1.0
-    max_no_speech = 0.85 if CONVERSATION_MODE == 'stream' else 0.6
-    uncertain = (quality['avg_logprob'] < min_logprob or quality['no_speech_prob'] > max_no_speech
+    # In live stream mode, accept short conversational replies locally (~90ms) while
+    # filtering known Whisper silence hallucinations so turns don't wait on cloud ASR.
+    hallucinated = bool(re.search(r'^(?:thank you for watching|thanks for watching|subtitles by|amara\.org|you$)', text.strip(), re.I))
+    min_logprob = -2.1 if CONVERSATION_MODE == 'stream' else -1.0
+    max_no_speech = 0.92 if CONVERSATION_MODE == 'stream' else 0.6
+    uncertain = (hallucinated or quality['avg_logprob'] < min_logprob
+                 or quality['no_speech_prob'] > max_no_speech
                  or quality['compression_ratio'] > 2.4)
     quality['decision'] = 'clarify' if uncertain else 'accepted'
     return ('' if uncertain else text), quality
