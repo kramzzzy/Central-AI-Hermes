@@ -58,7 +58,21 @@ class StreamPhoneCall:
         self.jobs = self.member['jobs']
         # Customer-line calls: customer agent persona and voice, no tools, never the owner's native session.
         self.customer = self.member.get('line') == 'customer'
+        use_customer_voice = (
+            self.customer
+            or str(self.member.get('role') or '').lower() == 'customer'
+            or 'james' in str(self.member.get('assigned_assistant') or self.member.get('profile') or '').lower()
+        )
         base_cfg = dict(service.config)
+        try:
+            from central_ai_integrations import discover_fish_credentials, valid_fish_key
+            base_cfg['FISH_API_KEY'] = valid_fish_key(base_cfg.get('FISH_API_KEY'))
+            if not base_cfg.get('FISH_API_KEY'):
+                for k, v in discover_fish_credentials('/opt/data').items():
+                    if v and not base_cfg.get(k):
+                        base_cfg[k] = v
+        except Exception:
+            pass
         try:
             from voice_setup import load_settings
             saved_voice = load_settings({'HERMES_PROFILE_ROOT': '/opt/data'})
@@ -68,11 +82,18 @@ class StreamPhoneCall:
                         base_cfg[k] = v
         except Exception:
             pass
+        if base_cfg.get('FISH_API_KEY') or use_customer_voice:
+            base_cfg['CENTRAL_AI_CALL_SPEECH'] = 'fish'
         customer_voice = os.environ.get('CUSTOMER_FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13').strip()
-        if customer_voice in {'711cf3ed00ab441a8f54a45058047b7a', 'bf342d9e9e5b44e0ade1ccfd1abb4815'}:
+        if not customer_voice or customer_voice in {
+            '612b878b113047d9a770c069c8b4fdfe',
+            '31d3dd937d2944a1b06da3db533d27f9',
+            '711cf3ed00ab441a8f54a45058047b7a',
+            'bf342d9e9e5b44e0ade1ccfd1abb4815',
+        }:
             customer_voice = 'a30d099a643d4173836cfee1d8ae6c13'
-        self.speech_config = ({**base_cfg, 'FISH_VOICE_ID': customer_voice, 'FISH_ENGLISH_FALLBACK_VOICE_ID': customer_voice, 'FISH_VOICE_NAME': 'Michael'}
-                              if self.customer and customer_voice else service.config)
+        self.speech_config = ({**base_cfg, 'FISH_VOICE_ID': customer_voice, 'FISH_ENGLISH_FALLBACK_VOICE_ID': customer_voice, 'FISH_VOICE_NAME': 'Michael', 'CENTRAL_AI_CALL_SPEECH': 'fish'}
+                              if use_customer_voice else service.config)
         self.input, self.output = asyncio.Queue(maxsize=32), asyncio.Queue(maxsize=512)
         self.closed = self.connected = False
         self.state, self.generation = 'initializing', 1

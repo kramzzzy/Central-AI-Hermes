@@ -20,6 +20,68 @@ OPTIONAL_KEYS = {
     'FISH_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
     'HERMES_API_KEY', 'APP_OS_URL', 'MICHAEL_OS_URL',
 }
+PLACEHOLDER_FISH_KEYS = {
+    '',
+    'sk-fish-your_fish_audio_key_here',
+    'sk-fish-your-key-here',
+    'your-fish-audio-api-key-here',
+}
+
+
+def valid_fish_key(value):
+    cleaned = str(value or '').strip().strip('"').strip("'")
+    return '' if cleaned in PLACEHOLDER_FISH_KEYS else cleaned
+
+
+def discover_fish_credentials(root='/opt/data'):
+    """Locate working Fish Audio credentials across shared volumes and profiles."""
+    base = Path(root)
+    result = {}
+    env_key = valid_fish_key(os.environ.get('FISH_API_KEY'))
+    if env_key:
+        result['FISH_API_KEY'] = env_key
+    for json_name in ('.runtime-fish-voice.json', '.app-voice.json'):
+        path = base / json_name
+        try:
+            if path.is_file() and not path.is_symlink():
+                data = json.loads(path.read_text(encoding='utf-8'))
+                if isinstance(data, dict):
+                    k = valid_fish_key(data.get('FISH_API_KEY'))
+                    if k and not result.get('FISH_API_KEY'):
+                        result['FISH_API_KEY'] = k
+                    for vk in ('FISH_VOICE_ID', 'FISH_VOICE_NAME', 'CENTRAL_AI_CALL_SPEECH'):
+                        if data.get(vk) and vk not in result:
+                            result[vk] = str(data[vk]).strip()
+        except Exception:
+            pass
+    if not result.get('FISH_API_KEY'):
+        profiles_dir = base / 'profiles'
+        candidates = []
+        try:
+            if profiles_dir.is_dir():
+                for env_file in sorted(profiles_dir.glob('*/.env')):
+                    name = env_file.parent.name
+                    priority = 0 if name.startswith('team-owner-') else (1 if name == 'leo' else 2)
+                    candidates.append((priority, env_file))
+                candidates.sort(key=lambda item: (item[0], str(item[1])))
+        except Exception:
+            pass
+        for _, env_file in candidates:
+            try:
+                for line in env_file.read_text(encoding='utf-8-sig', errors='ignore').splitlines():
+                    if line.strip().startswith('#') or '=' not in line:
+                        continue
+                    key, val = line.split('=', 1)
+                    if key.strip() == 'FISH_API_KEY':
+                        k = valid_fish_key(val)
+                        if k:
+                            result['FISH_API_KEY'] = k
+                            break
+                if result.get('FISH_API_KEY'):
+                    break
+            except Exception:
+                pass
+    return result
 
 
 def managed_environment(environment=None):
@@ -27,13 +89,14 @@ def managed_environment(environment=None):
     if source.get('CENTRAL_AI_MANAGED_INTEGRATIONS') != '1':
         return {}
     values = {key: source.get(key, '').strip() for key in MANAGED_KEYS}
+    values['FISH_API_KEY'] = valid_fish_key(values.get('FISH_API_KEY'))
     if any(not value for key, value in values.items() if key not in OPTIONAL_KEYS):
         raise RuntimeError('Central AI integration settings are incomplete')
     if any('\x00' in value or '\n' in value or '\r' in value for value in values.values()):
         raise RuntimeError('Invalid Central AI integration setting')
     # Empty new provider slots preserve credentials owned by native profiles.
     return {key:value for key,value in values.items()
-            if value or key not in {'OPENAI_API_KEY','ANTHROPIC_API_KEY','GEMINI_API_KEY','HERMES_API_KEY','APP_OS_URL','MICHAEL_OS_URL'}}
+            if value or key not in {'FISH_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','GEMINI_API_KEY','HERMES_API_KEY','APP_OS_URL','MICHAEL_OS_URL'}}
 
 
 def integration_config(config, environment=None):

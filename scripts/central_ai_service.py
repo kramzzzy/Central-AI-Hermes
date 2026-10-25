@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from central_ai_integrations import MANAGED_KEYS, OPTIONAL_KEYS, sync_profile, atomic_write
+from central_ai_integrations import MANAGED_KEYS, OPTIONAL_KEYS, sync_profile, atomic_write, discover_fish_credentials, valid_fish_key
 
 
 def load_config(path):
@@ -119,10 +119,11 @@ def install_memory(home):
 def get_standalone_config():
     openrouter_key = os.environ.get('OPENROUTER_API_KEY', '') or 'sk-or-v1-standalone-default-key-32chars'
     hermes_key = os.environ.get('HERMES_API_KEY', 'hermes_standalone_secret_token_32chars')
-    fish_key = os.environ.get('FISH_API_KEY', '').strip()
+    discovered_fish = discover_fish_credentials('/opt/data')
+    fish_key = valid_fish_key(os.environ.get('FISH_API_KEY', '')) or discovered_fish.get('FISH_API_KEY', '')
     call_speech = os.environ.get('CENTRAL_AI_CALL_SPEECH') or os.environ.get('HERMES_CALL_SPEECH') or ('fish' if fish_key else 'piper')
-    voice_name = os.environ.get('FISH_VOICE_NAME', 'Jarvis')
-    voice_id = os.environ.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
+    voice_name = os.environ.get('FISH_VOICE_NAME') or discovered_fish.get('FISH_VOICE_NAME') or 'Jarvis'
+    voice_id = os.environ.get('FISH_VOICE_ID') or discovered_fish.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe'
     return {
         'version': 1,
         'integrations': {
@@ -151,7 +152,9 @@ def get_standalone_config():
 
 
 def bootstrap(mode, config):
-    os.environ.update(config['integrations'])
+    for k, v in config['integrations'].items():
+        if v or k not in os.environ:
+            os.environ[k] = v
     os.environ['CENTRAL_AI_MANAGED_INTEGRATIONS'] = '1'
     for mk, mdef in (('HERMES_CHAT_MODEL', 'deepseek/deepseek-chat-v3-0324'), ('WHATSAPP_CHAT_MODEL', 'openai/gpt-4o-mini'), ('HERMES_VOICE_MODEL', 'openai/gpt-4o-mini')):
         if 'deepseek-v4.1-flash' in os.environ.get(mk, '') or 'glm-5.2' in os.environ.get(mk, ''):

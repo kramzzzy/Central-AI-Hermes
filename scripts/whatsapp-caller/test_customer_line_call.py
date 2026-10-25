@@ -61,11 +61,19 @@ class CustomerLineCallTests(unittest.TestCase):
 
     def test_customer_without_voice_setting_keeps_default_voice(self):
         with patch.dict(os.environ, {'CUSTOMER_FISH_VOICE_ID': ''}):
-            self.assertEqual('owner-voice', self.call(line='customer').speech_config['FISH_VOICE_ID'])
+            cfg = self.call(line='customer').speech_config
+            self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', cfg['FISH_VOICE_ID'])
+            self.assertEqual('fish', cfg['CENTRAL_AI_CALL_SPEECH'])
 
     def test_customer_legacy_or_unset_voice_uses_michael_voice(self):
-        with patch.dict(os.environ, {'CUSTOMER_FISH_VOICE_ID': '711cf3ed00ab441a8f54a45058047b7a'}):
-            self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', self.call(line='customer').speech_config['FISH_VOICE_ID'])
+        for legacy_id in (
+            '711cf3ed00ab441a8f54a45058047b7a',
+            'bf342d9e9e5b44e0ade1ccfd1abb4815',
+            '612b878b113047d9a770c069c8b4fdfe',
+            '31d3dd937d2944a1b06da3db533d27f9',
+        ):
+            with patch.dict(os.environ, {'CUSTOMER_FISH_VOICE_ID': legacy_id}):
+                self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', self.call(line='customer').speech_config['FISH_VOICE_ID'])
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop('CUSTOMER_FISH_VOICE_ID', None)
             self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', self.call(line='customer').speech_config['FISH_VOICE_ID'])

@@ -94,16 +94,17 @@ def _resolve_fish_tts_model(config):
 
 
 def _hermes_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=None):
-    import audioop
     import urllib.request
     bridge_key = (
         os.environ.get('HERMES_API_KEY')
         or 'hermes_standalone_secret_token_32chars'
     ).strip().strip('\'"')
+    req_rate = rate if rate in (16000, 24000) else 24000
     payload = json.dumps({
         'text': cleaned_text,
         'voice_id': voice_id,
         'voice': 'michael' if voice_id == 'a30d099a643d4173836cfee1d8ae6c13' else 'jarvis',
+        'sample_rate': req_rate,
     }).encode('utf-8')
     headers = {
         'Authorization': 'Bearer ' + bridge_key,
@@ -117,13 +118,10 @@ def _hermes_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=None):
                 if resp.status != 200:
                     continue
                 if audio is None:
-                    raw_pcm = resp.read()
-                    if rate != 24000 and raw_pcm:
-                        raw_pcm, _ = audioop.ratecv(raw_pcm, 2, 1, 24000, rate, None)
-                    return raw_pcm
+                    return resp.read()
                 if control:
                     control.track(resp)
-                carry, state, size, deadline = b'', None, 0, time.monotonic() + 180
+                carry, size, deadline = b'', 0, time.monotonic() + 180
                 while True:
                     if control:
                         control.check()
@@ -137,17 +135,12 @@ def _hermes_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=None):
                     carry = data[cut:]
                     if cut:
                         pcm_chunk = data[:cut]
-                        if rate != 24000:
-                            pcm_chunk, state = audioop.ratecv(pcm_chunk, 2, 1, 24000, rate, state)
-                            if len(pcm_chunk) % 2:
-                                pcm_chunk = pcm_chunk[:-1]
-                        if pcm_chunk:
-                            size += len(pcm_chunk)
-                            if size > rate * 2 * 180:
-                                raise RuntimeError('Speech size exceeded')
-                            if control:
-                                control.check()
-                            audio(pcm_chunk)
+                        size += len(pcm_chunk)
+                        if size > rate * 2 * 180:
+                            raise RuntimeError('Speech size exceeded')
+                        if control:
+                            control.check()
+                        audio(pcm_chunk)
                 return b''
         except Exception as exc:
             last_err = exc
@@ -378,7 +371,8 @@ class FreeSpeech:
         self.abandoned = False
         self.connect_deadline = time.monotonic() + 4.0
         fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
-        if not fish_key or time.monotonic() < _fish_ws_cooldown_until:
+        can_use_hermes_ws = os.environ.get('HERMES_PHONE_CONVERSATION') == 'true'
+        if (not fish_key and not can_use_hermes_ws) or time.monotonic() < _fish_ws_cooldown_until:
             self.abandoned = True
             self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
             self.ready.set()
@@ -389,52 +383,77 @@ class FreeSpeech:
     def receive(self):
         global _fish_ws_cooldown_until
         model = _resolve_fish_tts_model(self.config)
+        fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
+        bridge_key = (
+            os.environ.get('HERMES_API_KEY')
+            or str((self.config or {}).get('HERMES_API_KEY') or '')
+            or 'hermes_standalone_secret_token_32chars'
+        ).strip().strip('\'"')
+        targets = []
+        if fish_key:
+            targets.append(('wss://api.fish.audio/v1/tts/live', {
+                'Authorization': 'Bearer ' + fish_key,
+                'model': model,
+            }))
+        if os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
+            targets.append(('ws://hermes:8644/voice/live', {'Authorization': 'Bearer ' + bridge_key}))
+            targets.append(('ws://127.0.0.1:8644/voice/live', {'Authorization': 'Bearer ' + bridge_key}))
         try:
             import msgpack
             from websockets.sync.client import connect
-            with connect('wss://api.fish.audio/v1/tts/live', additional_headers={
-                    'Authorization': 'Bearer ' + (self.config.get('FISH_API_KEY') or ''),
-                    'model': model}, open_timeout=4.0, close_timeout=1,
-                    max_size=4*1024*1024, max_queue=8) as socket:
-                with self.transport_guard:
-                    if self.abandoned:
-                        return
-                    self.socket = self.control.track(socket)
-                # Never hold the transport guard across a provider write: a
-                # stalled start must not block the bounded HTTP handover.
-                socket.send(msgpack.packb({'event': 'start', 'request': {'text': '',
-                    'reference_id': self.config.get('FISH_VOICE_ID') or '', 'format': 'pcm',
-                    'sample_rate': self.rate, 'latency': 'low', 'chunk_length': 100,
-                    'condition_on_previous_chunks': True}}, use_bin_type=True))
-                self.ready.set()
-                opened = time.monotonic()
-                while time.monotonic() < (self.started+180 if self.started else opened+180):
-                    self.control.check()
-                    if self.abandoned:
-                        return
-                    if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.8:
-                        raise RuntimeError('Speech first audio deadline exceeded')
-                    try: raw = socket.recv(timeout=.15)
-                    except TimeoutError: continue
-                    if not isinstance(raw, bytes): raise RuntimeError('Invalid speech frame')
-                    event = msgpack.unpackb(raw, raw=False)
-                    if event.get('event') == 'audio' and event.get('audio'):
-                        data = event['audio']
+            last_exc = None
+            for ws_url, ws_headers in targets:
+                try:
+                    with connect(ws_url, additional_headers=ws_headers, open_timeout=3.5, close_timeout=1,
+                            max_size=4*1024*1024, max_queue=8) as socket:
                         with self.transport_guard:
                             if self.abandoned:
                                 return
-                            if self.bytes + len(data) > self.rate*2*180 or len(data) % 2:
-                                raise RuntimeError('Invalid speech size')
+                            self.socket = self.control.track(socket)
+                        # Never hold the transport guard across a provider write: a
+                        # stalled start must not block the bounded HTTP handover.
+                        socket.send(msgpack.packb({'event': 'start', 'request': {'text': '',
+                            'reference_id': self.config.get('FISH_VOICE_ID') or '', 'format': 'pcm',
+                            'sample_rate': self.rate, 'latency': 'low', 'chunk_length': 100,
+                            'condition_on_previous_chunks': True}}, use_bin_type=True))
+                        self.ready.set()
+                        opened = time.monotonic()
+                        while time.monotonic() < (self.started+180 if self.started else opened+180):
                             self.control.check()
-                            self.bytes += len(data)
-                            self.first_audio = self.first_audio or time.monotonic()
-                            self.audio(data)
-                    elif event.get('event') == 'finish':
-                        self.complete = event.get('reason') in {'stop', 'ended', 'normal', 'finished', 'complete', None, ''}
-                        if not self.complete and not self.bytes: raise RuntimeError('Speech rejected')
-                        self.complete = True
-                        return
-                raise RuntimeError('Speech deadline exceeded')
+                            if self.abandoned:
+                                return
+                            if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.8:
+                                raise RuntimeError('Speech first audio deadline exceeded')
+                            try: raw = socket.recv(timeout=.15)
+                            except TimeoutError: continue
+                            if isinstance(raw, str):
+                                continue
+                            if not isinstance(raw, bytes): raise RuntimeError('Invalid speech frame')
+                            event = msgpack.unpackb(raw, raw=False)
+                            if event.get('event') == 'audio' and event.get('audio'):
+                                data = event['audio']
+                                with self.transport_guard:
+                                    if self.abandoned:
+                                        return
+                                    if self.bytes + len(data) > self.rate*2*180 or len(data) % 2:
+                                        raise RuntimeError('Invalid speech size')
+                                    self.control.check()
+                                    self.bytes += len(data)
+                                    self.first_audio = self.first_audio or time.monotonic()
+                                    self.audio(data)
+                            elif event.get('event') == 'finish':
+                                self.complete = event.get('reason') in {'stop', 'ended', 'normal', 'finished', 'complete', None, ''}
+                                if not self.complete and not self.bytes: raise RuntimeError('Speech rejected')
+                                self.complete = True
+                                return
+                        raise RuntimeError('Speech deadline exceeded')
+                except Exception as exc:
+                    last_exc = exc
+                    if self.bytes or self.started or self.abandoned or self.control.cancelled.is_set():
+                        raise
+                    continue
+            if last_exc:
+                raise last_exc
         except Exception as exc:
             if not self.control.cancelled.is_set() and not self.abandoned:
                 if not self.bytes:

@@ -110,7 +110,8 @@ def call_greeting(display_name):
 class VoiceProvider:
     def __init__(self, settings, defaults=None):
         self.settings = settings
-        home = Path(settings['HERMES_PROFILE_ROOT']) / 'profiles' / settings['HERMES_PROFILE']
+        profile_root = settings.get('HERMES_PROFILE_ROOT', '/opt/data')
+        home = Path(profile_root) / 'profiles' / settings['HERMES_PROFILE']
         # Provider preferences may be shared; this object never loads sessions,
         # personas or memory. Existing dedicated team voice settings win.
         self.config = dict(defaults or {})
@@ -120,9 +121,16 @@ class VoiceProvider:
                     continue
                 key, value = line.split('=', 1)
                 self.config[key.strip()] = value.strip().strip('"').strip("'")
+        from central_ai_integrations import atomic_write, discover_fish_credentials, integration_config, valid_fish_key
+        self.config['FISH_API_KEY'] = valid_fish_key(self.config.get('FISH_API_KEY'))
         # The deployment credential overrides copied profile credentials.
-        if os.environ.get('FISH_API_KEY'):
-            self.config['FISH_API_KEY'] = os.environ['FISH_API_KEY'].strip()
+        env_fish_key = valid_fish_key(os.environ.get('FISH_API_KEY'))
+        if env_fish_key:
+            self.config['FISH_API_KEY'] = env_fish_key
+        if not self.config.get('FISH_API_KEY'):
+            for k, v in discover_fish_credentials(profile_root).items():
+                if v and not self.config.get(k):
+                    self.config[k] = v
         if os.environ.get('FISH_VOICE_ID'):
             self.config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
         else:
@@ -143,13 +151,25 @@ class VoiceProvider:
         if self.config.get('FISH_API_KEY'):
             self.config.setdefault('FISH_OS_CALL_ENGINE', 'stream')
             self.config.setdefault('FISH_ASR_ENABLED', 'false')
-        from central_ai_integrations import integration_config
         self.config = integration_config(self.config)
         from voice_setup import load_settings
-        self.config.update(load_settings(settings))
+        saved = load_settings(settings)
+        self.config.update(saved)
+        self.config['FISH_API_KEY'] = valid_fish_key(self.config.get('FISH_API_KEY'))
+        if self.config.get('FISH_API_KEY') and saved.get('CENTRAL_AI_CALL_SPEECH') != 'piper':
+            self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
         if self.config.get('FISH_API_KEY'):
             self.config.setdefault('FISH_OS_CALL_ENGINE', 'stream')
             self.config.setdefault('FISH_ASR_ENABLED', 'false')
+            try:
+                atomic_write(Path(profile_root) / '.runtime-fish-voice.json', json.dumps({
+                    'FISH_API_KEY': self.config['FISH_API_KEY'],
+                    'FISH_VOICE_ID': self.config.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe'),
+                    'FISH_VOICE_NAME': self.config.get('FISH_VOICE_NAME', 'Jarvis'),
+                    'CENTRAL_AI_CALL_SPEECH': 'fish',
+                }) + '\n')
+            except OSError:
+                pass
         self.bridge_key = settings['HERMES_API_KEY']
         self.slots = threading.BoundedSemaphore(4)
 
@@ -194,7 +214,9 @@ class VoiceProvider:
         from native_call_speech import native_enabled
         if native_enabled(self.config) and path == '/voice/tts':
             try:
-                text = json.loads(data).get('text')
+                body = json.loads(data)
+                text = body.get('text')
+                req_rate = body.get('sample_rate') if body.get('sample_rate') in (16000, 24000) else 24000
             except (ValueError, AttributeError):
                 return handler.reply(400, {'error': 'Invalid speech request'})
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
@@ -205,9 +227,9 @@ class VoiceProvider:
                 from native_call_speech import pcm
                 from stream_conversation import TurnControl
                 chunks, size = [], 0
-                for chunk in pcm(text, self.config, 24000, TurnControl()):
+                for chunk in pcm(text, self.config, req_rate, TurnControl()):
                     size += len(chunk)
-                    if size > 24000 * 2 * 180:
+                    if size > req_rate * 2 * 180:
                         raise ValueError('Speech is too long')
                     chunks.append(chunk)
                 audio = b''.join(chunks)
@@ -246,7 +268,8 @@ class VoiceProvider:
             elif not tts_voice_id and body.get('voice') == 'jarvis':
                 tts_voice_id = '612b878b113047d9a770c069c8b4fdfe'
             tts_voice_id = tts_voice_id or self.config['FISH_VOICE_ID']
-            data = json.dumps({'text': cleaned_text, 'reference_id': tts_voice_id, 'format': 'pcm', 'sample_rate': 24000, 'latency': 'balanced'}).encode()
+            sample_rate = body.get('sample_rate') if body.get('sample_rate') in (16000, 24000) else 24000
+            data = json.dumps({'text': cleaned_text, 'reference_id': tts_voice_id, 'format': 'pcm', 'sample_rate': sample_rate, 'latency': 'balanced'}).encode()
             target = '/v1/tts'
             headers.update({'Content-Type': 'application/json', 'model': self.config.get('FISH_TTS_MODEL') or 's1'})
         elif path == '/voice/asr':
