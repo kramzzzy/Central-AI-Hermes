@@ -278,6 +278,11 @@ class StreamPhoneCall:
             if _is_valid_openrouter_voice_model(m):
                 resolved_model = m
                 break
+        if self.customer:
+            # Customer calls favour first-token latency over depth: short answers, no tools.
+            fast = os.environ.get('CUSTOMER_VOICE_MODEL', '').strip() or 'google/gemini-2.5-flash-lite'
+            if _is_valid_openrouter_voice_model(fast):
+                resolved_model = fast
         if resolved_model:
             conv_config['AGENT_MODEL'] = resolved_model
 

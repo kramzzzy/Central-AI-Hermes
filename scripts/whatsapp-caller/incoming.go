@@ -3,6 +3,7 @@ package main
 import (
  "context"
  "log"
+ "strconv"
  "sync"
  "time"
  meow "github.com/purpshell/meowcaller"
@@ -20,6 +21,18 @@ type incomingHandle interface {
  Play(meow.AudioSource) *meow.Player
 }
 func answerIncoming(ctx context.Context,call *meow.Call) {answerIncomingWithVoice(ctx,call,prepareVoice)}
+
+// Let the line ring first (WHATSAPP_ANSWER_DELAY_SECONDS, ~3s per ring) so staff on the handset can pick up.
+// False when the caller hung up, the call was taken elsewhere, or the service is stopping.
+func waitBeforeAnswer(ctx context.Context,call incomingHandle) bool {
+ secs,_:=strconv.Atoi(getEnv("WHATSAPP_ANSWER_DELAY_SECONDS"))
+ deadline:=time.Now().Add(time.Duration(secs)*time.Second)
+ for time.Now().Before(deadline) {
+  if call.State()==meow.CallPhaseEnded {return false}
+  select {case <-ctx.Done():return false;case <-time.After(250*time.Millisecond):}
+ }
+ return call.State()!=meow.CallPhaseEnded
+}
 func answerIncomingWithVoice(ctx context.Context,call incomingHandle,prepare func(context.Context)(*voiceAudio,error)) {
  callCtx,stop:=context.WithCancel(ctx)
  var link sync.Mutex

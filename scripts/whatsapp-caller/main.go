@@ -510,7 +510,14 @@ func main() {
   current.busy=true;current.Call="answering";current.Received=0;current.Decoded=0;current.DecodeSamples=0;current.RTPTime=0;current.RTPPackets=0;current.PayloadType=0;current.SignallingError="";current.RemoteMuted=nil;current.Played=0;current.EndReason="";current.Target=resolved;current.Kind="native";current.Answered=false;current.AnsweredAt="";current.Unlock()
   log.Printf("incoming call accepted from %s (member=%s), answering...",peer.String(),member)
   call.OnMuteState(func(muted bool){current.Lock();current.RemoteMuted=&muted;current.Unlock();log.Printf("incoming microphone state: muted=%t",muted)})
-  answerIncomingWithVoice(ctx,call,func(callCtx context.Context)(*voiceAudio,error){return prepareVoiceFor(callCtx,member)})
+  go func(){
+   if !waitBeforeAnswer(ctx,call) {
+    current.Lock();current.Call="ended";current.EndReason="not_answered_while_ringing";current.busy=false;current.Unlock()
+    log.Print("incoming call ended before the answer delay")
+    return
+   }
+   answerIncomingWithVoice(ctx,call,func(callCtx context.Context)(*voiceAudio,error){return prepareVoiceFor(callCtx,member)})
+  }()
  })
  if marker:=getEnv("ENGINE_ENABLED_FILE","LEO_ENGINE_ENABLED_FILE");marker!="" {
   if device!=nil && device.ID!=nil {
