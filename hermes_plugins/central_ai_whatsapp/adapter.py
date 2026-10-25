@@ -432,7 +432,7 @@ def _has_customer_confirmed_details(turns: list) -> bool:
         m = turns[idx]
         if not isinstance(m, dict) or m.get('role') != 'user':
             continue
-        user_txt = str(m.get('content') or '').strip()
+        user_txt = re.sub(r'^(?:📞\s*)?\[(?:Voice\s+Call|Incoming\s+WhatsApp\s+Voice\s+Call)\]\s*', '', str(m.get('content') or ''), flags=re.I).strip()
         if not user_txt or _NEGATIVE_OR_CORRECTION_RE.search(user_txt):
             continue
         if not _AFFIRMATIVE_CONFIRM_RE.search(user_txt):
@@ -469,7 +469,13 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     for idx, m in enumerate(turns or []):
         if not isinstance(m, dict) or m.get('role') != 'user':
             continue
-        text = str(m.get('content') or '').strip()
+        text = re.sub(r'^(?:📞\s*)?\[(?:Voice\s+Call|Incoming\s+WhatsApp\s+Voice\s+Call)\]\s*', '', str(m.get('content') or ''), flags=re.I).strip()
+        text = re.sub(
+            r'\b([a-z0-9._%+-]+(?:\s+dot\s+[a-z0-9._%+-]+)*)\s+at\s+([a-z0-9-]+(?:\s+dot\s+[a-z0-9-]+)+)\b',
+            lambda em_m: (re.sub(r'\s+dot\s+', '.', em_m.group(1), flags=re.I) + '@' + re.sub(r'\s+dot\s+', '.', em_m.group(2), flags=re.I)).lower(),
+            text,
+            flags=re.I,
+        )
         prev_asst_raw = ''
         if idx > 0 and isinstance(turns[idx - 1], dict) and turns[idx - 1].get('role') == 'assistant':
             prev_asst_raw = str(turns[idx - 1].get('content') or '')

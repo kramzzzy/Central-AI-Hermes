@@ -205,20 +205,24 @@ def _save_customer_call_wav(call_id, pcm_bytes):
 
 
 def _sync_customer_call_turn_to_box3(caller_digits, caller_name, call_id, turn_idx, caller_utt, assistant_utt, created_at):
-    """Sync customer service voice call turn to App OS Communications so operators can review the conversation."""
+    """Sync customer service voice call turn to App OS Communications and trigger CRM lead / appointment booking."""
     digits = re.sub(r'\D', '', str(caller_digits or ''))
     if not digits or (not caller_utt and not assistant_utt):
         return
     msg_id = f'call-{call_id}-turn-{turn_idx}'
+    raw_asst = str(assistant_utt or '').strip()
+    raw_tags = re.findall(r'\[\[\s*(?:BOOK|LEAD)\s*:\s*\{[\s\S]*?\}\s*\]\]', raw_asst, flags=re.I)
+    clean_asst = re.sub(r'\[\[\s*(?:BOOK|LEAD)[\s\S]*?\]\]+', '', raw_asst, flags=re.I).strip()
     user_text = f'📞 [Voice Call] {caller_utt}' if caller_utt and caller_utt != '[Call Answered]' else '📞 [Incoming WhatsApp Voice Call]'
-    reply_text = f'📞 [Voice Call] {assistant_utt}' if assistant_utt else ''
+    visible_reply = f'📞 [Voice Call] {clean_asst}' if clean_asst else ''
+    reply_with_tags = (visible_reply + (' ' + ' '.join(raw_tags) if raw_tags else '')).strip()
     item = {
         'sender_id': digits,
         'sender_name': str(caller_name or '').strip(),
         'wire_chat': f'{digits}@s.whatsapp.net',
         'message_id': msg_id,
         'text': user_text,
-        'reply': reply_text,
+        'reply': reply_with_tags,
         'created_at': created_at,
     }
     try:
@@ -250,7 +254,7 @@ def _sync_customer_call_turn_to_box3(caller_digits, caller_name, call_id, turn_i
         payload = json.dumps({
             **item,
             'line': 'customer',
-            'precomputed_reply': reply_text,
+            'precomputed_reply': reply_with_tags,
         }).encode('utf-8')
         for base_url in dict.fromkeys(u for u in urls if u.startswith('http')):
             try:
@@ -609,8 +613,12 @@ class StreamPhoneCall:
         if self.fallback_conversation is not None:
             self.fallback_conversation.prompt = prompt
             self.fallback_conversation.config = conv_config
+            self.fallback_conversation.caller_name = self.caller_name
+            self.fallback_conversation.caller_digits = self.caller_digits
         else:
             self.fallback_conversation = Conversation(conv_config, prompt, dispatch_tool, names=set() if self.customer else None)
+            self.fallback_conversation.caller_name = self.caller_name
+            self.fallback_conversation.caller_digits = self.caller_digits
             if self.customer and isinstance(self.caller_memory.get('history'), list):
                 for h_item in self.caller_memory['history'][-12:]:
                     if isinstance(h_item, dict) and h_item.get('role') in {'user', 'assistant'} and h_item.get('content'):
@@ -624,7 +632,18 @@ class StreamPhoneCall:
     def _customer_prompt(self, company, snap=None):
         # Persona and knowledge come from the customer agent App OS syncs into contacts.json / box3_snapshot.json; nothing is fixed here.
         r = routing()
-        company = company or str(r.get('company_name') or (snap or {}).get('company_name') or '').strip()
+        if not snap or not isinstance(snap, dict):
+            from pathlib import Path
+            for sp_p in (Path('/data/box3_snapshot.json'), Path('/opt/data/box3_snapshot.json'), Path('/opt/os-adapter/.runtime/box3_snapshot.json')):
+                try:
+                    if sp_p.is_file():
+                        snap = json.loads(sp_p.read_text(encoding='utf-8'))
+                        break
+                except Exception:
+                    pass
+            if not isinstance(snap, dict):
+                snap = {}
+        company = company or str(r.get('company_name') or snap.get('company_name') or '').strip()
         agent_name = str(r.get('customer_agent') or '').strip()
         role = str(r.get('customer_agent_role') or '').strip()
         instructions = str(r.get('customer_agent_instructions') or '').strip()
@@ -667,17 +686,44 @@ class StreamPhoneCall:
             "[Returning Caller Memory]\n" + "\n".join(caller_mem_lines) + "\n[/Returning Caller Memory]"
             if caller_mem_lines else ""
         )
+
+        avail_block = ''
+        try:
+            import datetime
+            now_dt = datetime.datetime.now()
+            avail_lines = [f"- Current Date & Time: {now_dt.strftime('%A, %Y-%m-%d %H:%M')}"]
+            avail_lines.append("- Business Hours: Monday to Friday, 09:00 to 16:00 (Phone Consultation, On-Site Visit, or Roof Inspection).")
+            upcoming_days = []
+            for d_off in range(0, 10):
+                dt_cand = now_dt + datetime.timedelta(days=d_off)
+                if dt_cand.weekday() < 5:
+                    upcoming_days.append(f"{dt_cand.strftime('%a %b %d')} ({dt_cand.strftime('%Y-%m-%d')})")
+                if len(upcoming_days) >= 5:
+                    break
+            if upcoming_days:
+                avail_lines.append("- Next Open Weekdays: " + ", ".join(upcoming_days))
+            avail_block = "[Live Appointment Availability]\n" + "\n".join(avail_lines) + "\n[/Live Appointment Availability]"
+        except Exception:
+            pass
+
         parts = [f"You are {agent_name or 'the customer service assistant'}"
                  f"{', ' + role if role else ''}{' for ' + company if company else ''}, speaking as a real human specialist with a customer on a live WhatsApp phone call.",
                  caller_mem_block,
                  instructions,
                  '[Assigned Knowledge Base]\n' + '\n'.join(cards) + '\n[/Assigned Knowledge Base]' if cards else '',
-                 # The shared voice note carries owner tool guidance, so customer calls get delivery rules only.
-                 '[Live call communication & personality rules:\n'
+                 avail_block,
+                 # The shared voice note carries owner tool guidance, so customer calls get delivery + lead/booking rules.
+                 '[Live call communication, lead qualification & appointment booking rules:\n'
                  '- 100% REAL HUMAN FEEL (NEVER MENTION AI, MEMORY SYSTEMS, OR TECHNICAL ERRORS): Speak strictly as a real human specialist at the company. NEVER say or imply that you are an AI, bot, virtual assistant, language model, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, databases, or say things like "my memory of you hasn\'t been saved" or "I don\'t store memory between calls". If you ever don\'t recall a detail the caller mentioned earlier, respond naturally like a real human: "I\'m sorry, I can\'t remember—could you remind me?" or "Sorry, that slipped my mind—what was your name again?".\n'
                  '- IMMEDIATE 2-TO-4-WORD MICRO-OPENER FOR REAL-TIME TURN-TAKING: Begin every reply with a short, natural 2-to-4-word human reaction followed immediately by a period or comma (for example: "Oh, no worries at all.", "Yeah, that makes sense.", "That\'s totally fair.", "Right, gotcha.", "All right, let\'s see.", "Oh, I hear you.") before your main sentence. This lets the voice stream start speaking within milliseconds while the rest of your sentence follows seamlessly.\n'
-                 '- REAL-TIME CONVERSATIONAL CADENCE & ACTIVE LISTENING: Keep every turn to one or two short, natural spoken sentences (10–25 words total) with everyday contractions; no lists, markdown, URLs or bracketed stage cues. Listen closely to the caller\'s tone, pace, and personal context—if they hesitate, correct themselves, or share what they have going on, acknowledge it warmly and unhurriedly first, then ask at most one simple follow-up question.\n'
+                 '- REAL-TIME CONVERSATIONAL CADENCE & ACTIVE LISTENING: Keep every turn to one or two short, natural spoken sentences (10–25 words total) with everyday contractions; no lists, markdown, URLs or spoken stage cues. Listen closely to the caller\'s tone, pace, and personal context—if they hesitate, correct themselves, or share what they have going on, acknowledge it warmly and unhurriedly first, then ask at most one simple follow-up question.\n'
                  '- PROACTIVE VALUE FIRST (NEVER ASK PERMISSION TO SHARE INFO): Never ask "Would you like to know...?", "Do you want me to explain...?", "Shall I calculate that for you?", or "Would you like to hear how much you can save?". Every caller wants to know! Always deliver the actual answer, recommended solar size (kW and number of panels), estimated savings, and key facts upfront immediately, then ask one natural follow-up question to keep the conversation moving.\n'
+                 f'- NATURAL LEAD QUALIFICATION & APPOINTMENT BOOKING ON THE CALL: Gently qualify the caller one simple question at a time: 1) existing solar check, 2) last power bill amount, 3) property street address so the team can check their roof on satellite imagery, and 4) full name, confirming if this WhatsApp number (+{self.caller_digits}) is best to reach them on, and their email address. When all 4 details (Full Name, Phone, Email, Property Street Address) are collected, read them back clearly and ask the caller to confirm they are right. You can also book a Phone Consultation ("kind":"call"), On-Site Visit ("kind":"visit"), or Roof Inspection ("kind":"inspection") on any open weekday between 9 AM and 4 PM.\n'
+                 '- SILENT CRM & BOOKING TAG AT THE END OF YOUR REPLY: ONLY in the turn where the caller explicitly confirms their details (or confirms their appointment time + details), append the exact machine tag at the very end of your text after your final spoken sentence (the voice engine automatically strips `[[...]]` so it is NEVER spoken aloud, and uses it to save the New Lead or Calendar Booking in App OS):\n'
+                 '  - For a confirmed New Lead (no specific appointment slot chosen yet):\n'
+                 '    [[LEAD:{"name":"Full Name","phone":"Phone","email":"email@domain.com","address":"Street Address","notes":"Bill, solar kW recommendation, roof notes"}]]\n'
+                 '  - For a confirmed Appointment Booking (creates both the Calendar Event and CRM Lead):\n'
+                 '    [[BOOK:{"kind":"call","day":"YYYY-MM-DD","time":"HH:MM","name":"Full Name","phone":"Phone","email":"email@domain.com","address":"Street Address","notes":"Bill, solar kW recommendation, roof notes"}]]\n'
                  '- 10/10 HUMAN WARMTH & EFFORTLESS DRY WIT: Sound like a sharp, warm, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. React with natural, relatable human warmth or dry wit when appropriate (for example, when they mention a high power bill: "Oof, at that rate your power company probably has your photo framed on their wall—let\'s cut that right down"), and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
         return "\n\n".join(p for p in parts if p)
 
@@ -894,15 +940,32 @@ class StreamPhoneCall:
             first=None
             hermes_started=None
             timing={}
+            raw_spoken_text=''
+            tag_mode=False
+            pending_bracket=''
             def speak(value):
-                nonlocal first,stage,spoke_any
+                nonlocal first,stage,spoke_any,raw_spoken_text,tag_mode,pending_bracket
                 if pending_input:
                     pending_input['speaking_started']=True
                 if first is None:self.spoken_text=''
+                raw_spoken_text=(raw_spoken_text+str(value or ''))[-3600:]
+                if tag_mode:
+                    return
+                chunk=pending_bracket+str(value or '')
+                pending_bracket=''
+                if '[[' in chunk:
+                    before_tag,_=chunk.split('[[',1)
+                    tag_mode=True
+                    chunk=before_tag
+                elif chunk.endswith('['):
+                    pending_bracket='['
+                    chunk=chunk[:-1]
+                if not chunk:
+                    return
                 previous=stage;stage='speech'
-                first=first or time.monotonic();spoke_any=True;speech.text(value)
+                first=first or time.monotonic();spoke_any=True;speech.text(chunk)
                 stage=previous
-                self.spoken_text=(self.spoken_text+value)[-2400:]
+                self.spoken_text=(self.spoken_text+chunk)[-2400:]
             try:
                 if greeting:
                     if self.customer:
@@ -1047,6 +1110,7 @@ class StreamPhoneCall:
                                 self.caller_memory['name'] = extracted_name
                                 _save_customer_caller_memory(self.caller_digits, self.caller_memory)
                                 if self.fallback_conversation is not None:
+                                    self.fallback_conversation.caller_name = extracted_name
                                     self.fallback_conversation.prompt = self._customer_prompt('', None)
                         # Use ultra-low-latency direct streaming Conversation (~220ms first token)
                         # as primary for live phone turn-taking, falling back to native_conversation if needed.
@@ -1140,9 +1204,10 @@ class StreamPhoneCall:
                                 hist.append({'role': 'assistant', 'content': assistant_utt, 'at': turn_at})
                             _save_customer_caller_memory(self.caller_digits, self.caller_memory)
                             import threading
+                            sync_asst = raw_spoken_text.strip() or assistant_utt
                             threading.Thread(
                                 target=_sync_customer_call_turn_to_box3,
-                                args=(self.caller_digits, self.caller_name, self.call, len(self.call_turns), caller_utt, assistant_utt, turn_at),
+                                args=(self.caller_digits, self.caller_name, self.call, len(self.call_turns), caller_utt, sync_asst, turn_at),
                                 daemon=True,
                             ).start()
                 if pending_input:

@@ -803,12 +803,27 @@ class Conversation:
         if notice or self.names or not isinstance(text, str) or not text.strip():
             return self.prompt
         try:
-            from hermes_plugins.central_ai_whatsapp.adapter import _calculate_solar_pre_assessment
-            prior_user = ' \n '.join(str(m.get('content') or '') for m in self.history if m.get('role') == 'user')
-            combined = f"{prior_user}\n{text}".strip() if prior_user else text
-            calc = _calculate_solar_pre_assessment(combined)
-            if calc:
-                return f"{self.prompt}\n\n{calc}"
+            from hermes_plugins.central_ai_whatsapp.adapter import (
+                _calculate_solar_pre_assessment,
+                _extract_and_analyze_customer_lead,
+            )
+            turns = [
+                {'role': m['role'], 'content': str(m.get('content') or '')}
+                for m in self.history
+                if isinstance(m, dict) and m.get('role') in {'user', 'assistant'} and m.get('content')
+            ]
+            turns.append({'role': 'user', 'content': text.strip()})
+            all_user = '\n'.join(t['content'] for t in turns if t['role'] == 'user')
+            calc = _calculate_solar_pre_assessment(all_user)
+            lead_info = _extract_and_analyze_customer_lead(
+                turns,
+                sender_name=getattr(self, 'caller_name', '') or '',
+                sender_id=getattr(self, 'caller_digits', '') or '',
+            )
+            checklist = str(lead_info.get('checklist_prompt') or '').strip()
+            extra = '\n\n'.join(p for p in (calc, checklist) if p)
+            if extra:
+                return f"{self.prompt}\n\n{extra}"
         except Exception:
             pass
         return self.prompt
@@ -885,7 +900,9 @@ class Conversation:
                             if acknowledgement:
                                 part += acknowledgement; response += acknowledgement
                 if not calls:
-                    if part: utterance.append({'role': 'assistant', 'content': part})
+                    if part:
+                        clean_part = re.sub(r'\[\[\s*(?:BOOK|LEAD)[\s\S]*?\]\]+', '', part, flags=re.I).strip() or part
+                        utterance.append({'role': 'assistant', 'content': clean_part})
                     if not response.strip(): raise RuntimeError('No spoken answer received')
                     break
                 # No speculative execution: tools are assembled only after EOF.
