@@ -282,4 +282,20 @@ class SocialTests(unittest.TestCase):
         self.reply_comment()
         self.assertEqual(1,len([c for c in self.calls if c[0].endswith('/101_555/comments')]))
 
+    def test_private_reply_once_by_comment_id(self):
+        self.comment()
+        body={"org":ORG,"action":"private_reply","platform":"facebook","account_id":"101","comment_id":"101_555","message":"Thanks for your interest!"}
+        result=self.social.handle(body)
+        self.assertEqual("sent-1",result["message_id"])
+        self.assertEqual(result,self.social.handle(body))
+        sent=[c for c in self.calls if c[0].endswith('/101/messages')]
+        self.assertEqual(1,len(sent))
+        self.assertEqual({"comment_id":"101_555"},sent[0][1]['data']['recipient'])
+        with self.assertRaises(SocialError): self.social.handle({**body,"message":"Different text"})
+        with self.assertRaises(SocialError): self.social.handle({**body,"org":OTHER})
+        with self.assertRaises(SocialError): self.social.handle({**body,"comment_id":"101_777"})
+        self.comment(cid="101_600")
+        self.now += 7*86400
+        with self.assertRaises(SocialError): self.social.handle({**body,"comment_id":"101_600"})
+
 if __name__ == '__main__': unittest.main()

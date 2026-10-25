@@ -1279,6 +1279,8 @@ class SocialWorkspace:
                 return self.comment_context(org, body)
             if action == "send_comment":
                 return self.send_comment(org, body)
+            if action == "private_reply":
+                return self.private_reply(org, body)
             if action == "accounts":
                 return {"accounts": self.accounts(org)}
             if action == "publish_approved" and body.get("video_url"):
@@ -1471,6 +1473,21 @@ class SocialWorkspace:
                 reaction = {"liked": False, "reaction_state": "needs_attention"}
             return {**receipt, **reaction}
         return {**receipt, "liked": False, "reaction_state": "not_requested" if not body.get("like") else "permission_setup_required"}
+
+    def private_reply(self, org, body):
+        """Meta Private Reply: one DM per comment, addressed by comment ID; no prior 24-hour window needed."""
+        page, event = self.verified_comment(org, body)
+        if self.clock() - float(event.get("timestamp") or 0) >= 7 * 86400:
+            raise SocialError("Private replies are only allowed within 7 days of the comment.", 409)
+        message = clean_str(body.get("message"), "message", 1000 if event["platform"] == "instagram" else 2000)
+        def send():
+            result = self.transport(f"{GRAPH_BASE}/{page['id']}/messages", method="POST", token=page["access_token"],
+                data={"recipient": {"comment_id": event["comment_id"]}, "message": {"text": message}})
+            if not result.get("message_id"):
+                raise SocialError("Meta did not confirm the private reply.", 502)
+            recipient = str(result.get("recipient_id") or "")
+            return {"ok": True, "message_id": result["message_id"], "recipient_id": recipient if recipient.isdigit() else ""}
+        return self.deliver_once(org, {**body, "delivery_id": f"private:{event['id']}"}, send)
 
     def _profile_name(self, org, event):
         """Best-effort display name for a Messenger/Instagram DM sender via the Graph User Profile API.
