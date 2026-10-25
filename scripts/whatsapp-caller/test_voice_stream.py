@@ -65,6 +65,7 @@ class StreamTests(unittest.TestCase):
         self.call = str(uuid4())
         self.ns = dict(BaseHTTPRequestHandler=BaseHTTPRequestHandler, hmac=hmac, json=json, re=re,
             threading=threading, time=time, np=np, uuid4=uuid4, KEY='fixture-key',
+            CUSTOMER_KEY='customer-fixture-key', active_customer=False,
             native=native, model=model, StreamingSpeech=FakeSpeech, active=self.call,
             guard=threading.RLock(), turn_guard=threading.Lock(), turns=0, last_metrics={}, last_recognition={},
             turn_records={}, audio_metrics={}, failure_counts={}, snapshot_changes=0, interruptions=0,
@@ -85,6 +86,19 @@ class StreamTests(unittest.TestCase):
             if streamed:
                 self.assertEqual(response.headers['Transfer-Encoding'], 'chunked')
             return response.read()
+
+    def test_line_comes_from_credential_not_header(self):
+        def status(key, line=None):
+            headers = {'Authorization': 'Bearer ' + key, 'X-Call-ID': self.call, 'X-Turn-ID': str(uuid4())}
+            if line: headers['X-Line-ID'] = line
+            req = urllib.request.Request(f'http://127.0.0.1:{self.server.server_port}/heartbeat', data=b'', headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=5) as response: return response.status
+            except urllib.error.HTTPError as error: return error.code
+        self.assertEqual(403, status('fixture-key', 'customer'), 'owner key cannot claim the customer line')
+        self.assertEqual(403, status('customer-fixture-key'), 'customer key cannot act as the owner line')
+        self.assertEqual(403, status('customer-fixture-key', 'customer'), "customer key cannot control the owner's call")
+        self.assertEqual(401, status('unknown-key', 'customer'))
 
     def test_english_request_uses_explicit_language_and_verbatim_transcript(self):
         self.segments[0].text = 'What is six plus seven?'

@@ -103,9 +103,11 @@ def start_audio_server(key, allowed_call, metrics):
     connected = set()
     lock = threading.Lock()
 
+    keys = (key,) if isinstance(key, str) else tuple(key)
+
     def authorize(connection, request):
-        if request.path != '/audio' or not hmac.compare_digest(
-                request.headers.get('Authorization', ''), 'Bearer ' + key):
+        auth = request.headers.get('Authorization', '')
+        if request.path != '/audio' or not any(hmac.compare_digest(auth, 'Bearer ' + k) for k in keys):
             return connection.respond(401, 'Unauthorized')
         call = request.headers.get('X-Call-ID', '')
         if not allowed_call(call):

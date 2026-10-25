@@ -61,15 +61,24 @@ try:
 except Exception:
     pass
 KEY = KEYFILE.read_text().strip()
-# The customer connector reads its voice key from its own volume (mounted here at /data/customer);
-# without this it falls back to an env token this service rejects, so customer-line calls never start.
+# The customer connector reads its voice key from its own volume (mounted here at /data/customer).
+# It gets a distinct key: requests signed with it can only open tool-less customer-line sessions.
 CUSTOMER_KEYFILE = Path('/data/customer/voice-key')
+CUSTOMER_KEY = ''
 try:
-    if CUSTOMER_KEYFILE.parent.is_dir() and (not CUSTOMER_KEYFILE.is_file() or CUSTOMER_KEYFILE.read_text().strip() != KEY):
-        CUSTOMER_KEYFILE.write_text(KEY)
-        os.chmod(CUSTOMER_KEYFILE, 0o666)
+    if CUSTOMER_KEYFILE.parent.is_dir():
+        CUSTOMER_KEY = CUSTOMER_KEYFILE.read_text().strip() if CUSTOMER_KEYFILE.is_file() else ''
+        # Replace a missing, weak, owner-equal or env-fallback key the connector may have written itself.
+        if len(CUSTOMER_KEY) < 32 or CUSTOMER_KEY in {KEY, os.environ.get('HERMES_API_KEY', '').strip()}:
+            CUSTOMER_KEY = secrets.token_urlsafe(32)
+            fd = os.open(CUSTOMER_KEYFILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w') as handle:
+                handle.write(CUSTOMER_KEY)
+        os.chmod(CUSTOMER_KEYFILE, 0o600)  # connector and voice service both run as uid 10000
 except Exception as exc:
-    print(f"[voice] customer line key not shared: {exc}", flush=True)
+    CUSTOMER_KEY = ''
+    print(f"[voice] customer line key unavailable: {exc}", flush=True)
+KEYS = tuple(k for k in (KEY, CUSTOMER_KEY) if k)
 config = dotenv_values('/opt/data/profiles/leo/.env')
 from central_ai_integrations import integration_config
 config = integration_config(config)
@@ -319,6 +328,7 @@ if model and (ASR_DEVICE == 'cuda' or CONVERSATION_MODE == 'stream'):
 guard = threading.RLock()
 turn_guard = threading.Lock()
 active = None
+active_customer = False
 ready = False
 turns = 0
 last_metrics = {}
@@ -603,9 +613,14 @@ class Handler(BaseHTTPRequestHandler):
                               'continuous_listening': True})
 
     def do_POST(self):
-        global active, active_caller, turns, last_metrics, last_recognition, snapshot_changes, interruptions
-        if not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + KEY):
+        global active, active_caller, active_customer, turns, last_metrics, last_recognition, snapshot_changes, interruptions
+        auth = self.headers.get('Authorization', '')
+        # The line comes from the credential, never from a header alone.
+        customer_auth = bool(CUSTOMER_KEY) and hmac.compare_digest(auth, 'Bearer ' + CUSTOMER_KEY)
+        if not customer_auth and not hmac.compare_digest(auth, 'Bearer ' + KEY):
             return self.reply(401, {})
+        if (self.headers.get('X-Line-ID') == 'customer') != customer_auth:
+            return self.reply(403, {})
         call = self.headers.get('X-Call-ID', '')
         if not re.fullmatch(r'[a-f0-9-]{36}', call):
             return self.reply(400, {})
@@ -617,7 +632,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path in {'/callbacks/claim', '/callbacks/finish'}:
                 caller = self.headers.get('X-Caller-Number')
-                if not fish_service or caller not in fish_service.members:
+                if customer_auth or not fish_service or caller not in fish_service.members:
                     return self.reply(403, {})
                 jobs = fish_service.members[caller]['jobs']
                 with guard:
@@ -637,16 +652,17 @@ class Handler(BaseHTTPRequestHandler):
                 with guard:
                     if active:
                         return self.reply(409, {})
-                    customer_line = self.headers.get('X-Line-ID') == 'customer'
+                    customer_line = customer_auth
+                    if customer_line and (callback_id or not fish_service):
+                        # Customer calls have no owner callbacks or native owner session.
+                        return self.reply(403, {})
                     try:
-                        caller_header = self.headers.get('X-Caller-Number') or OWNER or ''
+                        caller_header = self.headers.get('X-Caller-Number') or ('' if customer_line else OWNER) or ''
                         member = resolve_caller(caller_header)
                     except PermissionError:
                         return self.reply(403, {})
                     active_caller = member['number']
-                    if customer_line and (callback_id or not fish_service):
-                        # Customer calls have no owner callbacks or native owner session.
-                        return self.reply(403, {})
+                    active_customer = customer_line
                     if customer_line:
                         # Uncached per call: the same number may also be an owner-line member.
                         member = {'number': active_caller, 'name': f'Caller +{active_caller}', 'role': 'customer', 'line': 'customer'}
@@ -684,7 +700,8 @@ class Handler(BaseHTTPRequestHandler):
                         raise
                 return self.reply(200, {})
             with guard:
-                if active != call:
+                # A call is controlled only with the same line credential that started it.
+                if active != call or active_customer != customer_auth:
                     return self.reply(403, {})
                 caller_hdr = re.sub(r'\D', '', self.headers.get('X-Caller-Number') or '') or active_caller
                 if caller_hdr != active_caller:
@@ -945,7 +962,7 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
                     'data': caller_data(DATA_BASE, c['number']),
                     'native_factory': (lambda num: lambda task_id, label, ready: task_native(task_id, label, ready, resolve_caller(num)))(c['number'])
                 })
-        fish_service = FishService(config, DATA, KEY, native, allowed_audio_call, audio_metrics,
+        fish_service = FishService(config, DATA, KEYS, native, allowed_audio_call, audio_metrics,
             native_factory=task_native,
             **({'call_factory':StreamPhoneCall,'hosted':False} if CONVERSATION_MODE=='stream' else {}),
             members=extra_members)
@@ -988,7 +1005,7 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
         fish_service.recovery=lambda: fixed_speech(RECOVERY)
         fish_service.task_ack_audio=b''
 else:
-    audio_server = start_audio_server(KEY, allowed_audio_call, audio_metrics)
+    audio_server = start_audio_server(KEYS, allowed_audio_call, audio_metrics)
 for phrase in ((RECOVERY, TASK_ACK) if fish_service and CONVERSATION_MODE=='stream' else (RECOVERY,) if fish_service else (GREETING, RECOVERY)):
     try:
         audio=fixed_speech(phrase)

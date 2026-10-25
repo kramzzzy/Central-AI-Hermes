@@ -905,7 +905,9 @@ class FishService:
         self.loop.run_forever()
 
     def authorize(self, connection, request):
-        if request.path != '/audio' or not hmac.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + self.key):
+        keys = (self.key,) if isinstance(self.key, str) else self.key
+        auth = request.headers.get('Authorization', '')
+        if request.path != '/audio' or not any(hmac.compare_digest(auth, 'Bearer ' + k) for k in keys):
             return connection.respond(401, 'Unauthorized')
         if not self.allowed(request.headers.get('X-Call-ID', '')):
             return connection.respond(403, 'Inactive call')
