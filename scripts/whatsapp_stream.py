@@ -31,7 +31,8 @@ _NON_NAME_WORDS = {
     'evening', 'poor', 'correction', 'full', 'phone', 'call', 'maybe', 'brisbane',
     'street', 'road', 'avenue', 'drive', 'email', 'address', 'property', 'book',
     'mad', 'mate', 'mates', 'man', 'bro', 'boss', 'sir', 'connect', 'agent', 'agents',
-    'available', 'hi', 'hello', 'hey', 'for', 'new',
+    'available', 'hi', 'hello', 'hey', 'for', 'new', 'inquiry', 'enquiry', 'inquiring',
+    'enquiring', 'inquire', 'enquire',
 }
 
 _ACK = (r"(?:yes|yeah|yep|yup|no|nah|nope|correct|that['’]s\s+(?:right|correct)|all\s+correct"
@@ -118,10 +119,11 @@ def _extract_spoken_caller_name(caller_text, last_assistant_text=''):
                     return rb_cand
 
     for pat, flags in (
-        (r"\b(?:my\s+(?:full\s+|first\s+|last\s+|poor\s+)?name\s+is|my\s+name's|call\s+me|i\s+am|i'm)\s+([A-Za-z][a-zA-Z']{1,18}(?:\s+[A-Za-z][a-zA-Z']{1,18}){0,2})\b", re.I),
+        (r"\b(?:my\s+(?:full\s+|first\s+|last\s+|poor\s+)?name\s+is|my\s+name's|call\s+me)\s+([A-Za-z][a-zA-Z']{1,18}(?:\s+[A-Za-z][a-zA-Z']{1,18}){0,2})\b", re.I),
         (r"\b([A-Za-z][a-z']{1,18})\s+(?:speaking|here|calling)\b", re.I),
-        # "This is ..." also opens ordinary sentences ("This is for the new system"); only a capitalised name counts.
-        (r"\b[Tt]his\s+is\s+([A-Z][a-zA-Z']{1,18}(?:\s+[A-Z][a-zA-Z']{1,18}){0,2})\b", 0),
+        # "This is ..." / "I am ..." also open ordinary sentences ("This is for the new system",
+        # "I am inquiring"); only a capitalised name after them counts.
+        (r"\b(?:[Tt]his\s+is|I\s+am|[Ii]'m)\s+([A-Z][a-zA-Z']{1,18}(?:\s+[A-Z][a-zA-Z']{1,18}){0,2})\b", 0),
     ):
         for m in re.finditer(pat, cleaned, flags=flags):
             cand = _valid_name_tokens(m.group(1))
@@ -463,6 +465,9 @@ class StreamPhoneCall:
         self.audio_filter = PhoneAudioFilter(service.vad)
         self.pre = deque(maxlen=4)
         self.capture = bytearray()
+        # One local Whisper decode at a time per call, so stale mid-pause decodes are skipped, not queued.
+        import threading
+        self.local_asr_lock = threading.Lock()
         self.voiced = self.speech_run = 0
         self.silence_frames = 0
         self.capture_extended = False
@@ -962,9 +967,11 @@ class StreamPhoneCall:
             early_entry['local_done']=done_evt
             def _run_early_local():
                 try:
-                    if control.cancelled.is_set() or self.generation != generation:
-                        return
-                    res=local_fn(pcm)
+                    with self.local_asr_lock:
+                        # Re-checked after the wait: the caller may have kept talking meanwhile.
+                        if control.cancelled.is_set() or self.generation != generation:
+                            return
+                        res=local_fn(pcm)
                     early_entry['local_result']=res
                     l_text,l_qual=res
                     if (l_text and l_qual.get('decision')=='accepted'

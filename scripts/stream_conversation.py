@@ -418,8 +418,8 @@ class FishRestSpeech:
     def _drain_ready_clauses(self):
         while self.pending:
             if self.first_flush is None:
-                # A short opener ("Right, gotcha.") is spoken on its own so first audio starts sooner.
-                m = re.search(r'^(\s*(?:.{8,}?(?<!\d)[.!?;:]|.{26,}?(?<!\d),)\s+)', self.pending, re.S)
+                # A short opener ("Got it!") is spoken on its own so first audio starts sooner.
+                m = re.search(r'^(\s*(?:.{4,}?(?<!\d)[.!?;:]|.{26,}?(?<!\d),)\s+)', self.pending, re.S)
             else:
                 m = re.search(r'^(\s*.{45,}?(?<!\d)[.!?;:]\s+)', self.pending, re.S)
             if not m:

@@ -120,6 +120,19 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertEqual('Mark', extract('Hey James, this is Mark. I would like to inquire about solar.'))
         self.assertEqual('', extract('This is for the new system.'))
         self.assertEqual('', extract('this is great, thanks'))
+        self.assertEqual('', extract("Hey, what's up James? I am inquiry."))
+        self.assertEqual('', extract("I'm inquiring about solar"))
+        self.assertEqual('Mark Ebio', extract("Hi, I'm Mark Ebio."))
+
+    def test_short_opener_is_spoken_before_the_rest_of_the_sentence_arrives(self):
+        import stream_conversation
+        queued = []
+        speech = stream_conversation.FishRestSpeech.__new__(stream_conversation.FishRestSpeech)
+        speech.pending, speech.first_flush = '', None
+        speech.control = stream_conversation.TurnControl()
+        speech._enqueue = lambda clause: (queued.append(clause), setattr(speech, 'first_flush', 1))
+        speech.text('Got it! Roughly how')
+        self.assertEqual(['Got it!'], queued)
 
     def test_only_detail_turns_wait_for_cloud_transcription(self):
         precise = whatsapp_stream._needs_precise_transcript
