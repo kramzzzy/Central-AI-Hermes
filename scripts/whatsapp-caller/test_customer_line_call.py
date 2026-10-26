@@ -115,6 +115,13 @@ class CustomerLineCallTests(unittest.TestCase):
             self.assertTrue(mock_proxy.called)
             self.assertTrue(any(chunk == b'\x01\x02' * 480 for chunk, _ in emitted))
 
+    def test_customer_call_prompt_is_honest_when_asked_and_has_no_scripted_openers(self):
+        prompt = self.call(line='customer', role='customer')._get_fallback_conversation().prompt
+        self.assertIn('sincerely asks whether they are talking to a real person, answer honestly', prompt)
+        self.assertNotIn('NEVER say or imply that you are an AI', prompt)
+        self.assertNotIn('Oh, no worries at all.', prompt)
+        self.assertIn('LISTEN FIRST', prompt)
+
     def test_spoken_caller_name_from_this_is_but_not_from_ordinary_sentences(self):
         extract = whatsapp_stream._extract_spoken_caller_name
         self.assertEqual('Mark', extract('Hey James, this is Mark. I would like to inquire about solar.'))
