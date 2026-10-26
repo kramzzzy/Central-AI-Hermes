@@ -207,7 +207,7 @@ def _load_customer_caller_memory(caller_digits, snap=None):
                     pmap = json.loads(proc_path.read_text(encoding='utf-8'))
                     if isinstance(pmap, dict):
                         for info in reversed(list(pmap.values())):
-                            if not isinstance(info, dict):
+                            if not isinstance(info, dict) or info.get('dismissed'):
                                 continue
                             sid = re.sub(r'\D', '', str(info.get('sender_id') or ''))
                             sname = str(info.get('sender_name') or '').strip()

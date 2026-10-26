@@ -148,6 +148,153 @@ def _recall_memory_items(query: str, limit: int = 5, tags=None, tags_match: str 
     return []
 
 
+def _purge_customer_memory(memory_keys=None, phone_digits='', email='', names=None) -> dict:
+    """Delete and invalidate all Hindsight memories and source documents for a deleted customer conversation."""
+    deleted_docs = set()
+    invalidated_memories = set()
+    try:
+        import os, urllib.parse, urllib.request
+        api_url = (
+            os.environ.get('HINDSIGHT_URL')
+            or os.environ.get('HINDSIGHT_API_URL')
+            or 'http://hindsight:8888'
+        ).rstrip('/')
+        key_file = Path('/run/secrets/hindsight_api_key')
+        token = key_file.read_text().strip() if key_file.is_file() else ''
+        if not token:
+            cfg_file = Path('/opt/data/profiles/leo/hindsight/config.json')
+            if cfg_file.is_file():
+                try:
+                    cfg_data = json.loads(cfg_file.read_text(encoding='utf-8'))
+                    token = str(cfg_data.get('api_key') or '').strip()
+                    if cfg_data.get('api_url'):
+                        api_url = str(cfg_data['api_url']).rstrip('/')
+                except Exception:
+                    pass
+        if not token:
+            token = (
+                os.environ.get('HINDSIGHT_API_KEY')
+                or os.environ.get('HERMES_MEMORY_TOKEN')
+                or os.environ.get('OPENROUTER_API_KEY')
+                or 'hindsight-default-secret-key-32chars!!'
+            ).strip()
+
+        raw_keys = []
+        if isinstance(memory_keys, (list, tuple, set)):
+            raw_keys.extend(str(k).strip() for k in memory_keys if k and str(k).strip())
+        elif isinstance(memory_keys, str) and memory_keys.strip():
+            raw_keys.append(memory_keys.strip())
+
+        digits = re.sub(r'\D', '', str(phone_digits or ''))
+        if len(digits) >= 7:
+            raw_keys.append(f'phone:{digits[-9:]}')
+        clean_email = str(email or '').strip().lower()
+
+        cust_tags = set()
+        for k in raw_keys:
+            if k.startswith('cust:'):
+                cust_tags.add(k)
+            else:
+                cust_tags.add('cust:' + hashlib.sha256(k.encode('utf-8')).hexdigest()[:24])
+
+        name_list = [
+            str(n).strip()
+            for n in (names if isinstance(names, (list, tuple, set)) else ([names] if names else []))
+            if n and len(str(n).strip()) >= 3 and not re.match(r'^(?:visitor|customer|caller|whatsapp|unknown)\b', str(n).strip(), re.I)
+        ]
+
+        candidate_urls = [api_url]
+        if 'hindsight:8888' in api_url:
+            candidate_urls.append('http://127.0.0.1:8888')
+
+        def _hs_req(method, suffix, body_obj=None):
+            for base in candidate_urls:
+                url = f'{base}/v1/default/banks/michael-os-leo{suffix}'
+                data_bytes = json.dumps(body_obj).encode('utf-8') if body_obj is not None else None
+                req = urllib.request.Request(
+                    url,
+                    data=data_bytes,
+                    headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+                    method=method,
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=4) as resp:
+                        raw = resp.read()
+                        return json.loads(raw.decode('utf-8')) if raw else {'ok': True}
+                except urllib.error.HTTPError as he:
+                    if he.code in {404, 405}:
+                        return None
+                except Exception:
+                    continue
+            return None
+
+        # 1. Recall by customer tags to find exact tagged memory IDs & document IDs
+        if cust_tags:
+            for q_probe in ([digits[-8:]] if len(digits) >= 7 else []) + name_list[:2] + ['solar customer inquiry address phone bill']:
+                rec = _hs_req('POST', '/memories/recall', {
+                    'query': q_probe[:200],
+                    'max_tokens': 2000,
+                    'tags': list(cust_tags),
+                    'tags_match': 'any_strict',
+                })
+                if isinstance(rec, dict):
+                    for r in (rec.get('results') or rec.get('memories') or rec.get('items') or []):
+                        if isinstance(r, dict):
+                            if r.get('id'):
+                                invalidated_memories.add(str(r['id']))
+                            if r.get('document_id'):
+                                deleted_docs.add(str(r['document_id']))
+
+        # 2. Search /memories/list by phone tail, email, and customer name
+        search_terms = []
+        if len(digits) >= 7:
+            search_terms.append(digits[-8:])
+        if clean_email and '@' in clean_email:
+            search_terms.append(clean_email)
+        for nl in name_list[:3]:
+            search_terms.append(nl)
+        if not search_terms and cust_tags:
+            search_terms.append('')
+
+        needle_lowers = [s.lower() for s in search_terms if s]
+        for st in dict.fromkeys(search_terms):
+            q_param = urllib.parse.urlencode({'limit': 50, 'offset': 0, 'q': st})
+            mlist = _hs_req('GET', f'/memories/list?{q_param}')
+            if isinstance(mlist, dict):
+                for item in (mlist.get('items') or []):
+                    if not isinstance(item, dict):
+                        continue
+                    item_tags = set(str(t) for t in (item.get('tags') or []) if t)
+                    txt_lower = str(item.get('text') or item.get('content') or '').lower()
+                    tag_hit = bool(cust_tags and (item_tags & cust_tags))
+                    text_hit = bool(needle_lowers and any(nd in txt_lower for nd in needle_lowers))
+                    if tag_hit or text_hit:
+                        if item.get('id'):
+                            invalidated_memories.add(str(item['id']))
+                        if item.get('document_id'):
+                            deleted_docs.add(str(item['document_id']))
+
+        # 3. Delete matched source documents (removes document + linked memory units in Hindsight)
+        for doc_id in list(deleted_docs):
+            safe_doc = urllib.parse.quote(doc_id, safe='')
+            _hs_req('DELETE', f'/documents/{safe_doc}')
+
+        # 4. Invalidate & delete matched individual memory facts
+        for mem_id in list(invalidated_memories):
+            safe_mem = urllib.parse.quote(mem_id, safe='')
+            _hs_req('PATCH', f'/memories/{safe_mem}', {
+                'state': 'invalidated',
+                'reason': 'Customer conversation deleted in App OS.',
+            })
+            _hs_req('DELETE', f'/memories/{safe_mem}')
+    except Exception:
+        pass
+    return {
+        'deleted_documents': len(deleted_docs),
+        'invalidated_memories': len(invalidated_memories),
+    }
+
+
 _NONCONVERSATIONAL_PATTERNS = (
     'self-improvement review',
     'user profile updated',

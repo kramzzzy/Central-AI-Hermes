@@ -933,6 +933,7 @@ _LAYA_CUSTOMER_STAGE_CRITERIA = {
  'existing_customer_support': 'Existing customer asking for maintenance, warranty, or repair help.',
 }
 _HINDSIGHT_FAST_CACHE = {}
+_customer_history_by_sender = {}
 
 def _classify_customer_turn_laya(user_text):
  try:
@@ -1238,6 +1239,8 @@ def _handle_customer_sync_action(action,body):
  msg_ids=[str(m).strip() for m in (body.get('message_ids') or []) if str(m).strip()]
  raw_sender=str(body.get('sender_id') or body.get('origin') or '').strip()
  sender_digits=re.sub(r'[^\d]','',raw_sender)
+ tail8=sender_digits[-8:] if len(sender_digits)>=7 else sender_digits
+ collected_names=list(body.get('names')) if isinstance(body.get('names'),list) else []
  with customer_wa_lock:
   proc_map=_load_customer_processed()
   changed=False
@@ -1252,10 +1255,14 @@ def _handle_customer_sync_action(action,body):
    for mid in msg_ids:
     info=proc_map.get(mid)
     if isinstance(info,dict):
+     if info.get('sender_name'):collected_names.append(str(info['sender_name']))
      info['dismissed']=True
      info['synced_to_box3']=True
      info['replied']=True
      info['handled']=True
+     info.pop('sender_name',None)
+     info.pop('text',None)
+     info.pop('reply',None)
     else:
      proc_map[mid]={'message_id':mid,'dismissed':True,'synced_to_box3':True,'replied':True,'handled':True}
     changed=True
@@ -1263,17 +1270,21 @@ def _handle_customer_sync_action(action,body):
     if not isinstance(info,dict):continue
     idigits=re.sub(r'[^\d]','',str(info.get('sender_id') or info.get('wire_chat') or ''))
     wchat=str(info.get('wire_chat') or '').strip()
-    if (sender_digits and len(sender_digits)>=7 and idigits==sender_digits) or (raw_sender and wchat and wchat==raw_sender):
+    if (tail8 and len(idigits)>=7 and idigits[-8:]==tail8) or (raw_sender and wchat and wchat==raw_sender):
+     if info.get('sender_name'):collected_names.append(str(info['sender_name']))
      info['dismissed']=True
      info['synced_to_box3']=True
      info['replied']=True
      info['handled']=True
+     info.pop('sender_name',None)
+     info.pop('text',None)
+     info.pop('reply',None)
      changed=True
    for pkt in _scan_customer_sqlite_inbox():
     pmid=str(pkt.get('messageId') or '').strip()
     psid=re.sub(r'[^\d]','',str(pkt.get('senderId') or pkt.get('wireChat') or ''))
     pwchat=str(pkt.get('wireChat') or pkt.get('chatId') or '').strip()
-    if (pmid and pmid in msg_ids) or (sender_digits and len(sender_digits)>=7 and psid==sender_digits) or (raw_sender and pwchat==raw_sender):
+    if (pmid and pmid in msg_ids) or (tail8 and len(psid)>=7 and psid[-8:]==tail8) or (raw_sender and pwchat==raw_sender):
      if pmid:
       proc_map[pmid]={'message_id':pmid,'sender_id':psid,'wire_chat':pwchat,'dismissed':True,'synced_to_box3':True,'replied':True,'handled':True}
       changed=True
@@ -1284,6 +1295,65 @@ def _handle_customer_sync_action(action,body):
        conn.commit()
        conn.close()
       except Exception:pass
+   # Wipe Box 1 voice caller memory files (/data/customer/callers/<digits>.json, /data/callers/<digits>.json)
+   if tail8:
+    for caller_dir in (Path('/data/customer/callers'),Path('/data/callers')):
+     if caller_dir.is_dir():
+      for cf in list(caller_dir.glob('*.json')):
+       cf_digits=re.sub(r'\D','',cf.stem)
+       if cf_digits and (cf_digits==sender_digits or (len(cf_digits)>=7 and cf_digits[-8:]==tail8)):
+        try:
+         cdata=json.loads(cf.read_text(encoding='utf-8'))
+         if isinstance(cdata,dict) and cdata.get('name'):
+          collected_names.append(str(cdata['name']))
+        except Exception:pass
+        try:cf.unlink()
+        except Exception:pass
+    for k in list(_customer_history_by_sender.keys()):
+     kdigits=re.sub(r'\D','',str(k))
+     if k==raw_sender or (kdigits and len(kdigits)>=7 and kdigits[-8:]==tail8):
+      _customer_history_by_sender.pop(k,None)
+   # Purge matching items from whatsapp_sessions_sync.json
+   for qp in ('/data/customer/whatsapp_sessions_sync.json','/data/whatsapp_sessions_sync.json'):
+    if os.path.isfile(qp):
+     try:
+      qlist=json.loads(Path(qp).read_text(encoding='utf-8'))
+      if isinstance(qlist,list):
+       kept=[]
+       for it in qlist:
+        if not isinstance(it,dict):continue
+        imid=str(it.get('message_id') or '')
+        isid=re.sub(r'\D','',str(it.get('sender_id') or it.get('wire_chat') or ''))
+        if (imid and imid in msg_ids) or (tail8 and len(isid)>=7 and isid[-8:]==tail8):
+         continue
+        kept.append(it)
+       Path(qp).write_text(json.dumps(kept,ensure_ascii=False,indent=2),encoding='utf-8')
+     except Exception:pass
+   # Remove deleted session from cached box3_snapshot.json
+   del_sid=str(body.get('session_id') or '').strip()
+   for sp in ('/data/box3_snapshot.json','/opt/data/box3_snapshot.json','/opt/os-adapter/.runtime/box3_snapshot.json',str(ROOT/'.runtime'/'box3_snapshot.json')):
+    if os.path.isfile(sp):
+     try:
+      sdata=json.loads(Path(sp).read_text(encoding='utf-8'))
+      if isinstance(sdata,dict) and isinstance(sdata.get('recent_sessions'),list):
+       sdata['recent_sessions']=[
+        sr for sr in sdata['recent_sessions']
+        if isinstance(sr,dict)
+        and str(sr.get('id') or '')!=del_sid
+        and not (tail8 and len(re.sub(r'\D','',str(sr.get('origin') or '')))>=7 and re.sub(r'\D','',str(sr.get('origin') or ''))[-8:]==tail8)
+       ]
+       Path(sp).write_text(json.dumps(sdata,ensure_ascii=False,indent=2),encoding='utf-8')
+     except Exception:pass
+   _HINDSIGHT_FAST_CACHE.clear()
+   # Purge Hindsight long-term memory & source documents for this customer/conversation
+   try:
+    from hermes_plugins.central_ai_whatsapp.adapter import _purge_customer_memory
+    threading.Thread(
+     target=_purge_customer_memory,
+     args=(body.get('memory_keys'),sender_digits,str(body.get('email') or ''),collected_names),
+     daemon=True,
+    ).start()
+   except Exception:pass
   if changed:
    _save_customer_processed(proc_map)
  return {'ok':True,'action':action}
@@ -1364,7 +1434,7 @@ def _collect_customer_sync_items():
 
 def _start_customer_whatsapp_poller():
  def _worker():
-  history_by_sender={}
+  history_by_sender=_customer_history_by_sender
   while True:
    try:
     time.sleep(1.0)
