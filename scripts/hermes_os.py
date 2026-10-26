@@ -302,7 +302,7 @@ def _configure_profile(home, plugin, allow_enable):
         'update_assistant_profile', 'send_whatsapp_message', 'send_message',
         'call_contact', 'call_whatsapp_contact', 'get_live_weather', 'calculate_solar',
         'search_knowledge', 'get_knowledge', 'add_knowledge', 'get_workspace_overview', 'end_call',
-        'manage_whatsapp_customer_line'
+        'manage_whatsapp_customer_line', 'manage_mailing'
     ]
     server = {'command': '/opt/hermes/.venv/bin/python',
         'args': ['/opt/os-adapter/scripts/hermes-os-mcp.py'],

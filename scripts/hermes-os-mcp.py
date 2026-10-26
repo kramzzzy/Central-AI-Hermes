@@ -573,6 +573,44 @@ def manage_whatsapp_customer_line(
         return {'error': f'Customer line update failed: {str(exc)}'}
 
 
+@server.tool(name='manage_mailing')
+def manage_mailing(
+    action: str = 'status',
+    provider: str = '',
+    preset: str = '',
+    from_name: str = '',
+    from_email: str = '',
+    reply_to: str = '',
+    to: str = '',
+    subject: str = '',
+    body: str = '',
+    sync_to_communications: bool | None = None,
+    assigned_agent: str = '',
+) -> dict:
+    """Inspect, configure, verify, send outbound emails, or sync inbound customer emails using the workspace's active Mailing Setup (SMTP/IMAP Business Mail, Gmail OAuth, Resend, SendGrid, or Postmark) and mirror conversations into Communications."""
+    payload = {
+        k: v for k, v in {
+            'action': action,
+            'provider': provider,
+            'preset': preset,
+            'from_name': from_name,
+            'from_email': from_email,
+            'reply_to': reply_to,
+            'to': to,
+            'subject': subject,
+            'body': body,
+            'sync_to_communications': sync_to_communications,
+            'assigned_agent': assigned_agent,
+        }.items() if v not in ('', None)
+    }
+    try:
+        raw = _plugin_client.manage_mailing(payload)
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        return {'error': f'Mailing action failed: {str(exc)}'}
+
+
+
 @server.tool(name='calculate_solar')
 def calculate_solar(
     bill_amount_aud: float | None = None,

@@ -11,7 +11,7 @@ from .client import (
     open_widget, close_widget, control_widget,
     navigate_browser, get_live_weather, calculate_solar,
     google_workspace, social_media, end_call,
-    manage_whatsapp_customer_line
+    manage_whatsapp_customer_line, manage_mailing
 )
 
 TOOLS = {
@@ -508,6 +508,21 @@ for tool_name, handler, description, properties, required in [
     ("manage_whatsapp_customer_line", manage_whatsapp_customer_line,
      "Inspect or update the Customer WhatsApp Line settings (enable/disable customer voice call answering, enable/disable public solar inquiry text auto-reply, or change the assigned customer inquiry agent).",
      {"action": {"type": "string", "enum": ["status", "update"]}, "auto_reply": {"type": "boolean"}, "calls_enabled": {"type": "boolean"}, "assigned_agent": {"type": "string"}}, []),
+    ("manage_mailing", manage_mailing,
+     "Inspect, configure, verify, send outbound emails, or sync inbound customer emails using the workspace's active Mailing Setup (SMTP/IMAP Business Mail, Gmail OAuth, Resend, SendGrid, or Postmark) and mirror conversations into Communications.",
+     {
+         "action": {"type": "string", "enum": ["status", "configure", "verify", "send_email", "sync_inbox"]},
+         "provider": {"type": "string", "enum": ["smtp_imap", "gmail", "resend", "sendgrid", "postmark"]},
+         "preset": {"type": "string"},
+         "from_name": {"type": "string"},
+         "from_email": {"type": "string"},
+         "reply_to": {"type": "string"},
+         "to": {"type": "string"},
+         "subject": {"type": "string"},
+         "body": {"type": "string"},
+         "sync_to_communications": {"type": "boolean"},
+         "assigned_agent": {"type": "string"},
+     }, ["action"]),
 ]:
     name = "mcp__michael_os__" + tool_name
     TOOLS[name] = {"handler": handler, "check_fn": owner_tools_available, "emoji": "🏢", "description": description,

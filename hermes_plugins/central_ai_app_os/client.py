@@ -1043,3 +1043,12 @@ def manage_whatsapp_customer_line(arguments=None, **kwargs):
         "customer_calls_enabled": bool(contacts_data.get("customer_calls_enabled", True)),
         "assigned_agent": str(contacts_data.get("customer_agent") or "james"),
     })
+
+
+def manage_mailing(arguments=None, **kwargs):
+    params = dict(arguments or kwargs or {})
+    raw = _call_app_os_mcp("central_ai_manage_mailing", params, timeout=20)
+    if raw:
+        return raw
+    return json.dumps({"ok": False, "error": "App OS mailing service is unreachable."})
+
