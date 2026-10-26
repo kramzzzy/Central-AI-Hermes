@@ -512,7 +512,7 @@ for tool_name, handler, description, properties, required in [
      "Inspect, configure, verify, send outbound emails, or sync inbound customer emails using the workspace's active Mailing Setup (SMTP/IMAP Business Mail, Gmail OAuth, Resend, SendGrid, or Postmark) and mirror conversations into Communications.",
      {
          "action": {"type": "string", "enum": ["status", "configure", "verify", "send_email", "sync_inbox"]},
-         "provider": {"type": "string", "enum": ["smtp_imap", "gmail", "resend", "sendgrid", "postmark"]},
+         "provider": {"type": "string", "enum": ["smtp_imap", "resend", "sendgrid", "postmark"]},
          "preset": {"type": "string"},
          "from_name": {"type": "string"},
          "from_email": {"type": "string"},
