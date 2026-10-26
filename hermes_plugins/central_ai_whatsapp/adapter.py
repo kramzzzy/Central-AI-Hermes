@@ -694,8 +694,12 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
                 existing_solar = 'No existing solar'
             elif re.search(r'\b(already\s+have\s+solar|got\s+solar|existing\s+solar|have\s+a\s+\d+(?:\.\d+)?\s*kw|old\s+solar|replace\s+my\s+solar|upgrade\s+my\s+solar|\d+\s*(?:year|yr)s?\s+old(?:\s+solar)?)\b', text, re.I):
                 existing_solar = text[:120]
-            elif re.search(r'\b(have you got solar|do you have solar|already have solar|existing solar|solar already|solar on your roof|solar on the property)\b', prev_asst) and re.match(r'^(no|nah|nope|not yet|none|new|brand new|yes|yeah|yep)\b', text, re.I):
-                existing_solar = 'No existing solar' if re.match(r'^(no|nah|nope|not yet|none|new|brand new)\b', text, re.I) else text[:120]
+            elif re.search(r'\b(have you got (?:any )?solar|do you (?:already )?have (?:any )?solar|already have solar|existing solar|solar already|solar on (?:your|the) (?:roof|property|home|house))\b', prev_asst):
+                # Answers to the solar question rarely start with yes/no ("This is something new").
+                if re.search(r'\b(no|nah|nope|not\s+yet|none|new|first|never)\b', text, re.I):
+                    existing_solar = 'No existing solar'
+                elif re.search(r'\b(yes|yeah|yep|already|have|got)\b', text, re.I):
+                    existing_solar = text[:120]
 
         if not power_bill:
             bm = (

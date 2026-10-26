@@ -122,6 +122,15 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertNotIn('Oh, no worries at all.', prompt)
         self.assertIn('Be friendly with a light sense of humour.', prompt, 'persona comes from the agent profile')
 
+    def test_new_setup_answer_counts_as_existing_solar_answered(self):
+        sys.path.insert(0, str(Path(__file__).parents[2]))
+        from hermes_plugins.central_ai_whatsapp.adapter import _extract_and_analyze_customer_lead
+        lead = _extract_and_analyze_customer_lead([
+            {'role': 'assistant', 'content': 'Do you already have solar on your property, or are you looking to set up something new?'},
+            {'role': 'user', 'content': 'This is something new.'},
+        ])
+        self.assertEqual('No existing solar', lead['existing_solar'], 'James must not ask about existing solar again')
+
     def test_spoken_caller_name_from_this_is_but_not_from_ordinary_sentences(self):
         extract = whatsapp_stream._extract_spoken_caller_name
         self.assertEqual('Mark', extract('Hey James, this is Mark. I would like to inquire about solar.'))
