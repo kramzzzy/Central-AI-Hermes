@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import urllib.request
+from pathlib import Path
 from uuid import uuid4
 
 from fish_conversation import TASK_TOOLS, conversation_llm, is_casual_greeting_intent, normalize_voice_greeting
@@ -85,6 +86,7 @@ class TurnControl:
 
 _fish_ws_cooldown_until = 0.0
 _fish_http_cooldown_until = 0.0
+_fish_last_error = ''
 _fish_working_model = None
 _fish_failed_models = set()
 
@@ -273,6 +275,7 @@ class FishRestSpeech:
         self.queue = queue.Queue(maxsize=32)
         self.done = threading.Event()
         self._native_fallback = None
+        self.provider_error = ''
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _emit_chunk(self, pcm):
@@ -282,16 +285,21 @@ class FishRestSpeech:
         self.audio(pcm)
 
     def _synthesize_clause(self, clause):
-        global _fish_http_cooldown_until
+        global _fish_http_cooldown_until, _fish_last_error
         self.control.check()
         fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
         can_try_fish = bool(fish_key or os.environ.get('HERMES_PHONE_CONVERSATION') == 'true')
+        if not can_try_fish:
+            self.provider_error = 'Fish API key is not configured'
+        elif time.monotonic() < _fish_http_cooldown_until:
+            self.provider_error = _fish_last_error or 'Fish TTS cooling down'
         if self._native_fallback is None and can_try_fish and time.monotonic() >= _fish_http_cooldown_until:
             clause_bytes_before = self.bytes
             try:
                 fish_rest_tts(clause, self.config, self.rate, self._emit_chunk, self.control)
                 if self.bytes > clause_bytes_before:
                     return
+                self.provider_error = 'Fish TTS returned no audio'
             except TurnCancelled:
                 raise
             except Exception as exc:
@@ -299,14 +307,18 @@ class FishRestSpeech:
                 if self.bytes > clause_bytes_before:
                     raise  # Never replay a partly spoken clause through another TTS.
                 status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
+                self.provider_error = _fish_last_error = (
+                    f'Fish TTS HTTP {status_code}' if status_code else f'Fish TTS {type(exc).__name__}')
+                # Only credential/credit failures pause Fish; a transient error must
+                # not silently skip the next clauses.
                 if status_code in {401, 402, 403} or any(code in str(exc) for code in ('401', '402', '403')):
                     _fish_http_cooldown_until = time.monotonic() + 120.0
-                else:
-                    _fish_http_cooldown_until = time.monotonic() + 3.0
                 import sys
                 print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc})", file=sys.stderr)
-        from native_call_speech import native_enabled, pcm as native_pcm
-        if native_enabled(self.config):
+        # Silence is worse than a different voice: when the cloud voice produced
+        # nothing for this clause, speak it with the bundled offline voice.
+        from native_call_speech import native_enabled, piper_available, pcm as native_pcm
+        if native_enabled(self.config) or piper_available(self.config):
             for data in native_pcm(clause, self.config, self.rate, self.control):
                 self._emit_chunk(data)
 
@@ -508,6 +520,10 @@ class FreeSpeech:
         finally:
             self.ready.set()
             self.done.set()
+
+    @property
+    def provider_error(self):
+        return getattr(self.fallback, 'provider_error', '') or (self.error or '')
 
     def _sync_fallback(self):
         if not self.fallback:

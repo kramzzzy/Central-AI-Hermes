@@ -64,7 +64,7 @@ class OSStreamVoice:
                 elif not voice_id:
                     voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
                 config['FISH_VOICE_ID'] = voice_id
-                if config.get('FISH_API_KEY') or voice_id:
+                if config.get('FISH_API_KEY'):
                     config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
                 self.contexts[call] = {'identity': identity, 'scope': dict(scope), 'config': config,
                     'conversation': self.calls.conversation(call, scope), 'control': None, 'turn': None,
@@ -94,7 +94,7 @@ class OSStreamVoice:
                 'bf342d9e9e5b44e0ade1ccfd1abb4815',
             }:
                 item['config']['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-            if item['config'].get('FISH_API_KEY') or item['config'].get('FISH_VOICE_ID'):
+            if item['config'].get('FISH_API_KEY'):
                 item['config']['CENTRAL_AI_CALL_SPEECH'] = 'fish'
             turn = str(UUID(body['turn_id']))
             prior_playback = [entry['text'] for entry in item['playback']
@@ -174,6 +174,9 @@ class OSStreamVoice:
                         emit({'type': 'audio', 'audio': base64.b64encode(greeting_pcm).decode()})
                 except Exception:
                     import traceback; traceback.print_exc()
+            if not getattr(speech, 'bytes', 0) and reply.strip():
+                detail = getattr(speech, 'provider_error', '') or 'no audio returned'
+                emit({'type': 'status', 'state': f'Voice unavailable ({detail})'})
             emit({'type':'done','timings':{'first_text_ms':round(((first or began)-began)*1000),
                 'first_audio_ms':round(((getattr(speech, 'first_audio', None) or began)-began)*1000)}})
         except TurnCancelled:
@@ -185,7 +188,9 @@ class OSStreamVoice:
                 pass
             else:
                 import traceback; traceback.print_exc()
-                try: emit({'type':'error','text':"I couldn't complete that reply. Check task status before repeating an action."})
+                detail = getattr(speech, 'provider_error', '') if speech and not getattr(speech, 'bytes', 0) else ''
+                try: emit({'type':'error','text':(f'Voice audio unavailable ({detail}). The reply is shown as text.' if detail
+                    else "I couldn't complete that reply. Check task status before repeating an action.")})
                 except Exception: pass
         finally:
             # Stop socket readers before closing the response, and release the

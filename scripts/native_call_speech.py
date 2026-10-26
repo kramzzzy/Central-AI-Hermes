@@ -53,6 +53,14 @@ def native_enabled(config):
     return speech == 'piper' or not fish_key
 
 
+def piper_available(config=None):
+    """Bundled offline voice exists; used only when the cloud voice produced no audio."""
+    try:
+        return Path(tts_config(config)['piper']['voice']).is_file()
+    except Exception:
+        return False
+
+
 def tts_config(config=None):
     import yaml
     cfg = config or {}
