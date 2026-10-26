@@ -482,19 +482,32 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
             continue
         if m.get('role') == 'assistant':
             asst_txt = re.sub(r'^(?:📞\s*)?\[(?:Voice\s+Call|Incoming\s+WhatsApp\s+Voice\s+Call)\]\s*', '', str(m.get('content') or ''), flags=re.I).strip()
-            rb_name = re.search(r'(?:^|[\n•*-]\s*)(?:full\s+)?name\s*:\s*([^\n•*|,]+)', asst_txt, re.I) or re.search(r'\bso,\s+([A-Z][a-zA-Z\'-]+(?:\s+[A-Z][a-zA-Z\'-]+){1,2})\s+it\s+is\b', asst_txt)
+            rb_name = (
+                re.search(r'(?:^|[\n•*-]\s*)(?:full\s+)?name\s*:\s*([^\n•*|,]+)', asst_txt, re.I)
+                or re.search(r'\b(?:your\s+(?:full\s+)?name\s+is|confirming\s+for|that\'?s)\s+([A-Z][a-zA-Z\'-]+(?:\s+[A-Z][a-zA-Z\'-]+){1,2})(?=[,.\n]|$|\s+(?:at|on|phone|email|and\b))', asst_txt)
+                or re.search(r'\bso,\s+([A-Z][a-zA-Z\'-]+(?:\s+[A-Z][a-zA-Z\'-]+){1,2})\s+it\s+is\b', asst_txt)
+            )
             if rb_name:
                 cwords = [w for w in rb_name.group(1).strip().split() if w.lower() not in _NON_NAME_WORDS and not _STREET_SUFFIX_RE.match(w)]
                 cand = ' '.join(cwords)
                 if len(cwords) >= 2 and _is_valid_person_name(cand):
                     name = ' '.join(w[0].upper() + w[1:] for w in cwords)
-            rb_phone = re.search(r'(?:^|[\n•*-]\s*)(?:phone|contact|number)\s*:\s*([+\d][\d\s-]{7,18})', asst_txt, re.I)
+            rb_phone = (
+                re.search(r'(?:^|[\n•*-]\s*)(?:phone|contact|number)\s*:\s*([+\d][\d\s-]{7,18})', asst_txt, re.I)
+                or re.search(r'\b(?:phone(?:\s+number)?(?:\s+is)?|contact(?:\s+number)?(?:\s+is)?|on)\s+((?:\+?61[\s-]?|0)[2-478](?:[\s-]?\d){8})\b', asst_txt, re.I)
+            )
             if rb_phone and 8 <= len(re.sub(r'\D', '', rb_phone.group(1))) <= 15:
                 phone = rb_phone.group(1).strip()
-            rb_email = re.search(r'(?:^|[\n•*-]\s*)email(?:\s+address)?\s*:\s*([^\s\n|,]+@[^\s\n|,]+)', asst_txt, re.I)
-            if rb_email and _is_valid_confirmed_email(rb_email.group(1)):
-                email = rb_email.group(1).strip().lower()
-            rb_addr = re.search(r'(?:^|[\n•*-]\s*)(?:property\s+|street\s+)?address\s*:\s*([^\n•*|]+)', asst_txt, re.I)
+            rb_email = (
+                re.search(r'(?:^|[\n•*-]\s*)email(?:\s+address)?\s*:\s*([^\s\n|,]+@[^\s\n|,]+)', asst_txt, re.I)
+                or re.search(r'\bemail(?:\s+address)?(?:\s+is)?\s+([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})\b', asst_txt, re.I)
+            )
+            if rb_email and _is_valid_confirmed_email(rb_email.group(1).rstrip('.,;')):
+                email = rb_email.group(1).rstrip('.,;').strip().lower()
+            rb_addr = (
+                re.search(r'(?:^|[\n•*-]\s*)(?:property\s+|street\s+)?address\s*:\s*([^\n•*|]+)', asst_txt, re.I)
+                or re.search(r'\b(?:and\s+)?(?:the\s+)?(?:property(?:\s+address)?|street\s+address|address)\s+(?:is|at)\s+([^\n•*|.?!]+)', asst_txt, re.I)
+            )
             if rb_addr and _is_valid_confirmed_street_address(rb_addr.group(1).strip(' .')):
                 address = rb_addr.group(1).strip(' .')
             continue
@@ -679,35 +692,51 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     if all_four_collected and not customer_confirmed:
         missing_natural.append('your confirmation that all 4 details (Full Name, Phone, Email, and Property Street Address) are correct')
 
+    already_lodged = bool(
+        customer_confirmed
+        and any(
+            isinstance(m, dict)
+            and m.get('role') == 'assistant'
+            and re.search(
+                r'\b(lodged|in our system|passed that all through|specialist will (?:be in touch|reach out|contact)|we\'ve got everything|all sorted|booked and confirmed)\b',
+                str(m.get('content') or ''),
+                re.I,
+            )
+            for m in (turns or [])[:-1]
+        )
+    )
+
     if not has_existing_solar:
-        next_single_question = "Ask ONLY this 1 simple question next: whether they already have solar on the property or if this is for a new setup (do NOT ask about their power bill or address yet)."
+        next_single_question = "Warmly acknowledge what they said in a natural human way, then ask ONLY this 1 relaxed question: whether they already have solar on the property or if this is for a brand-new setup (do NOT ask about their power bill or address yet)."
     elif not has_power_bill:
-        next_single_question = "Ask ONLY this 1 simple question next: roughly how much their last power bill was (do NOT ask for their address or contact details yet)."
+        next_single_question = "React naturally like a warm human to what they shared, then ask ONLY this 1 simple question: roughly how much their last power bill was so you can work out the right solar size and savings for them."
     elif not has_street_address:
         next_single_question = (
-            f"Ask ONLY this 1 simple question next: what the full street address (number and street name) is for their property in {suburb}."
+            f"Warmly acknowledge their answer, then ask naturally for the street number and street name of their property in {suburb} so our team can check the roof layout."
             if suburb
-            else "Ask ONLY this 1 simple question next: what the property's full street address (street number, street name, and suburb) is."
+            else "Warmly acknowledge their answer, then ask naturally for the property's street address (street number, street name, and suburb) so our team can check the roof layout."
         )
     elif not has_full_name:
         next_single_question = (
-            f"Ask ONLY this 1 simple question next: what their last name is so we have their full name ({name} ...)."
+            f"Warmly acknowledge their address, then ask naturally for their last name so we have their full name ({name} ...) for their quote."
             if name
-            else "Ask ONLY this 1 simple question next: what their full name (first and last) is."
+            else "Warmly acknowledge their address, then ask naturally for their full name (first and last) so we know who to put on the solar quote."
         )
     elif not has_phone:
-        next_single_question = "Ask ONLY this 1 simple question next: what their best contact phone number is."
+        next_single_question = "Warmly acknowledge what they shared, then ask naturally for the best phone number for our solar specialist to reach them on."
     elif not has_email:
-        next_single_question = "Ask ONLY this 1 simple question next: what their best email address is."
+        next_single_question = "Warmly acknowledge their phone number, then ask naturally for the best email address to pop their solar details through to."
     elif not customer_confirmed:
         next_single_question = (
-            f"All 4 contact & property details are collected, but NOT YET CONFIRMED by the customer. "
-            f"Read back their Full Name ({name}), Phone Number ({phone}), Email Address ({email}), and Property Street Address ({address}) "
-            f"clearly in 1-2 short sentences and ask them to confirm if all details are correct before lodging their inquiry "
+            f"All 4 details are collected, and now we just need a relaxed, natural human read-back confirmation. "
+            f"Do NOT use stiff robotic language like 'before I lodge your inquiry'. Instead, say something warm and natural like: "
+            f"'Awesome, just double-checking I've got everything right for the team—that's {name} at {address}, on {phone} and {email}. Does that all look right?' "
             f"(do NOT output [[LEAD:...]] or [[BOOK:...]] until AFTER they reply confirming)."
         )
+    elif already_lodged:
+        next_single_question = "The customer's inquiry is ALREADY saved in our system and you ALREADY told them a specialist will be in touch. Do NOT repeat 'We've got everything we need, a specialist will reach out'. Reply with a warm, brief 1-sentence human sign-off (e.g. 'Have a great rest of your day—chat soon!')."
     else:
-        next_single_question = "The customer has confirmed all 4 details! Thank them warmly in 1-2 friendly sentences, confirm their inquiry is now lodged with our team, and append the [[LEAD:...]] tag."
+        next_single_question = "The customer just confirmed their details! Reply warmly like a real person in 1-2 short sentences (e.g. 'Awesome, I've passed that all through to our solar team and one of our specialists will be in touch with you shortly!') and append the [[LEAD:...]] tag."
 
     checklist_lines = [
         'LIVE QUALIFICATION & CRM PROGRESS (ONE QUESTION AT A TIME — DO NOT STACK QUESTIONS):',
