@@ -31,7 +31,7 @@ _NON_NAME_WORDS = {
     'evening', 'poor', 'correction', 'full', 'phone', 'call', 'maybe', 'brisbane',
     'street', 'road', 'avenue', 'drive', 'email', 'address', 'property', 'book',
     'mad', 'mate', 'mates', 'man', 'bro', 'boss', 'sir', 'connect', 'agent', 'agents',
-    'available', 'hi', 'hello', 'hey',
+    'available', 'hi', 'hello', 'hey', 'for', 'new',
 }
 
 _ACK = (r"(?:yes|yeah|yep|yup|no|nah|nope|correct|that['’]s\s+(?:right|correct)|all\s+correct"
@@ -117,11 +117,13 @@ def _extract_spoken_caller_name(caller_text, last_assistant_text=''):
                 if len(rb_cand.split()) >= 2:
                     return rb_cand
 
-    for pat in (
-        r"\b(?:my\s+(?:full\s+|first\s+|last\s+|poor\s+)?name\s+is|my\s+name's|call\s+me|i\s+am|i'm)\s+([A-Za-z][a-zA-Z']{1,18}(?:\s+[A-Za-z][a-zA-Z']{1,18}){0,2})\b",
-        r"\b([A-Za-z][a-z']{1,18})\s+(?:speaking|here|calling)\b",
+    for pat, flags in (
+        (r"\b(?:my\s+(?:full\s+|first\s+|last\s+|poor\s+)?name\s+is|my\s+name's|call\s+me|i\s+am|i'm)\s+([A-Za-z][a-zA-Z']{1,18}(?:\s+[A-Za-z][a-zA-Z']{1,18}){0,2})\b", re.I),
+        (r"\b([A-Za-z][a-z']{1,18})\s+(?:speaking|here|calling)\b", re.I),
+        # "This is ..." also opens ordinary sentences ("This is for the new system"); only a capitalised name counts.
+        (r"\b[Tt]his\s+is\s+([A-Z][a-zA-Z']{1,18}(?:\s+[A-Z][a-zA-Z']{1,18}){0,2})\b", 0),
     ):
-        for m in re.finditer(pat, cleaned, flags=re.I):
+        for m in re.finditer(pat, cleaned, flags=flags):
             cand = _valid_name_tokens(m.group(1))
             if cand:
                 return cand

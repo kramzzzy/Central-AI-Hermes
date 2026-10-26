@@ -115,6 +115,12 @@ class CustomerLineCallTests(unittest.TestCase):
             self.assertTrue(mock_proxy.called)
             self.assertTrue(any(chunk == b'\x01\x02' * 480 for chunk, _ in emitted))
 
+    def test_spoken_caller_name_from_this_is_but_not_from_ordinary_sentences(self):
+        extract = whatsapp_stream._extract_spoken_caller_name
+        self.assertEqual('Mark', extract('Hey James, this is Mark. I would like to inquire about solar.'))
+        self.assertEqual('', extract('This is for the new system.'))
+        self.assertEqual('', extract('this is great, thanks'))
+
     def test_only_detail_turns_wait_for_cloud_transcription(self):
         precise = whatsapp_stream._needs_precise_transcript
         self.assertFalse(precise('Do you install batteries as well', 'Hi there! How can I help?'))
