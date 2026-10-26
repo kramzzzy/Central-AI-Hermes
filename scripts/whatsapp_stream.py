@@ -146,15 +146,16 @@ def _load_customer_caller_memory(caller_digits, snap=None):
         if not name_words or any(w in _NON_NAME_WORDS or not w.isalpha() for w in name_words):
             mem['name'] = ''
     # Authoritative Box 3 CRM / Contacts name always wins over local ASR caller memory
+    tail8 = digits[-8:] if len(digits) >= 7 else digits
     if isinstance(snap, dict):
         for section in ('crm', 'contacts'):
             found_snap_name = ''
             for row in (snap.get(section) or []):
                 if not isinstance(row, dict):
                     continue
-                rphone = re.sub(r'\D', '', str(row.get('phone') or row.get('number') or ''))
-                rname = str(row.get('name') or '').strip()
-                if rphone and rphone == digits and rname and not re.match(r'^(?:Caller|Visitor|Customer)\b', rname, re.I):
+                rphone = re.sub(r'\D', '', str(row.get('phone') or row.get('number') or row.get('phone_number') or ''))
+                rname = str(row.get('contact_name') or row.get('name') or '').strip()
+                if rphone and len(rphone) >= 7 and rphone[-8:] == tail8 and rname and not re.match(r'^(?:Caller|Visitor|Customer)\b', rname, re.I):
                     rwords = [w.strip("'-").lower() for w in rname.split() if w.strip("'-")]
                     if rwords and not any(w in _NON_NAME_WORDS for w in rwords):
                         found_snap_name = rname
@@ -163,6 +164,29 @@ def _load_customer_caller_memory(caller_digits, snap=None):
                 if mem.get('name') != found_snap_name:
                     mem['name'] = found_snap_name
                     _save_customer_caller_memory(digits, mem)
+                break
+        # Load recent cross-channel text chat messages (Website / WhatsApp / Social DM) for this caller number
+        for srow in (snap.get('recent_sessions') or []):
+            if not isinstance(srow, dict):
+                continue
+            sorigin = re.sub(r'\D', '', str(srow.get('origin') or ''))
+            rmsgs = srow.get('recent_messages') if isinstance(srow.get('recent_messages'), list) else []
+            matched_session = bool(sorigin and len(sorigin) >= 7 and sorigin[-8:] == tail8)
+            if not matched_session:
+                for m in rmsgs:
+                    if isinstance(m, dict):
+                        mphone = re.sub(r'\D', '', str(m.get('visitor_phone') or ''))
+                        if mphone and len(mphone) >= 7 and mphone[-8:] == tail8:
+                            matched_session = True
+                            break
+            if matched_session and rmsgs:
+                mem['text_history'] = list(reversed(rmsgs))[-6:]
+                if not mem.get('name'):
+                    for m in rmsgs:
+                        vname = str((m or {}).get('visitor_name') or '').strip() if isinstance(m, dict) else ''
+                        if vname and not re.match(r'^(?:Caller|Visitor|Customer)\b', vname, re.I) and not vname.replace('+', '').isdigit():
+                            mem['name'] = vname
+                            break
                 break
     if not mem.get('name') and isinstance(mem.get('history'), list):
         for h in reversed(mem['history']):
@@ -187,7 +211,7 @@ def _load_customer_caller_memory(caller_digits, snap=None):
                                 continue
                             sid = re.sub(r'\D', '', str(info.get('sender_id') or ''))
                             sname = str(info.get('sender_name') or '').strip()
-                            if sid == digits and sname and not re.match(r'^(?:Caller|Visitor|Customer)\b', sname, re.I) and not sname.replace('+', '').isdigit():
+                            if sid and len(sid) >= 7 and sid[-8:] == tail8 and sname and not re.match(r'^(?:Caller|Visitor|Customer)\b', sname, re.I) and not sname.replace('+', '').isdigit():
                                 mem['name'] = sname
                                 break
                 if mem.get('name'):
@@ -199,9 +223,9 @@ def _load_customer_caller_memory(caller_digits, snap=None):
             for row in (snap.get(section) or []):
                 if not isinstance(row, dict):
                     continue
-                rphone = re.sub(r'\D', '', str(row.get('phone') or row.get('number') or ''))
-                rname = str(row.get('name') or '').strip()
-                if rphone and rphone == digits and rname and not re.match(r'^(?:Caller|Visitor|Customer)\b', rname, re.I):
+                rphone = re.sub(r'\D', '', str(row.get('phone') or row.get('number') or row.get('phone_number') or ''))
+                rname = str(row.get('contact_name') or row.get('name') or '').strip()
+                if rphone and len(rphone) >= 7 and rphone[-8:] == tail8 and rname and not re.match(r'^(?:Caller|Visitor|Customer)\b', rname, re.I):
                     mem['name'] = rname
                     break
             if mem.get('name'):
@@ -275,8 +299,18 @@ def _sync_customer_call_turn_to_box3(caller_digits, caller_name, call_id, turn_i
         'created_at': created_at,
     }
     try:
-        from hermes_plugins.central_ai_whatsapp.adapter import _append_customer_sync_queue
+        from hermes_plugins.central_ai_whatsapp.adapter import _append_customer_sync_queue, _retain_memory_item
         _append_customer_sync_queue(item)
+        if len(digits) >= 7 and caller_utt and clean_asst:
+            import hashlib
+            phone_tag = 'cust:' + hashlib.sha256(f'phone:{digits[-9:]}'.encode('utf-8')).hexdigest()[:24]
+            _retain_memory_item(
+                f"Voice Call Caller ({caller_name or digits}): {caller_utt}\nAgent reply: {clean_asst}",
+                caller_name or digits,
+                'customer-voice-call',
+                'customer-chat',
+                tags=[phone_tag],
+            )
     except Exception:
         pass
     try:
@@ -731,6 +765,15 @@ class StreamPhoneCall:
                     recent_lines.append(f"  {who}: {str(h['content'])[:240]}")
             if recent_lines:
                 caller_mem_lines.append("- Previous Call Conversation with this Caller:\n" + "\n".join(recent_lines))
+        text_hist = self.caller_memory.get('text_history') if isinstance(self.caller_memory.get('text_history'), list) else []
+        if text_hist:
+            txt_lines = []
+            for th in text_hist[-6:]:
+                if isinstance(th, dict) and th.get('content'):
+                    who = (self.caller_name or 'Customer') if th.get('role') == 'user' else (agent_name or 'James')
+                    txt_lines.append(f"  {who}: {str(th['content'])[:240]}")
+            if txt_lines:
+                caller_mem_lines.append("- Recent Text Chat with this Caller (Website/WhatsApp/Social):\n" + "\n".join(txt_lines))
         caller_mem_block = (
             "[Returning Caller Memory]\n" + "\n".join(caller_mem_lines) + "\n[/Returning Caller Memory]"
             if caller_mem_lines else ""
@@ -739,6 +782,7 @@ class StreamPhoneCall:
         avail_block = ''
         try:
             import datetime
+            from pathlib import Path
             now_dt = datetime.datetime.now()
             avail_lines = [f"- Current Date & Time: {now_dt.strftime('%A, %Y-%m-%d %H:%M')}"]
             avail_lines.append("- Business Hours: Monday to Friday, 09:00 to 16:00 (Phone Consultation, On-Site Visit, or Roof Inspection).")
@@ -751,6 +795,16 @@ class StreamPhoneCall:
                     break
             if upcoming_days:
                 avail_lines.append("- Next Open Weekdays: " + ", ".join(upcoming_days))
+            busy_slots = []
+            for sp in (Path('/data/box3_snapshot.json'), Path('/opt/data/box3_snapshot.json'), Path('/opt/os-adapter/.runtime/box3_snapshot.json')):
+                if sp.is_file():
+                    sdata = json.loads(sp.read_text(encoding='utf-8'))
+                    for ev in (sdata.get('calendar_events') or [])[:15]:
+                        if isinstance(ev, dict) and ev.get('starts_at'):
+                            busy_slots.append(f"{ev.get('starts_at')} to {ev.get('ends_at', '')} ({ev.get('title', 'Booked')})")
+                    break
+            if busy_slots:
+                avail_lines.append("- Already Booked / Unavailable Slots (do NOT offer these times): " + "; ".join(busy_slots[:8]))
             avail_block = "[Live Appointment Availability]\n" + "\n".join(avail_lines) + "\n[/Live Appointment Availability]"
         except Exception:
             pass
@@ -763,16 +817,16 @@ class StreamPhoneCall:
                  avail_block,
                  # The shared voice note carries owner tool guidance, so customer calls get delivery + lead/booking rules.
                  '[Live call communication, lead qualification & appointment booking rules:\n'
-                 '- 100% REAL HUMAN FEEL (NEVER MENTION AI, MEMORY SYSTEMS, OR TECHNICAL ERRORS): Speak strictly as a real human specialist at the company. NEVER say or imply that you are an AI, bot, virtual assistant, language model, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, databases, or say things like "my memory of you hasn\'t been saved" or "I don\'t store memory between calls". If you ever don\'t recall a detail the caller mentioned earlier, respond naturally like a real human: "I\'m sorry, I can\'t remember—could you remind me?" or "Sorry, that slipped my mind—what was your name again?".\n'
+                 '- 100% REAL HUMAN FEEL (NEVER MENTION AI, MEMORY SYSTEMS, OR TECHNICAL ERRORS): Speak strictly as a real human specialist at the company. NEVER say or imply that you are an AI, bot, virtual assistant, language model, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, databases, or say things like "my memory of you hasn\'t been saved" or "I don\'t store memory between calls". If you ever don\'t recall a detail the caller mentioned earlier, respond naturally like a real human: "I\'m sorry, I can\'t remember - could you remind me?" or "Sorry, that slipped my mind - what was your name again?".\n'
                  '- STRICT 1-TO-2 SHORT SPOKEN SENTENCES (ZERO BULLET POINTS OR MONOLOGUES): You are speaking on a live phone call, NOT writing a chat message. NEVER use bullet points (`- Name: ...`), numbered lists, colons, or multi-paragraph summaries. Keep EVERY turn to 1 or 2 short, natural spoken sentences (15–30 words maximum) with everyday contractions. Begin with a natural 2-to-4-word human reaction ("Oh, no worries at all.", "Yeah, that makes sense.", "Right, gotcha.") integrated smoothly into your first sentence.\n'
                  '- PROACTIVE VALUE FIRST (NEVER ASK PERMISSION TO SHARE INFO): Never ask "Would you like to know...?", "Do you want me to explain...?", or "Shall I calculate that?". Deliver the recommended solar size (kW and panels) and estimated savings concisely in one short spoken sentence, then ask one simple follow-up question.\n'
-                 f'- NATURAL LEAD QUALIFICATION & APPOINTMENT BOOKING ON THE CALL: Gently qualify the caller one simple question at a time: 1) existing solar check, 2) last power bill amount, 3) property street address so the team can check their roof on satellite imagery, and 4) full name, confirming if this WhatsApp number (+{self.caller_digits}) is best to reach them on, and their email address (if they say they don\'t have an email address, accept that warmly and continue without an email using `"email":""`). When the details are collected, read them back in one natural spoken sentence (never a bullet list!) and ask the caller to confirm they are right. You can also book a Phone Consultation ("kind":"call"), On-Site Visit ("kind":"visit"), or Roof Inspection ("kind":"inspection") on any open weekday between 9 AM and 4 PM.\n'
+                 f'- NATURAL LEAD QUALIFICATION & APPOINTMENT BOOKING ON THE CALL: Gently qualify the caller one simple question at a time (or if they ask to book a call/visit right away, help them lock in their preferred slot immediately): 1) existing solar check, 2) last power bill amount, 3) property street address so the team can check their roof on satellite imagery, and 4) full name, confirming if this WhatsApp number (+{self.caller_digits}) is best to reach them on, and their email address (if they say they don\'t have an email address, accept that warmly and continue without an email using `"email":""`). When the details are collected, read them back in one natural spoken sentence (never a bullet list!) and ask the caller to confirm they are right. You can also book a Phone Consultation ("kind":"call"), On-Site Visit ("kind":"visit"), or Roof Inspection ("kind":"inspection") on any open weekday between 9 AM and 4 PM.\n'
                  '- SILENT CRM & BOOKING TAG AT THE END OF YOUR REPLY: ONLY in the turn where the caller explicitly confirms their details (or confirms their appointment time + details), append the exact machine tag at the very end of your text after your final spoken sentence (the voice engine automatically strips `[[...]]` so it is NEVER spoken aloud, and uses it to save the New Lead or Calendar Booking in App OS):\n'
                  '  - For a confirmed New Lead (no specific appointment slot chosen yet):\n'
                  '    [[LEAD:{"name":"Full Name","phone":"Phone","email":"","address":"Street Address","notes":"Bill, solar kW recommendation, roof notes"}]]\n'
                  '  - For a confirmed Appointment Booking (creates both the Calendar Event and CRM Lead):\n'
                  '    [[BOOK:{"kind":"call","day":"YYYY-MM-DD","time":"HH:MM","name":"Full Name","phone":"Phone","email":"","address":"Street Address","notes":"Bill, solar kW recommendation, roof notes"}]]\n'
-                 '- 10/10 HUMAN WARMTH & EFFORTLESS DRY WIT: Sound like a sharp, warm, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. React with natural, relatable human warmth or dry wit when appropriate, and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
+                 '- 10/10 GENUINE HUMAN WARMTH: Sound like a warm, helpful, down-to-earth Aussie solar specialist having a real phone chat, never a stiff call-center script or robot. Acknowledge what the caller just said naturally before asking your next question, and never use robotic filler like "Thank you for sharing that", "That is a great question", "Certainly", or "I would be happy to assist".]']
         return "\n\n".join(p for p in parts if p)
 
     def task(self, coroutine):

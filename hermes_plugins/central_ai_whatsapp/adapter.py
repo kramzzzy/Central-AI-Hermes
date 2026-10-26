@@ -17,14 +17,30 @@ import urllib.request
 
 binding=contextvars.ContextVar('leo_text_binding',default=None)
 
+def _normalize_memory_tags(tags=None, context=''):
+    tag_list = []
+    if isinstance(tags, str):
+        if tags.strip():
+            tag_list.append(tags.strip())
+    elif isinstance(tags, (list, tuple, set)):
+        for t in tags:
+            if t and str(t).strip():
+                tag_list.append(str(t).strip())
+    ctx_norm = str(context or '').strip().lower()
+    if ctx_norm == 'human_operator_coaching' and 'human_operator_coaching' not in tag_list:
+        tag_list.append('human_operator_coaching')
+    return list(dict.fromkeys(tag_list))
+
+
 def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp', tags=None):
     try:
         import os, urllib.request
         if not content or not isinstance(content, str) or len(content.strip()) < 20:
             return
         ctx_norm = str(context or 'whatsapp').strip().lower()
-        # Per-customer tagged memory is always retained (it is isolated by tag); untagged chat stays opt-in.
-        if not tags and ctx_norm in {'whatsapp', 'website', 'customer'} and os.environ.get('HINDSIGHT_RETAIN_ALL_CHAT', '').lower() != 'true':
+        tag_list = _normalize_memory_tags(tags, context=ctx_norm)
+        # Per-customer tagged memory and operator coaching are always retained; untagged chat stays opt-in.
+        if not tag_list and ctx_norm in {'whatsapp', 'website', 'customer'} and os.environ.get('HINDSIGHT_RETAIN_ALL_CHAT', '').lower() != 'true':
             return
         api_url = (
             os.environ.get('HINDSIGHT_URL')
@@ -51,11 +67,11 @@ def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp', t
                 or 'hindsight-default-secret-key-32chars!!'
             ).strip()
         item = {
-            'content': f"WhatsApp {sender} ({route}): {content.strip()}" if not tags else content.strip(),
+            'content': f"WhatsApp {sender} ({route}): {content.strip()}" if not tag_list else content.strip(),
             'context': context or 'whatsapp'
         }
-        if tags:
-            item['tags'] = [str(t) for t in tags]
+        if tag_list:
+            item['tags'] = tag_list
         payload = json.dumps({'items': [item]}).encode('utf-8')
         req = urllib.request.Request(
             f'{api_url}/v1/default/banks/michael-os-leo/memories',
@@ -69,7 +85,7 @@ def _retain_memory_item(content, sender, route='whatsapp', context='whatsapp', t
         pass
 
 
-def _recall_memory_items(query: str, limit: int = 5, tags=None) -> list:
+def _recall_memory_items(query: str, limit: int = 5, tags=None, tags_match: str = 'any_strict') -> list:
     try:
         import os, urllib.request
         clean_q = (query or '').strip()
@@ -103,10 +119,11 @@ def _recall_memory_items(query: str, limit: int = 5, tags=None) -> list:
             'query': clean_q[:240],
             'max_tokens': 800,
         }
-        if tags:
-            # Strict: only this customer's memories, never untagged/global or other customers'.
-            recall_body['tags'] = [str(t) for t in tags]
-            recall_body['tags_match'] = 'all_strict'
+        tag_list = _normalize_memory_tags(tags)
+        if tag_list:
+            # Strict: only this customer's tags (or approved human coaching), never untagged/global or other customers'.
+            recall_body['tags'] = tag_list
+            recall_body['tags_match'] = tags_match or 'any_strict'
         payload = json.dumps(recall_body).encode('utf-8')
         req = urllib.request.Request(
             f'{api_url}/v1/default/banks/michael-os-leo/memories/recall',
@@ -671,11 +688,23 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     has_power_bill = len(power_bill) >= 2
     all_four_collected = has_full_name and has_phone and has_email and has_street_address
     customer_confirmed = all_four_collected and _has_customer_confirmed_details(turns)
+    last_user_txt = ''
+    for m in reversed(turns or []):
+        if isinstance(m, dict) and m.get('role') == 'user':
+            last_user_txt = str(m.get('content') or '').strip()
+            break
+    wants_booking_now = bool(
+        re.search(r'\b(book|booking|appointment|schedule|call\s+me|give\s+me\s+a\s+call|ring\s+me|site\s+visit|roof\s+inspection)\b', last_user_txt, re.I)
+        or (
+            (has_street_address or has_full_name)
+            and re.search(r'\b(tomorrow|monday|tuesday|wednesday|thursday|friday|morning|afternoon|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b', last_user_txt, re.I)
+        )
+    )
 
     missing_natural = []
-    if not has_existing_solar:
+    if not has_existing_solar and not wants_booking_now:
         missing_natural.append('whether you have solar already (and if yes, how old and what size in kW)')
-    if not has_power_bill:
+    if not has_power_bill and not wants_booking_now:
         missing_natural.append('how much your last power bill was ($$)')
     if not has_street_address:
         missing_natural.append(
@@ -706,21 +735,21 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         )
     )
 
-    if not has_existing_solar:
-        next_single_question = "Warmly acknowledge what they said in a natural human way, then ask ONLY this 1 relaxed question: whether they already have solar on the property or if this is for a brand-new setup (do NOT ask about their power bill or address yet)."
-    elif not has_power_bill:
-        next_single_question = "React naturally like a warm human to what they shared, then ask ONLY this 1 simple question: roughly how much their last power bill was so you can work out the right solar size and savings for them."
+    if not has_existing_solar and not wants_booking_now:
+        next_single_question = "First answer any question they asked warmly and naturally, then ask ONLY this 1 relaxed question: whether they already have solar on the property or if this is for a brand-new setup (do NOT ask about their power bill or address yet)."
+    elif not has_power_bill and not wants_booking_now:
+        next_single_question = "React naturally like a warm human to what they shared (and answer any question they asked), then ask ONLY this 1 simple question: roughly how much their last power bill was so you can work out the right solar size and savings for them."
     elif not has_street_address:
         next_single_question = (
-            f"Warmly acknowledge their answer, then ask naturally for the street number and street name of their property in {suburb} so our team can check the roof layout."
+            f"Warmly acknowledge what they said (including any requested call/visit time), then ask naturally for the street number and street name of their property in {suburb} so our team can check the roof layout."
             if suburb
-            else "Warmly acknowledge their answer, then ask naturally for the property's street address (street number, street name, and suburb) so our team can check the roof layout."
+            else "Warmly acknowledge what they said (including any requested call/visit time), then ask naturally for the property's street address (street number, street name, and suburb) so our team can check the roof layout."
         )
     elif not has_full_name:
         next_single_question = (
-            f"Warmly acknowledge their address, then ask naturally for their last name so we have their full name ({name} ...) for their quote."
+            f"Warmly acknowledge their details, then ask naturally for their last name so we have their full name ({name} ...) for their quote."
             if name
-            else "Warmly acknowledge their address, then ask naturally for their full name (first and last) so we know who to put on the solar quote."
+            else "Warmly acknowledge their details, then ask naturally for their full name (first and last) so we know who to put on the solar quote."
         )
     elif not has_phone:
         next_single_question = "Warmly acknowledge what they shared, then ask naturally for the best phone number for our solar specialist to reach them on."
@@ -730,11 +759,11 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         next_single_question = (
             f"All 4 details are collected, and now we just need a relaxed, natural human read-back confirmation. "
             f"Do NOT use stiff robotic language like 'before I lodge your inquiry'. Instead, say something warm and natural like: "
-            f"'Awesome, just double-checking I've got everything right for the team—that's {name} at {address}, on {phone} and {email}. Does that all look right?' "
+            f"'Awesome, just double-checking I've got everything right for the team - that's {name} at {address}, on {phone} and {email}. Does that all look right?' "
             f"(do NOT output [[LEAD:...]] or [[BOOK:...]] until AFTER they reply confirming)."
         )
     elif already_lodged:
-        next_single_question = "The customer's inquiry is ALREADY saved in our system and you ALREADY told them a specialist will be in touch. Do NOT repeat 'We've got everything we need, a specialist will reach out'. Reply with a warm, brief 1-sentence human sign-off (e.g. 'Have a great rest of your day—chat soon!')."
+        next_single_question = "The customer's inquiry is ALREADY saved in our system and you ALREADY told them a specialist will be in touch. Do NOT repeat 'We've got everything we need, a specialist will reach out'. Reply with a warm, brief 1-sentence human sign-off (e.g. 'Have a great rest of your day - chat soon!')."
     else:
         next_single_question = "The customer just confirmed their details! Reply warmly like a real person in 1-2 short sentences (e.g. 'Awesome, I've passed that all through to our solar team and one of our specialists will be in touch with you shortly!') and append the [[LEAD:...]] tag."
 
@@ -1160,7 +1189,7 @@ def build_engine_adapter(route,member,home,group):
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
                         f"START SIMPLE & FRIENDLY (1 TO 2 SHORT SENTENCES MAX): Speak like a warm, friendly, real human texting on WhatsApp (1 to 2 short plain-text sentences max). NEVER output internal notes such as '(Next step: ...)', '(Step ...)', or '(Note: ...)'. When the customer simply says 'Hi' or 'Hello', reply ONLY with a warm, simple 1-sentence greeting introducing yourself and asking how you can help today—never dump company info or ask qualifying questions on an opening greeting. "
                         f"PROACTIVE VALUE FIRST (NEVER ASK 'WOULD YOU LIKE TO KNOW...?') & ONE QUESTION AT A TIME: Never ask permission to share information every customer obviously wants to know! NEVER ask 'Would you like to know how much you can save?', 'Do you want me to calculate what system size you need?', or 'Would you like me to explain how solar works?'. Give the actual answer, savings estimate, recommended kW system size, or clear explanation immediately in 1 to 2 punchy sentences first, and then ask ONLY ONE natural question per turn (never stack two questions with 'Also, ...'): (1) Do they already have solar on the property? (2) Roughly how much was their last power bill ($$)? (3) What is the property street address? (4) Full Name (first AND last name), Phone Number, and Email Address. Once all 4 details are collected, read back all 4 details (Full Name, Phone, Email, and Property Street Address) and ask the customer to confirm they are correct. NEVER append [[LEAD:...]] or [[BOOK:...]] until AFTER the customer explicitly confirms all 4 details, and NEVER use '...' or placeholder values. "
-                        f"10/10 HUMAN WARMTH, REAL HUMAN FEEL & EFFORTLESS DRY WIT (NO ROBOTIC FILLER OR AI/TECH MENTIONS): Speak strictly as a real human specialist at {company_name}—NEVER say or imply that you are an AI, bot, virtual assistant, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, or say things like 'my memory of you hasn't been saved'. If you ever don't recall a detail they mentioned earlier, respond naturally like a real person ('I'm sorry, I can't remember—could you remind me?'). Bring light, natural, observational warmth and clever dry wit when talking about high power bills, Aussie sun, or grid retailers. NEVER start your replies with 'Thanks', 'Thank you', 'Thanks [Name]', 'Got it, [Name]', or 'Great, [Name]'. Greet once only on the first turn; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
+                        f"10/10 GENUINE HUMAN WARMTH & NATURAL CONVERSATION (NO ROBOTIC INTERROGATION OR AI/TECH MENTIONS): Speak strictly as a warm, genuinely helpful real human specialist at {company_name}—NEVER say or imply that you are an AI, bot, virtual assistant, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, or say things like 'my memory of you hasn't been saved'. If you ever don't recall a detail they mentioned earlier, respond naturally like a real person ('I'm sorry, I can't remember - could you remind me?'). Always acknowledge what the customer just shared with a brief, warm human reaction ('Awesome,', 'Lovely,', 'Makes sense,', 'That's a decent bill - solar will definitely help bring that down.') before asking your next question. Greet once only on the first turn; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
                         f"STRICT SYSTEM DATA GROUNDING: Rely on your Agent Instructions, Knowledge Base, and Official Your Choice Solar Website Calculator (planning-v2) below. Always share the official calculator's starting kWh usage, kW panel size, and estimated bill reduction proactively when a bill or usage figure is mentioned; never invent unverified hardware brands, fixed package prices, rebate amounts, or warranty lengths.",
                         solar_calc,
                         f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",

@@ -301,13 +301,19 @@ class Handler(BaseHTTPRequestHandler):
     if not 0<length<=max_len:return self.reply(413,{'error':'Tool request too large'})
     body=json.loads(self.rfile.read(length))
     if self.path=='/os/memory/retain':
+     import hashlib
      from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
      entries=body.get('items') if isinstance(body.get('items'),list) else [body]
      for ent in entries:
       if isinstance(ent,dict) and ent.get('content'):
+       raw_tags=list(ent.get('tags')) if isinstance(ent.get('tags'),list) else ([str(ent['tags'])] if ent.get('tags') else [])
+       raw_keys=list(ent.get('memory_keys')) if isinstance(ent.get('memory_keys'),list) else ([str(ent['memory_key'])] if ent.get('memory_key') else [])
+       for mk in raw_keys:
+        if mk and str(mk).strip():
+         raw_tags.append('cust:'+hashlib.sha256(str(mk).strip().encode('utf-8')).hexdigest()[:24])
        threading.Thread(
         target=_retain_memory_item,
-        args=(str(ent.get('content')),str(ent.get('sender') or 'Customer'),str(ent.get('route') or 'customer'),str(ent.get('context') or 'whatsapp')),
+        args=(str(ent.get('content')),str(ent.get('sender') or 'Customer'),str(ent.get('route') or 'customer'),str(ent.get('context') or 'whatsapp'),raw_tags or None),
         daemon=True,
        ).start()
      return self.reply(200,{'ok':True,'retained':len(entries)})
@@ -1025,17 +1031,23 @@ def _fast_draft_only_completion(body,settings_dict):
   laya_sig=_classify_customer_turn_laya(last_user_msg)
   if laya_sig:
    enrichment_lines.append(f"[LAYA DECISION ENGINE SIGNAL (<15ms ONNX): Customer message intent = {laya_sig['intent']} (confidence {laya_sig['confidence']})]")
+  raw_mem_keys=[]
+  if isinstance(body.get('memory_keys'),list):
+   raw_mem_keys.extend(str(k).strip()[:300] for k in body['memory_keys'] if k and str(k).strip())
   mem_key=str(body.get('memory_key') or '').strip()[:300]
-  if mem_key:
+  if mem_key and mem_key not in raw_mem_keys:
+   raw_mem_keys.append(mem_key)
+  if raw_mem_keys:
    import hashlib
-   mem_tag='cust:'+hashlib.sha256(mem_key.encode('utf-8')).hexdigest()[:24]
+   cust_tags=['cust:'+hashlib.sha256(k.encode('utf-8')).hexdigest()[:24] for k in raw_mem_keys]
+   recall_tags=list(dict.fromkeys(cust_tags+['human_operator_coaching']))
    try:
     from hermes_plugins.central_ai_whatsapp.adapter import _recall_memory_items
-    recalled_facts=_recall_memory_items(last_user_msg,limit=6,tags=[mem_tag])
+    recalled_facts=_recall_memory_items(last_user_msg,limit=6,tags=recall_tags,tags_match='any_strict')
    except Exception:
     recalled_facts=[]
    if recalled_facts:
-    enrichment_lines.append("[CUSTOMER MEMORY (this customer's earlier conversations; use only if relevant, never mention you searched memory)]:\n" + "\n".join(f"- {f}" for f in recalled_facts))
+    enrichment_lines.append("[CUSTOMER MEMORY & COACHING (earlier conversations with this customer or approved operator answers; use naturally if relevant, never mention searching memory)]:\n" + "\n".join(f"- {f}" for f in recalled_facts))
   else:
    recalled_facts=_recall_hindsight_fast(last_user_msg)
    if recalled_facts:
@@ -1084,25 +1096,32 @@ def _fast_draft_only_completion(body,settings_dict):
   ).strip()
   if not content:
    return None
+  raw_out_keys=[]
+  if isinstance(body.get('memory_keys'),list):
+   raw_out_keys.extend(str(k).strip()[:300] for k in body['memory_keys'] if k and str(k).strip())
+  mem_key_out=str(body.get('memory_key') or '').strip()[:300]
+  if mem_key_out and mem_key_out not in raw_out_keys:
+   raw_out_keys.append(mem_key_out)
+  out_tags=[]
+  if raw_out_keys:
+   import hashlib
+   out_tags=list(dict.fromkeys('cust:'+hashlib.sha256(k.encode('utf-8')).hexdigest()[:24] for k in raw_out_keys))
   if re.search(r'\[\[\s*(?:LEAD|BOOK)\s*:',content,flags=re.IGNORECASE):
    try:
     from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
     threading.Thread(
      target=_retain_memory_item,
-     args=(f"Qualified customer outcome & confirmation: {content}",'Customer Inquiry Pipeline','omni-channel','qualified_lead_outcome'),
+     args=(f"Qualified customer outcome & confirmation: {content}",'Customer Inquiry Pipeline','omni-channel','qualified_lead_outcome',out_tags or ['qualified_lead_outcome']),
      daemon=True,
     ).start()
    except Exception:
     pass
-  mem_key_out=str(body.get('memory_key') or '').strip()[:300]
-  if mem_key_out and last_user_msg:
+  if out_tags and last_user_msg:
    try:
-    import hashlib
     from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
-    out_tag='cust:'+hashlib.sha256(mem_key_out.encode('utf-8')).hexdigest()[:24]
     threading.Thread(
      target=_retain_memory_item,
-     args=(f"Customer: {last_user_msg}\nAgent reply: {content}",'customer-chat','customer-chat','customer-chat',[out_tag]),
+     args=(f"Customer: {last_user_msg}\nAgent reply: {content}",'customer-chat','customer-chat','customer-chat',out_tags),
      daemon=True,
     ).start()
    except Exception:
@@ -1466,23 +1485,47 @@ def _start_customer_whatsapp_poller():
         hist_str='\n'.join(prior_turns) if prior_turns else '(No prior messages yet)'
         all_user_txt=' \n '.join([str(m.get('content') or '') for m in prior_chat_msgs if m.get('role')=='user']+[msg_text])
         solar_calc_prompt=_calculate_solar_pre_assessment(all_user_txt)
+        avail_block=''
+        try:
+         import datetime
+         now_dt=datetime.datetime.now()
+         avail_lines=[f"- Current Date & Time: {now_dt.strftime('%A, %Y-%m-%d %H:%M')}", "- Business Hours: Monday to Friday, 09:00 to 16:00 (Phone Call, On-Site Visit, or Roof Inspection)."]
+         upcoming_days=[]
+         for d_off in range(0,10):
+          dt_cand=now_dt+datetime.timedelta(days=d_off)
+          if dt_cand.weekday()<5:
+           upcoming_days.append(f"{dt_cand.strftime('%a %b %d')} ({dt_cand.strftime('%Y-%m-%d')})")
+          if len(upcoming_days)>=5:break
+         if upcoming_days:avail_lines.append("- Next Open Weekdays: "+", ".join(upcoming_days))
+         busy_lines=[]
+         for sp in ('/data/box3_snapshot.json','/opt/data/box3_snapshot.json','/opt/os-adapter/.runtime/box3_snapshot.json'):
+          if os.path.isfile(sp):
+           sdata=json.loads(Path(sp).read_text(encoding='utf-8'))
+           for ev in (sdata.get('calendar_events') or [])[:15]:
+            if isinstance(ev,dict) and ev.get('starts_at'):
+             busy_lines.append(f"{ev.get('starts_at')} to {ev.get('ends_at','')} ({ev.get('title','Booked')})")
+           break
+         if busy_lines:avail_lines.append("- Already Booked / Unavailable Slots: "+"; ".join(busy_lines[:8]))
+         avail_block="LIVE CALENDAR AVAILABILITY:\n"+"\n".join(avail_lines)
+        except Exception:pass
         sys_prompt='\n'.join(filter(None,[
          f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp live chat.",
          f"AGENT INSTRUCTIONS (FROM APP OS AGENT PROFILE):\n{agent_instr}" if agent_instr else "",
          "LIVE CONVERSATION CONTEXT: Output ONLY the exact message spoken directly to the customer in plain text (never output internal reasoning, '(Next step: ...)', '(Note: ...)', markdown **bold**, or # headings). Always use warm, courteous, professional English—never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'.",
          "PROACTIVE VALUE FIRST — NEVER ASK PERMISSION TO SHARE INFO: Never ask 'Would you like to know...?', 'Do you want me to explain...?', 'Shall I calculate that for you?', or 'Would you like to hear how much you can save?'. Every customer wants to know! Never say 'I\\'d be happy to explain...' without actually explaining it right away. When a customer asks how solar works or gives their bill/usage, deliver the actual answer and calculator figures upfront immediately in 1 to 2 simple sentences first (e.g., daytime solar panels power your home appliances directly first so you buy far less electricity from the grid, plus starting kW size, panel count, and estimated bill savings), and then ask your 1 simple follow-up question.",
          "SHORT, FRIENDLY & ONE QUESTION AT A TIME: Keep every reply brief, warm, and simple (1 to 2 short sentences maximum). NEVER dump paragraphs of information and NEVER ask two or more questions in the same message (never stack questions with 'Also, ...' or 'and what size/how old?'). Ask at most ONE simple question at a time.",
-         f"10/10 HUMAN WARMTH, REAL HUMAN FEEL & EFFORTLESS DRY WIT (NO 'THANKS [NAME]', NO ROBOTIC FILLER, NO AI/TECH MENTIONS): Speak strictly as a real human specialist at {company_name}—NEVER say or imply that you are an AI, bot, virtual assistant, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, or say things like 'my memory of you hasn't been saved'. If you ever don't recall a detail they mentioned earlier, respond naturally like a real person ('I'm sorry, I can't remember—could you remind me?'). Speak with natural contractions and light, relatable dry human wit (for example, reacting with warm humour when they mention steep power bills). NEVER start your replies with 'Thanks', 'Thank you', 'Thanks {first_n or '[Name]'}', 'Got it, {first_n or '[Name]'}', 'That is a great question', 'Great, {first_n or '[Name]'}', or similar mechanical acknowledgements. Never repeat the customer's suburb/location in every message.",
+         f"10/10 GENUINE HUMAN WARMTH & NATURAL CONVERSATION (NO ROBOTIC INTERROGATION, NO AI/TECH MENTIONS): Speak strictly as a warm, genuinely helpful real human specialist at {company_name}—NEVER say or imply that you are an AI, bot, virtual assistant, or automated agent, and NEVER mention technical errors, system glitches, prompts, tools, or say things like 'my memory of you hasn't been saved'. If you ever don't recall a detail they mentioned earlier, respond naturally like a real person ('I'm sorry, I can't remember - could you remind me?'). Always acknowledge what the customer just shared with a brief, warm human reaction ('Awesome,', 'Lovely,', 'Makes sense,', 'That's a decent bill - solar will definitely help bring that down.') before asking your next question.",
          "STRICT SYSTEM DATA GROUNDING: Rely on your Agent Instructions, Knowledge Base, and Official Your Choice Solar Website Calculator (planning-v2) LIVE RESULT below. Always share the official calculator's starting kWh usage, kW panel size (and ~number of 440W panels), and estimated bill reduction when the customer gives their bill/usage or asks to calculate; never invent unverified hardware brands, fixed package prices, rebate amounts, or warranty lengths.",
-         "NO REPEATED GREETINGS OR NAME REPETITION: This conversation is already underway. NEVER start your reply with 'Hi', 'Hello', 'Hey', 'Thanks', 'Thank you', or the customer's name ('" + (first_n or "there") + "'). Do NOT use the customer's first name again on follow-up replies—jump straight into a natural, helpful response." if has_prior_reply else ("Greet " + (first_n or "the customer") + " warmly and simply once on this first reply using 'Hi " + (first_n or "there") + "' (never use 'G'day')."),
+         "NO REPEATED GREETINGS OR NAME REPETITION: This conversation is already underway. NEVER start your reply with 'Hi', 'Hello', 'Hey', or the customer's name ('" + (first_n or "there") + "'). Do NOT use the customer's first name again on follow-up replies—start with a warm, natural human reaction to what they just said." if has_prior_reply else ("Greet " + (first_n or "the customer") + " warmly and simply once on this first reply using 'Hi " + (first_n or "there") + "' (never use 'G'day')."),
          solar_calc_prompt or "OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR (planning-v2): Ready. If the customer asks to calculate their kWh usage, solar panel size (kW), or savings before giving a bill amount, ask for their typical monthly or quarterly electricity bill (in AUD) or kWh usage so you can calculate it for them immediately.",
          lead_info['checklist_prompt'],
+         avail_block,
          "MANDATORY FULL LEAD COLLECTION & DATA CONFIRMATION (ONE STEP AT A TIME):\n"
          "1. Every solar inquiry must be added to the Central OS CRM New Lead pipeline ONLY AFTER all 4 required fields (Full Name with first AND last name, Phone Number, Email Address, and Property Street Address) are collected AND explicitly confirmed by the customer.\n"
          "2. NEVER close the conversation or say 'A specialist will reach out shortly' or 'I\\'ll arrange a consultation' while Full Name (first AND last name), Phone Number, Email Address, Property Street Address, or Customer Confirmation are still MISSING or INCOMPLETE in the checklist above.\n"
          f"3. Guide the conversation one simple step at a time. Right now, ask ONLY for the NEXT SINGLE QUESTION shown in the checklist above ({lead_info.get('next_single_question') or 'read back and ask the customer to confirm all 4 details'}). Do NOT combine multiple questions into one message.\n"
          + (
-          f"4. All 4 details are collected AND confirmed by the customer! Now append the hidden CRM lead tag at the very end of your message:\n[[LEAD:{{\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]]"
+          f"4. All 4 details are collected AND confirmed by the customer! Now append the hidden CRM lead tag (or [[BOOK:{{\"kind\":\"call\",\"day\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]] if they confirmed a specific appointment slot) at the very end of your message:\n[[LEAD:{{\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]]"
           if (lead_info.get('is_complete') and lead_info.get('is_confirmed'))
           else "4. DO NOT output [[LEAD:...]] or [[BOOK:...]] on this turn! Never output placeholder values like '...' or 'name@example.com'. When all 4 fields are collected, first read back Full Name, Phone Number, Email Address, and Property Street Address and ask the customer to confirm they are correct."
          ),
@@ -1491,12 +1534,14 @@ def _start_customer_whatsapp_poller():
         ]))
         try:
          env=profile_environment(settings)
+         wa_mem_key=f"phone:{sender_id[-9:]}" if len(sender_id)>=7 else f"wa:{sender_id}"
          job_in={
           'model':'workspace-default',
           'session_id':str(UUID(int=int(time.time()*1000)%((1<<128)-1))),
           'runtime_profile':settings['HERMES_PROFILE'],
           'execution_mode':'draft-only',
           'max_tokens':180,
+          'memory_key':wa_mem_key,
           'stream':False,
           'messages':[{'role':'system','content':sys_prompt},*prior_chat_msgs[-10:],{'role':'user','content':msg_text}],
          }
@@ -1516,7 +1561,7 @@ def _start_customer_whatsapp_poller():
             'messages':[
              *job_in['messages'],
              {'role':'assistant','content':reply_text},
-             {'role':'user','content':f"[PROCESS PLAYBOOK SELF-CORRECTION: Your draft reply above tried to hand off or close the conversation before completing the Process Knowledge Base qualification and CRM checklist. Rewrite your reply in 1-2 short sentences (no 'Thanks' or greeting prefixes) to warmly ask ONLY this single next question: {lead_info.get('next_single_question')}]"},
+             {'role':'user','content':f"[PROCESS PLAYBOOK SELF-CORRECTION: Your draft reply above tried to hand off or close the conversation before completing the Process Knowledge Base qualification and CRM checklist. Rewrite your reply in 1-2 short sentences (no repeated 'Hi/Hello' greeting) to warmly ask ONLY this single next question: {lead_info.get('next_single_question')}]"},
             ],
            }
            rjout=_fast_draft_only_completion(retry_job,settings)
@@ -1545,9 +1590,8 @@ def _start_customer_whatsapp_poller():
        reply_text=re.sub(r'^\s*\[+\s*|\s*\]+\s*$','',reply_text).strip()
        reply_text=re.sub(r"^\s*(?:g['\u2019\u2018`]?day|howdy|heya)\b","Hi",reply_text,flags=re.IGNORECASE)
        reply_text=re.sub(r"\b(hi|hello|hey),?\s+mate\b",r"\1",reply_text,flags=re.IGNORECASE)
-       reply_text=re.sub(r"^\s*(?:many\s+thanks|thanks\s+so\s+much|thanks\s+a\s+lot|thanks|thank\s+you|appreciate\s+(?:that|it|the\s+info))(?:\s+for\s+[^.!?\n,]{2,45})?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*","",reply_text,flags=re.IGNORECASE).strip()
       if reply_text and has_prior_reply and not box3_res.get('handled_by_box3'):
-       stripped_re=re.sub(r"^(?:(?:hi|hello|hey|g['\u2019\u2018`]?day|good\s+(?:morning|afternoon|evening)|many\s+thanks|thanks\s+so\s+much|thanks\s+a\s+lot|thanks|thank\s+you|appreciate\s+(?:that|it)|got\s+it|great|perfect|wonderful|lovely|sure\s+thing|no\s+problem|certainly|of\s+course)(?:\s+(?:there|again|mate|folks|team|for\s+[^.!?\n,]{2,45}))?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*)+","",reply_text,flags=re.IGNORECASE).strip()
+       stripped_re=re.sub(r"^(?:(?:hi|hello|hey|g['\u2019\u2018`]?day|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|again|mate|folks|team))?(?:[\s,]+[A-Za-z'\u2019-]{2,20})?\s*[!,.\u2014:-]+\s*)+","",reply_text,flags=re.IGNORECASE).strip()
        if first_n:
         esc_fn=re.escape(first_n)
         stripped_re=re.sub(rf"^{esc_fn}\s*[!,.\u2014:-]+\s*","",stripped_re,flags=re.IGNORECASE).strip()
