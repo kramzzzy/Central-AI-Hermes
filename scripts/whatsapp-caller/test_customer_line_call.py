@@ -141,6 +141,28 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertEqual([b'Right, gotcha.', b'A six kilowatt system would suit a bill that size nicely.'], emitted)
         self.assertLess(started[1] - started[0], .2, 'next clause synthesizes while the opener is still running')
 
+    def test_repeated_opener_plays_from_cache_without_waiting_for_fish(self):
+        import stream_conversation
+        calls, emitted = [], []
+
+        def fake_tts(text, _config, _rate, audio=None, control=None):
+            calls.append(text)
+            pcm = text.encode().ljust(32, b'\0')[:32]
+            if audio is None:
+                return pcm
+            audio(pcm)
+
+        config = {'FISH_API_KEY': 'k', 'FISH_VOICE_ID': 'cache-test-voice'}
+        with patch.object(stream_conversation, 'fish_rest_tts', side_effect=fake_tts), \
+             patch.dict(stream_conversation._opener_audio, clear=True):
+            for _ in range(2):
+                speech = stream_conversation.FishRestSpeech(config, emitted.append,
+                                                            stream_conversation.TurnControl(), rate=16000)
+                speech.text('Right, gotcha! How big was your last power bill? ')
+                speech.finish()
+        self.assertEqual(['Right, gotcha!', 'How big was your last power bill?'], calls, 'second reply never waits on Fish')
+        self.assertEqual(emitted[:2], emitted[2:], 'second reply reuses the first audio exactly')
+
     def test_discarded_cloud_recognition_frees_its_slot(self):
         import threading
         import phone_cloud_asr

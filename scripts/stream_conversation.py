@@ -89,6 +89,30 @@ _fish_http_cooldown_until = 0.0
 _fish_last_error = ''
 _fish_working_model = None
 _fish_failed_models = set()
+# Short reply openers ("Right, gotcha.") recur on every call; live calls spent ~1.5s
+# waiting for Fish on them, so their audio is kept per voice and played instantly.
+_opener_audio = {}
+_OPENER_MAX_CHARS = 40
+
+
+def _opener_key(config, rate, text):
+    return ((config or {}).get('FISH_VOICE_ID') or '', rate, re.sub(r'[\s.!?,;:]+$', '', text.strip()).casefold())
+
+
+def prewarm_openers(config, rate, phrases):
+    """Synthesize common openers in the background so a call's first replies start instantly."""
+    def run():
+        for phrase in phrases:
+            key = _opener_key(config, rate, phrase)
+            if key in _opener_audio or len(_opener_audio) >= 128:
+                continue
+            try:
+                pcm = fish_rest_tts(phrase, config, rate)
+                if pcm and len(pcm) % 2 == 0:
+                    _opener_audio[key] = pcm
+            except Exception:
+                pass
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _resolve_fish_tts_model(config):
@@ -290,10 +314,18 @@ class FishRestSpeech:
         global _fish_http_cooldown_until, _fish_last_error
         self.control.check()
         emitted = [0]
+        opener = _opener_key(self.config, self.rate, clause) if len(clause) <= _OPENER_MAX_CHARS else None
+        cached = _opener_audio.get(opener) if opener else None
+        captured = [] if opener and not cached else None
         def out(pcm):
             self.control.check()
             emitted[0] += len(pcm)
+            if captured is not None:
+                captured.append(pcm)
             (emit or self._emit_chunk)(pcm)
+        if cached:
+            out(cached)
+            return
         fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
         can_try_fish = bool(fish_key or os.environ.get('HERMES_PHONE_CONVERSATION') == 'true')
         if not can_try_fish:
@@ -304,6 +336,8 @@ class FishRestSpeech:
             try:
                 fish_rest_tts(clause, self.config, self.rate, out, self.control)
                 if emitted[0]:
+                    if captured and len(_opener_audio) < 128:
+                        _opener_audio[opener] = b''.join(captured)
                     return
                 self.provider_error = 'Fish TTS returned no audio'
             except TurnCancelled:

@@ -12,7 +12,7 @@ import re
 import struct
 import time
 
-from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key, _is_valid_openrouter_voice_model
+from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key, prewarm_openers, _is_valid_openrouter_voice_model
 from fish_conversation import filter_playback_input, normalize_voice_greeting
 from whatsapp_audio import PhoneAudioFilter
 
@@ -1003,6 +1003,8 @@ class StreamPhoneCall:
             print(f"[StreamPhoneCall] native_conversation init fallback to fast stream: {exc}", flush=True)
 
     async def start(self):
+        # The reactions the call prompt asks every reply to open with.
+        prewarm_openers(self.speech_config, 16000, ('Oh, no worries at all.', 'Yeah, that makes sense.', 'Right, gotcha.'))
         self.task(self._warm_native_conversation())
         self.task(self.feed());self.task(self.tick())
 
@@ -1130,8 +1132,9 @@ class StreamPhoneCall:
                         early_local_done = audio.get('early_local_done') if isinstance(audio, dict) else None
                         early_entry = audio.get('early_entry') if isinstance(audio, dict) else None
                         cloud_in_flight = bool(cloud and (early or (early_entry and early_entry.get('recognizer'))))
+                        # Live calls: cloud ASR took ~2.5s vs ~1s for CPU Whisper, so local is always worth waiting for.
                         if early_local_done is not None and early_entry is not None:
-                            early_local_done.wait(timeout=.6 if cloud_in_flight else 1.5)
+                            early_local_done.wait(timeout=1.5)
                         if early_entry and early_entry.get('local_result') is not None:
                             local_text, local_quality = early_entry['local_result']
                         elif cloud_in_flight:
