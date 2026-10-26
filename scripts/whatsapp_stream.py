@@ -1112,10 +1112,14 @@ class StreamPhoneCall:
                         # Fast path (~100ms, or 0ms if completed during early_quiet pause):
                         early_local_done = audio.get('early_local_done') if isinstance(audio, dict) else None
                         early_entry = audio.get('early_entry') if isinstance(audio, dict) else None
-                        if early_local_done is not None and early_entry is not None:
+                        # Cloud ASR already in flight is the authority: never block it on CPU Whisper.
+                        cloud_in_flight = bool(cloud and (early or (early_entry and early_entry.get('recognizer'))))
+                        if early_local_done is not None and early_entry is not None and not cloud_in_flight:
                             early_local_done.wait(timeout=1.5)
                         if early_entry and early_entry.get('local_result') is not None:
                             local_text, local_quality = early_entry['local_result']
+                        elif cloud_in_flight:
+                            local_text, local_quality = '', {'decision': 'clarify', 'source': 'local'}
                         else:
                             local_text, local_quality = self.service.recognize(pcm)
                         if not speculative and early_entry and early_entry.get('speculative'):
@@ -1151,9 +1155,8 @@ class StreamPhoneCall:
                             if early:
                                 self.close_asr(early)
                         else:
-                            if speculative:
-                                speculative.cancel()
-                                speculative = None
+                            # Keep the reply prefetched from local words: Conversation.reply uses it
+                            # only when the cloud transcript matches exactly, else cancels it.
                             if early:
                                 control.track(early)
                                 try:

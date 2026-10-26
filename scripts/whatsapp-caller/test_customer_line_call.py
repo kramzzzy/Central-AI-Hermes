@@ -50,7 +50,7 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertIn('Batteries store daytime solar.', conv.prompt)
         self.assertNotIn('manage_crm', conv.prompt)
         self.assertNotIn('Current workspace workflow', conv.prompt)
-        self.assertEqual('google/gemini-2.5-flash-lite', conv.config['AGENT_MODEL'], 'customer calls use the fast model')
+        self.assertEqual('openai/gpt-4o-mini', conv.config['AGENT_MODEL'], 'customer calls use the fast model')
         asyncio.run(call._warm_native_conversation())
         self.assertIsNone(call.conversation)
 
