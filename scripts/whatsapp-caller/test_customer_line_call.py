@@ -120,7 +120,7 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertIn('sincerely asks whether they are talking to a real person, answer honestly', prompt)
         self.assertNotIn('NEVER say or imply that you are an AI', prompt)
         self.assertNotIn('Oh, no worries at all.', prompt)
-        self.assertIn('LISTEN FIRST', prompt)
+        self.assertIn('Be friendly with a light sense of humour.', prompt, 'persona comes from the agent profile')
 
     def test_spoken_caller_name_from_this_is_but_not_from_ordinary_sentences(self):
         extract = whatsapp_stream._extract_spoken_caller_name
