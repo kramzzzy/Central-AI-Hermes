@@ -1088,8 +1088,8 @@ if CONVERSATION_MODE in {'fish', 'stream'}:
             try:
                 from phone_cloud_asr import CloudRecognizer
                 cloud_asr=CloudRecognizer(config,
-                    primary=os.environ.get('WHATSAPP_ASR_MODEL','openai/gpt-4o-mini-transcribe'),
-                    fallback=os.environ.get('WHATSAPP_ASR_FALLBACK','deepgram/nova-3'))
+                    primary=os.environ.get('WHATSAPP_ASR_MODEL','openai/whisper-large-v3-turbo'),
+                    fallback=os.environ.get('WHATSAPP_ASR_FALLBACK','openai/gpt-4o-mini-transcribe'))
             except Exception as e:
                 print(f'[voice] CloudRecognizer setup fallback to local Whisper: {e}', flush=True)
         fish_service.cloud_asr=cloud_asr

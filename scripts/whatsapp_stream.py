@@ -956,7 +956,7 @@ class StreamPhoneCall:
         remote=getattr(self.asr,'remote',False)
         source=self.asr.recognizer.source if remote else (cloud.primary if cloud else 'local')
         # Start cloud ASR in parallel during the pause so names, addresses, and numbers
-        # are transcribed by gpt-4o-mini-transcribe / gemini-2.5-flash with zero extra wait.
+        # are transcribed by Whisper turbo / gpt-4o-mini-transcribe (OpenRouter) with zero extra wait.
         recognizer=None if (remote or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
         early_entry={'recognizer':recognizer,'confirmation':None,
                      'confirmation_source':source,'version':version,'pcm':pcm,
@@ -1136,17 +1136,23 @@ class StreamPhoneCall:
                         if (not text or quality.get('fallback_allowed')) and cloud:
                             text,quality=cloud.recognize(pcm,control)
                     elif getattr(self.service, 'recognize', None):
-                        # Fast path: local Whisper (~150ms, usually finished during the early_quiet
-                        # pause) answers the turn and the reply was already prefetched from its words.
+                        # Cloud Whisper turbo (OpenRouter, started ~0.2s into the pause) races CPU
+                        # Whisper (~1s on the shared VPS); the first usable transcript answers the turn.
                         early_local_done = audio.get('early_local_done') if isinstance(audio, dict) else None
                         early_entry = audio.get('early_entry') if isinstance(audio, dict) else None
-                        cloud_in_flight = bool(cloud and (early or (early_entry and early_entry.get('recognizer'))))
-                        # Live calls: cloud ASR took ~2.5s vs ~1s for CPU Whisper, so local is always worth waiting for.
+                        if not early and early_entry and early_entry.get('recognizer'):
+                            early = early_entry.get('recognizer')
+                        cloud_done = getattr(early, 'done', None)
                         if early_local_done is not None and early_entry is not None:
-                            early_local_done.wait(timeout=1.5)
+                            waited = time.monotonic() + 1.5
+                            while (not early_local_done.is_set() and not (cloud_done and cloud_done.is_set())
+                                   and time.monotonic() < waited):
+                                control.check()
+                                early_local_done.wait(.02)
+                        cloud_result = early.result if cloud_done and cloud_done.is_set() and not early.error else None
                         if early_entry and early_entry.get('local_result') is not None:
                             local_text, local_quality = early_entry['local_result']
-                        elif cloud_in_flight:
+                        elif early:
                             local_text, local_quality = '', {'decision': 'clarify', 'source': 'local'}
                         else:
                             local_text, local_quality = self.service.recognize(pcm)
@@ -1154,8 +1160,6 @@ class StreamPhoneCall:
                             speculative = early_entry.get('speculative')
                             if self.speculative is speculative:
                                 self.speculative = None
-                        if not early and early_entry and early_entry.get('recognizer'):
-                            early = early_entry.get('recognizer')
                         used_local = True
                         prev_asst = str(self.call_turns[-1].get('assistant') or '') if self.call_turns else ''
                         confident_local = (
@@ -1163,7 +1167,10 @@ class StreamPhoneCall:
                             and local_quality.get('decision') == 'accepted'
                             and not (cloud and _needs_precise_transcript(local_text, prev_asst))
                         )
-                        if confident_local or not cloud:
+                        if cloud_result and cloud_result[0] and cloud_result[1].get('decision') == 'accepted':
+                            text, quality = cloud_result
+                            self.service.metrics['early_recognitions_used'] = self.service.metrics.get('early_recognitions_used', 0) + 1
+                        elif confident_local or not cloud:
                             text, quality = local_text, local_quality
                             if early:
                                 self.close_asr(early)

@@ -14,10 +14,22 @@ from stream_conversation import TurnCancelled
 from voice_http import open_request
 
 MODELS = (
+    'openai/whisper-large-v3-turbo',
     'openai/gpt-4o-mini-transcribe',
     'deepgram/nova-3',
     'google/gemini-2.5-flash',
     'openai/gpt-4o-audio-preview',
+)
+# Served by OpenRouter's speech-to-text endpoint (Groq/DeepInfra Whisper turbo, OpenAI mini-transcribe)
+# with the existing OpenRouter key; the others go through audio chat completions, which are slower.
+TRANSCRIPTION_MODELS = {'openai/whisper-large-v3-turbo', 'openai/gpt-4o-mini-transcribe'}
+OPENROUTER_TRANSCRIPTIONS = 'https://openrouter.ai/api/v1/audio/transcriptions'
+EMPTY_TRANSCRIPTS = {'""', "''", '[silence]', '[inaudible]', '[empty]', 'None', 'null'}
+PROMPT_HINT = (
+    'Live Australian phone call with James from Your Choice Solar. '
+    'Accurately transcribe caller names (e.g. Mark Anthony Ebio), spelled letters, '
+    'Australian street addresses, suburbs (Brisbane, Gold Coast, Sydney, Melbourne, QLD, NSW), '
+    'email addresses, and electricity bill amounts in AUD.'
 )
 
 
@@ -49,17 +61,11 @@ class CloudRecognizer:
             file.setframerate(16000)
             file.writeframes(pcm)
         wav_bytes = audio.getvalue()
-        if self.openai_key and model == self.primary:
+        if self.openai_key and model == 'openai/gpt-4o-mini-transcribe':
             try:
                 boundary = '----CentralAIVoiceBoundary7MA4YWxkTrZu0gW'
-                prompt_hint = (
-                    'Live Australian phone call with James from Your Choice Solar. '
-                    'Accurately transcribe caller names (e.g. Mark Anthony Ebio), spelled letters, '
-                    'Australian street addresses, suburbs (Brisbane, Gold Coast, Sydney, Melbourne, QLD, NSW), '
-                    'email addresses, and electricity bill amounts in AUD.'
-                )
                 body = bytearray()
-                for field_name, field_val in (('model', 'gpt-4o-mini-transcribe'), ('language', 'en'), ('response_format', 'json'), ('prompt', prompt_hint)):
+                for field_name, field_val in (('model', 'gpt-4o-mini-transcribe'), ('language', 'en'), ('response_format', 'json'), ('prompt', PROMPT_HINT)):
                     body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{field_name}"\r\n\r\n{field_val}\r\n'.encode('utf-8'))
                 body.extend(
                     f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="speech.wav"\r\nContent-Type: audio/wav\r\n\r\n'.encode('utf-8')
@@ -81,15 +87,35 @@ class CloudRecognizer:
                     control.check()
                     oa_data = json.loads(oa_raw)
                 oa_text = str(oa_data.get('text') or '').strip()
-                if oa_text and oa_text not in {'""', "''", '[silence]', '[inaudible]', '[empty]', 'None', 'null'}:
+                if oa_text and oa_text not in EMPTY_TRANSCRIPTS:
                     return {'text': oa_text}
             except TurnCancelled:
                 raise
             except Exception:
                 control.check()
         b64_wav = base64.b64encode(wav_bytes).decode()
-        # Use OpenRouter multimodal chat completions directly (fast, zero 404 roundtrips)
-        chat_model = 'google/gemini-2.5-flash' if model == self.primary else 'openai/gpt-4o-audio-preview'
+        if model in TRANSCRIPTION_MODELS:
+            request = urllib.request.Request(OPENROUTER_TRANSCRIPTIONS, data=json.dumps({
+                'model': model, 'input_audio': {'data': b64_wav, 'format': 'wav'},
+                'language': 'en', 'temperature': 0,
+                'provider': {'options': {'groq': {'prompt': PROMPT_HINT}}},
+            }).encode(), headers={'Authorization': 'Bearer ' + self.key, 'Content-Type': 'application/json',
+                                  'X-Title': 'Central AI speech recognition'})
+            control.check()
+            with open_request(request, timeout=2.5) as response:
+                control.track(response)
+                raw = response.read(65537)
+                control.check()
+            if len(raw) > 65536:
+                raise ValueError('Transcription response too large')
+            data = json.loads(raw)
+            text = data.get('text') if isinstance(data, dict) else None
+            if not isinstance(text, str) or data.get('error') or len(text) > 12000:
+                raise ValueError('Invalid transcription response')
+            text = text.strip()
+            return {'text': '' if text in EMPTY_TRANSCRIPTS else text}
+        # Audio chat completions fallback for the remaining models.
+        chat_model = 'google/gemini-2.5-flash' if model == 'google/gemini-2.5-flash' else 'openai/gpt-4o-audio-preview'
         chat_payload = {
             'model': chat_model,
             'temperature': 0,
@@ -131,7 +157,7 @@ class CloudRecognizer:
         if data.get('error') or not isinstance(text, str) or len(text) > 12000:
             raise ValueError('Invalid transcription response')
         # Strip accidental surrounding quotes or empty placeholders from LLM output
-        if text in {'""', "''", '[silence]', '[inaudible]', '[empty]', 'None', 'null'}:
+        if text in EMPTY_TRANSCRIPTS:
             text = ''
         return {'text': text}
 

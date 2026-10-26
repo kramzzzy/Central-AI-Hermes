@@ -182,6 +182,38 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertEqual(['Right, gotcha!', 'How big was your last power bill?'], calls, 'second reply never waits on Fish')
         self.assertEqual(emitted[:2], emitted[2:], 'second reply reuses the first audio exactly')
 
+    def test_phone_transcription_uses_openrouter_speech_to_text_endpoint(self):
+        import base64
+        import io
+        import json
+        import phone_cloud_asr
+        from stream_conversation import TurnControl
+        sent = []
+
+        class Reply(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_open(request, timeout):
+            sent.append((request.full_url, json.loads(request.data), timeout))
+            return Reply(b'{"text": "Hi, this is Mark.", "usage": {"seconds": 1}}')
+
+        recognizer = phone_cloud_asr.CloudRecognizer({'OPENROUTER_API_KEY': 'or-key'})
+        self.assertEqual(('openai/whisper-large-v3-turbo', 'openai/gpt-4o-mini-transcribe'),
+                         (recognizer.primary, recognizer.fallback))
+        with patch.object(phone_cloud_asr, 'open_request', side_effect=fake_open):
+            text, quality = recognizer.recognize(b'\x00\x10' * 1600, TurnControl())
+        self.assertEqual(('Hi, this is Mark.', 'accepted'), (text, quality['decision']))
+        url, body, timeout = sent[0]
+        self.assertEqual('https://openrouter.ai/api/v1/audio/transcriptions', url)
+        self.assertEqual('openai/whisper-large-v3-turbo', body['model'])
+        self.assertEqual('wav', body['input_audio']['format'])
+        self.assertTrue(base64.b64decode(body['input_audio']['data']).startswith(b'RIFF'))
+        self.assertLessEqual(timeout, 2.5)
+
     def test_discarded_cloud_recognition_frees_its_slot(self):
         import threading
         import phone_cloud_asr
