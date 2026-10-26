@@ -28,13 +28,15 @@ class CloudRecognizer:
         if not config.get('OPENROUTER_API_KEY'):
             raise ValueError('Private transcription credential is required')
         self.key = config['OPENROUTER_API_KEY']
+        raw_oa = (config.get('OPENAI_API_KEY') or '').strip()
+        self.openai_key = raw_oa if (raw_oa.startswith('sk-') and not raw_oa.startswith('sk-or-')) else ''
         self.primary, self.fallback = primary, fallback
         self.request = request or self.transcribe
-        self.preparing = threading.BoundedSemaphore(2)
+        self.preparing = threading.BoundedSemaphore(4)
 
     def prepare(self, pcm, control, *, confirmation_source=None):
         # Start during an existing silence window. No rolling transcriptions
-        # while the caller speaks and at most two bounded in-flight requests.
+        # while the caller speaks and at most four bounded in-flight requests.
         if not self.preparing.acquire(blocking=False):
             return None
         return PreparedRecognition(self, pcm, control, confirmation_source=confirmation_source)
@@ -46,7 +48,46 @@ class CloudRecognizer:
             file.setsampwidth(2)
             file.setframerate(16000)
             file.writeframes(pcm)
-        b64_wav = base64.b64encode(audio.getvalue()).decode()
+        wav_bytes = audio.getvalue()
+        if self.openai_key and model == self.primary:
+            try:
+                boundary = '----CentralAIVoiceBoundary7MA4YWxkTrZu0gW'
+                prompt_hint = (
+                    'Live Australian phone call with James from Your Choice Solar. '
+                    'Accurately transcribe caller names (e.g. Mark Anthony Ebio), spelled letters, '
+                    'Australian street addresses, suburbs (Brisbane, Gold Coast, Sydney, Melbourne, QLD, NSW), '
+                    'email addresses, and electricity bill amounts in AUD.'
+                )
+                body = bytearray()
+                for field_name, field_val in (('model', 'gpt-4o-mini-transcribe'), ('language', 'en'), ('response_format', 'json'), ('prompt', prompt_hint)):
+                    body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{field_name}"\r\n\r\n{field_val}\r\n'.encode('utf-8'))
+                body.extend(
+                    f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="speech.wav"\r\nContent-Type: audio/wav\r\n\r\n'.encode('utf-8')
+                )
+                body.extend(wav_bytes)
+                body.extend(f'\r\n--{boundary}--\r\n'.encode('utf-8'))
+                oa_req = urllib.request.Request(
+                    'https://api.openai.com/v1/audio/transcriptions',
+                    data=bytes(body),
+                    headers={
+                        'Authorization': 'Bearer ' + self.openai_key,
+                        'Content-Type': f'multipart/form-data; boundary={boundary}',
+                    },
+                )
+                control.check()
+                with open_request(oa_req, timeout=3.5) as oa_resp:
+                    control.track(oa_resp)
+                    oa_raw = oa_resp.read(65537)
+                    control.check()
+                    oa_data = json.loads(oa_raw)
+                oa_text = str(oa_data.get('text') or '').strip()
+                if oa_text and oa_text not in {'""', "''", '[silence]', '[inaudible]', '[empty]', 'None', 'null'}:
+                    return {'text': oa_text}
+            except TurnCancelled:
+                raise
+            except Exception:
+                control.check()
+        b64_wav = base64.b64encode(wav_bytes).decode()
         # Use OpenRouter multimodal chat completions directly (fast, zero 404 roundtrips)
         chat_model = 'google/gemini-2.5-flash' if model == self.primary else 'openai/gpt-4o-audio-preview'
         chat_payload = {
@@ -61,7 +102,10 @@ class CloudRecognizer:
                     {
                         'type': 'text',
                         'text': (
-                            'Transcribe the spoken English audio verbatim. '
+                            'Transcribe the spoken English phone call audio verbatim. '
+                            'Pay close attention to caller names (e.g. Mark Anthony Ebio), spelled-out letters, '
+                            'Australian street names and suburbs (e.g. Brisbane, Gold Coast, Sydney, Melbourne), '
+                            'phone numbers, email addresses, and power bill amounts. '
                             'Output ONLY the exact words spoken by the caller, with no quotes or commentary. '
                             'If the audio is only silence, breathing, background noise, or unintelligible sound, output an empty string.'
                         )

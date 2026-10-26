@@ -101,6 +101,8 @@ if not config.get('FISH_API_KEY'):
             config[k] = v
 if os.environ.get('OPENROUTER_API_KEY') and not config.get('OPENROUTER_API_KEY'):
     config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
+if os.environ.get('OPENAI_API_KEY') and not config.get('OPENAI_API_KEY'):
+    config['OPENAI_API_KEY'] = os.environ['OPENAI_API_KEY'].strip()
 if os.environ.get('FISH_API_KEY'):
     env_fish_key = valid_fish_key(os.environ['FISH_API_KEY'])
     if env_fish_key:
@@ -423,10 +425,11 @@ def recognize(samples):
     segments, _ = model.transcribe(decode_samples, language='en', task='transcribe',
         # Go already selects a voiced utterance with pre-roll. A second VAD
         # removed quiet opening words in the synthetic phone-band test.
-        beam_size=1 if CONVERSATION_MODE == 'stream' else 5, temperature=0, vad_filter=False,
-        condition_on_previous_text=False, initial_prompt='Hello, how are you? What is up. Central AI assistant.',
-        log_prob_threshold=-1.8 if CONVERSATION_MODE == 'stream' else -1.0,
-        no_speech_threshold=0.85 if CONVERSATION_MODE == 'stream' else 0.6,
+        beam_size=3 if CONVERSATION_MODE == 'stream' else 5, temperature=0, vad_filter=False,
+        condition_on_previous_text=False,
+        initial_prompt='Hi James from Your Choice Solar. My full name is Mark Anthony Ebio. Property street address in Brisbane QLD, solar panels, battery, power bill.',
+        log_prob_threshold=-1.2 if CONVERSATION_MODE == 'stream' else -1.0,
+        no_speech_threshold=0.70 if CONVERSATION_MODE == 'stream' else 0.6,
         compression_ratio_threshold=2.4,
         **({'without_timestamps': True} if CONVERSATION_MODE == 'stream' else {}))
     parts = list(segments)
@@ -437,11 +440,15 @@ def recognize(samples):
                    no_speech_prob=round(max(s.no_speech_prob for s in parts), 3),
                    compression_ratio=round(max(s.compression_ratio for s in parts), 3))
     # These scores signal decoding failures, not proof of factual correctness.
-    # In live stream mode, accept short conversational replies locally (~90ms) while
-    # filtering known Whisper silence hallucinations so turns don't wait on cloud ASR.
-    hallucinated = bool(re.search(r'^(?:thank you for watching|thanks for watching|subtitles by|amara\.org|you$)', text.strip(), re.I))
-    min_logprob = -2.1 if CONVERSATION_MODE == 'stream' else -1.0
-    max_no_speech = 0.92 if CONVERSATION_MODE == 'stream' else 0.6
+    hallucinated = bool(
+        re.search(
+            r'^(?:thank you for watching|thanks for watching|subtitles by|amara\.org|you$|.*ready to connect with the agents.*|.*available agents right now.*)',
+            text.strip(),
+            re.I,
+        )
+    )
+    min_logprob = -0.75 if CONVERSATION_MODE == 'stream' else -1.0
+    max_no_speech = 0.55 if CONVERSATION_MODE == 'stream' else 0.6
     uncertain = (hallucinated or quality['avg_logprob'] < min_logprob
                  or quality['no_speech_prob'] > max_no_speech
                  or quality['compression_ratio'] > 2.4)

@@ -30,6 +30,8 @@ _NON_NAME_WORDS = {
     'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'morning', 'afternoon',
     'evening', 'poor', 'correction', 'full', 'phone', 'call', 'maybe', 'brisbane',
     'street', 'road', 'avenue', 'drive', 'email', 'address', 'property', 'book',
+    'mad', 'mate', 'mates', 'man', 'bro', 'boss', 'sir', 'connect', 'agent', 'agents',
+    'available', 'hi', 'hello', 'hey',
 }
 
 
@@ -143,6 +145,25 @@ def _load_customer_caller_memory(caller_digits, snap=None):
         name_words = [w.strip("'-").lower() for w in cached_name.split() if w.strip("'-")]
         if not name_words or any(w in _NON_NAME_WORDS or not w.isalpha() for w in name_words):
             mem['name'] = ''
+    # Authoritative Box 3 CRM / Contacts name always wins over local ASR caller memory
+    if isinstance(snap, dict):
+        for section in ('crm', 'contacts'):
+            found_snap_name = ''
+            for row in (snap.get(section) or []):
+                if not isinstance(row, dict):
+                    continue
+                rphone = re.sub(r'\D', '', str(row.get('phone') or row.get('number') or ''))
+                rname = str(row.get('name') or '').strip()
+                if rphone and rphone == digits and rname and not re.match(r'^(?:Caller|Visitor|Customer)\b', rname, re.I):
+                    rwords = [w.strip("'-").lower() for w in rname.split() if w.strip("'-")]
+                    if rwords and not any(w in _NON_NAME_WORDS for w in rwords):
+                        found_snap_name = rname
+                        break
+            if found_snap_name:
+                if mem.get('name') != found_snap_name:
+                    mem['name'] = found_snap_name
+                    _save_customer_caller_memory(digits, mem)
+                break
     if not mem.get('name') and isinstance(mem.get('history'), list):
         for h in reversed(mem['history']):
             if isinstance(h, dict) and h.get('role') == 'assistant':
@@ -857,9 +878,9 @@ class StreamPhoneCall:
         pcm=bytes(self.capture)
         remote=getattr(self.asr,'remote',False)
         source=self.asr.recognizer.source if remote else (cloud.primary if cloud else 'local')
-        # Run local Whisper first (~110ms) and immediately prefetch LLM; only start
-        # cloud ASR if local Whisper is unavailable or did not accept the utterance.
-        recognizer=None if (remote or local_fn or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
+        # Start cloud ASR in parallel during the pause so names, addresses, and numbers
+        # are transcribed by gpt-4o-mini-transcribe / gemini-2.5-flash with zero extra wait.
+        recognizer=None if (remote or not hasattr(cloud,'prepare')) else cloud.prepare(pcm,control)
         early_entry={'recognizer':recognizer,'confirmation':None,
                      'confirmation_source':source,'version':version,'pcm':pcm,
                      'control':control,'local_result':None,'local_done':None,'speculative':None}
@@ -883,7 +904,7 @@ class StreamPhoneCall:
                             spec=conv.prefetch(l_text,control)
                             early_entry['speculative']=spec
                             self.speculative=spec
-                    elif (hasattr(cloud,'prepare')
+                    elif (not early_entry.get('recognizer') and hasattr(cloud,'prepare')
                             and not control.cancelled.is_set()
                             and self.generation==generation):
                         early_entry['recognizer']=cloud.prepare(pcm,control)
@@ -1050,15 +1071,35 @@ class StreamPhoneCall:
                         if not early and early_entry and early_entry.get('recognizer'):
                             early = early_entry.get('recognizer')
                         used_local = True
+                        simple_ack_only = bool(
+                            local_text
+                            and len(local_text.split()) <= 3
+                            and re.fullmatch(
+                                r"[\s,!.?]*(?:yes|yeah|yep|yup|no|nah|nope|correct|that's\s+right|all\s+correct|everything\s+is\s+correct|sure|okay|ok|thanks|thank\s+you|goodbye|bye)[\s,!.?]*",
+                                local_text,
+                                flags=re.I,
+                            )
+                        )
                         confident_local = (
                             bool(local_text)
                             and local_quality.get('decision') == 'accepted'
+                            and (
+                                not cloud
+                                or (
+                                    simple_ack_only
+                                    and float(local_quality.get('avg_logprob') or -2.0) >= -0.45
+                                    and float(local_quality.get('no_speech_prob') or 1.0) <= 0.30
+                                )
+                            )
                         )
                         if confident_local or not cloud:
                             text, quality = local_text, local_quality
                             if early:
                                 self.close_asr(early)
                         else:
+                            if speculative:
+                                speculative.cancel()
+                                speculative = None
                             if early:
                                 control.track(early)
                                 try:
@@ -1137,12 +1178,14 @@ class StreamPhoneCall:
                             prev_asst = str(self.call_turns[-1].get('assistant') or '') if self.call_turns else ''
                             extracted_name = _extract_spoken_caller_name(text, prev_asst)
                             if extracted_name and extracted_name != self.caller_name:
-                                self.caller_name = extracted_name
-                                self.caller_memory['name'] = extracted_name
-                                _save_customer_caller_memory(self.caller_digits, self.caller_memory)
-                                if self.fallback_conversation is not None:
-                                    self.fallback_conversation.caller_name = extracted_name
-                                    self.fallback_conversation.prompt = self._customer_prompt('', None)
+                                is_explicit_correction = bool(re.search(r'\b(correction|actually|not\s+\w+|spelled)\b', text, re.I))
+                                if len(extracted_name.split()) >= 2 or len(self.caller_name.split()) < 2 or is_explicit_correction:
+                                    self.caller_name = extracted_name
+                                    self.caller_memory['name'] = extracted_name
+                                    _save_customer_caller_memory(self.caller_digits, self.caller_memory)
+                                    if self.fallback_conversation is not None:
+                                        self.fallback_conversation.caller_name = extracted_name
+                                        self.fallback_conversation.prompt = self._customer_prompt('', None)
                         # Use ultra-low-latency direct streaming Conversation (~220ms first token)
                         # as primary for live phone turn-taking, falling back to native_conversation if needed.
                         conv = self._get_fallback_conversation() or self.conversation
