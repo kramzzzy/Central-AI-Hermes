@@ -110,11 +110,11 @@ if os.environ.get('FISH_API_KEY'):
 if os.environ.get('FISH_VOICE_ID'):
     config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
 else:
-    config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
+    config.setdefault('FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13')
 if os.environ.get('FISH_VOICE_NAME'):
     config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
 else:
-    config.setdefault('FISH_VOICE_NAME', 'Jarvis')
+    config.setdefault('FISH_VOICE_NAME', 'Michael')
 try:
     from voice_setup import load_settings
     saved_voice = load_settings({'HERMES_PROFILE_ROOT': '/opt/data'})
@@ -125,6 +125,15 @@ try:
 except Exception as exc:
     print(f"[voice] Private voice settings load skipped: {exc}", flush=True)
 config['FISH_API_KEY'] = valid_fish_key(config.get('FISH_API_KEY'))
+if not config.get('FISH_VOICE_ID') or str(config.get('FISH_VOICE_ID') or '').strip() in {
+    '',
+    '612b878b113047d9a770c069c8b4fdfe',
+    '31d3dd937d2944a1b06da3db533d27f9',
+    '711cf3ed00ab441a8f54a45058047b7a',
+    'bf342d9e9e5b44e0ade1ccfd1abb4815',
+}:
+    config['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
+    config['FISH_VOICE_NAME'] = 'Michael'
 if not os.environ.get('CUSTOMER_FISH_VOICE_ID') or os.environ.get('CUSTOMER_FISH_VOICE_ID', '').strip() in {
     '',
     '612b878b113047d9a770c069c8b4fdfe',
@@ -495,7 +504,7 @@ def speech(text):
             pass
     try:
         from stream_conversation import _hermes_proxy_tts
-        audio = _hermes_proxy_tts(text[:1800], config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe', 16000)
+        audio = _hermes_proxy_tts(text[:1800], config.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13', 16000)
         if audio and len(audio) % 2 == 0:
             return audio
     except Exception:
@@ -555,7 +564,7 @@ class StreamingSpeech:
                 self.socket = socket
                 socket.send(msgpack.packb({'event': 'start', 'request': {
                     'text': '', 'reference_id': config['FISH_VOICE_ID'], 'format': 'pcm',
-                    'sample_rate': 16000, 'latency': 'low', 'chunk_length': 100}}, use_bin_type=True))
+                    'sample_rate': 16000, 'latency': 'balanced', 'chunk_length': 100}}, use_bin_type=True))
                 self.ready.set()
                 deadline = time.monotonic() + 60
                 while not self.cancelled.is_set() and time.monotonic() < deadline:

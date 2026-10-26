@@ -96,10 +96,23 @@ def _resolve_fish_tts_model(config):
 
 def _hermes_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=None):
     import urllib.request
-    bridge_key = (
-        os.environ.get('HERMES_API_KEY')
-        or 'hermes_standalone_secret_token_32chars'
-    ).strip().strip('\'"')
+    bridge_key = (os.environ.get('HERMES_API_KEY') or '').strip().strip('\'"')
+    if not bridge_key or bridge_key == 'hermes_standalone_secret_token_32chars':
+        for env_path in ('/opt/os-adapter/.runtime/hermes.env', '/opt/data/profiles/leo/.env'):
+            try:
+                p = Path(env_path)
+                if p.is_file():
+                    for line in p.read_text(encoding='utf-8-sig', errors='ignore').splitlines():
+                        if line.startswith('HERMES_API_KEY='):
+                            candidate = line.split('=', 1)[1].strip().strip('\'"')
+                            if candidate and candidate != 'hermes_standalone_secret_token_32chars':
+                                bridge_key = candidate
+                                break
+                if bridge_key and bridge_key != 'hermes_standalone_secret_token_32chars':
+                    break
+            except Exception:
+                pass
+    bridge_key = bridge_key or 'hermes_standalone_secret_token_32chars'
     req_rate = rate if rate in (16000, 24000) else 24000
     payload = json.dumps({
         'text': cleaned_text,
@@ -179,7 +192,7 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
         'reference_id': voice_id,
         'format': 'pcm',
         'sample_rate': rate,
-        'latency': 'low'
+        'latency': 'balanced'
     }).encode('utf-8')
     configured_model = _resolve_fish_tts_model(config)
     if _fish_working_model and configured_model in _fish_failed_models:
@@ -291,10 +304,11 @@ class FishRestSpeech:
                 else:
                     _fish_http_cooldown_until = time.monotonic() + 3.0
                 import sys
-                print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc}), falling back to NativeSpeech", file=sys.stderr)
-        from native_call_speech import pcm as native_pcm
-        for data in native_pcm(clause, self.config, self.rate, self.control):
-            self._emit_chunk(data)
+                print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc})", file=sys.stderr)
+        from native_call_speech import native_enabled, pcm as native_pcm
+        if native_enabled(self.config):
+            for data in native_pcm(clause, self.config, self.rate, self.control):
+                self._emit_chunk(data)
 
     def _worker(self):
         try:
@@ -440,7 +454,7 @@ class FreeSpeech:
                         # stalled start must not block the bounded HTTP handover.
                         socket.send(msgpack.packb({'event': 'start', 'request': {'text': '',
                             'reference_id': self.config.get('FISH_VOICE_ID') or '', 'format': 'pcm',
-                            'sample_rate': self.rate, 'latency': 'low', 'chunk_length': 60,
+                            'sample_rate': self.rate, 'latency': 'balanced', 'chunk_length': 100,
                             'condition_on_previous_chunks': True}}, use_bin_type=True))
                         self.ready.set()
                         opened = time.monotonic()

@@ -136,11 +136,11 @@ class VoiceProvider:
         if os.environ.get('FISH_VOICE_ID'):
             self.config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
         else:
-            self.config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
+            self.config.setdefault('FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13')
         if os.environ.get('FISH_VOICE_NAME'):
             self.config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
         else:
-            self.config.setdefault('FISH_VOICE_NAME', 'Jarvis')
+            self.config.setdefault('FISH_VOICE_NAME', 'Michael')
         if os.environ.get('CENTRAL_AI_CALL_SPEECH'):
             self.config['CENTRAL_AI_CALL_SPEECH'] = os.environ['CENTRAL_AI_CALL_SPEECH'].strip()
         elif self.config.get('FISH_API_KEY'):
@@ -158,7 +158,16 @@ class VoiceProvider:
         saved = load_settings(settings)
         self.config.update(saved)
         self.config['FISH_API_KEY'] = valid_fish_key(self.config.get('FISH_API_KEY'))
-        if self.config.get('FISH_API_KEY') and saved.get('CENTRAL_AI_CALL_SPEECH') != 'piper':
+        if self.config.get('FISH_VOICE_ID') in {
+            '',
+            '612b878b113047d9a770c069c8b4fdfe',
+            '31d3dd937d2944a1b06da3db533d27f9',
+            '711cf3ed00ab441a8f54a45058047b7a',
+            'bf342d9e9e5b44e0ade1ccfd1abb4815',
+        }:
+            self.config['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
+            self.config['FISH_VOICE_NAME'] = 'Michael'
+        if self.config.get('FISH_API_KEY'):
             self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
         if self.config.get('FISH_API_KEY'):
             self.config.setdefault('FISH_OS_CALL_ENGINE', 'stream')
@@ -166,8 +175,8 @@ class VoiceProvider:
             try:
                 atomic_write(Path(profile_root) / '.runtime-fish-voice.json', json.dumps({
                     'FISH_API_KEY': self.config['FISH_API_KEY'],
-                    'FISH_VOICE_ID': self.config.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe'),
-                    'FISH_VOICE_NAME': self.config.get('FISH_VOICE_NAME', 'Jarvis'),
+                    'FISH_VOICE_ID': self.config.get('FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13'),
+                    'FISH_VOICE_NAME': self.config.get('FISH_VOICE_NAME', 'Michael'),
                     'CENTRAL_AI_CALL_SPEECH': 'fish',
                 }) + '\n')
             except OSError:
