@@ -273,6 +273,8 @@ class FishRestSpeech:
         self.bytes = 0
         self.error = None
         self.queue = queue.Queue(maxsize=32)
+        # The next clause synthesizes while the current one plays: no dead air between sentences.
+        self.lanes = threading.BoundedSemaphore(2)
         self.done = threading.Event()
         self._native_fallback = None
         self.provider_error = ''
@@ -284,9 +286,14 @@ class FishRestSpeech:
         self.bytes += len(pcm)
         self.audio(pcm)
 
-    def _synthesize_clause(self, clause):
+    def _synthesize_clause(self, clause, emit=None):
         global _fish_http_cooldown_until, _fish_last_error
         self.control.check()
+        emitted = [0]
+        def out(pcm):
+            self.control.check()
+            emitted[0] += len(pcm)
+            (emit or self._emit_chunk)(pcm)
         fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
         can_try_fish = bool(fish_key or os.environ.get('HERMES_PHONE_CONVERSATION') == 'true')
         if not can_try_fish:
@@ -294,17 +301,16 @@ class FishRestSpeech:
         elif time.monotonic() < _fish_http_cooldown_until:
             self.provider_error = _fish_last_error or 'Fish TTS cooling down'
         if self._native_fallback is None and can_try_fish and time.monotonic() >= _fish_http_cooldown_until:
-            clause_bytes_before = self.bytes
             try:
-                fish_rest_tts(clause, self.config, self.rate, self._emit_chunk, self.control)
-                if self.bytes > clause_bytes_before:
+                fish_rest_tts(clause, self.config, self.rate, out, self.control)
+                if emitted[0]:
                     return
                 self.provider_error = 'Fish TTS returned no audio'
             except TurnCancelled:
                 raise
             except Exception as exc:
                 self.control.check()
-                if self.bytes > clause_bytes_before:
+                if emitted[0]:
                     raise  # Never replay a partly spoken clause through another TTS.
                 status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
                 self.provider_error = _fish_last_error = (
@@ -320,21 +326,47 @@ class FishRestSpeech:
         from native_call_speech import native_enabled, piper_available, pcm as native_pcm
         if native_enabled(self.config) or piper_available(self.config):
             for data in native_pcm(clause, self.config, self.rate, self.control):
-                self._emit_chunk(data)
+                out(data)
+
+    def _start_clause(self, clause):
+        import queue
+        chunks = queue.Queue()
+        def run():
+            try:
+                with self.lanes:
+                    self._synthesize_clause(clause, chunks.put)
+            except Exception as exc:
+                chunks.put(exc)
+            finally:
+                chunks.put(None)
+        threading.Thread(target=run, daemon=True).start()
+        return chunks
 
     def _worker(self):
+        import queue
         try:
             deadline = time.monotonic() + 180
             while time.monotonic() < deadline:
                 self.control.check()
                 try:
-                    clause = self.queue.get(timeout=.04)
+                    chunks = self.queue.get(timeout=.04)
                 except Exception:
                     continue
-                if clause is None:
+                if chunks is None:
                     self.complete = True
                     return
-                self._synthesize_clause(clause)
+                # Clauses play strictly in order even though the next one is already synthesizing.
+                while True:
+                    self.control.check()
+                    try:
+                        data = chunks.get(timeout=.04)
+                    except queue.Empty:
+                        continue
+                    if data is None:
+                        break
+                    if isinstance(data, Exception):
+                        raise data
+                    self._emit_chunk(data)
             raise RuntimeError('Speech deadline exceeded')
         except Exception as exc:
             self.error = type(exc).__name__
@@ -347,12 +379,13 @@ class FishRestSpeech:
             return
         self.control.check()
         self.first_flush = self.first_flush or time.monotonic()
-        self.queue.put_nowait(clause)
+        self.queue.put_nowait(self._start_clause(clause))
 
     def _drain_ready_clauses(self):
         while self.pending:
             if self.first_flush is None:
-                m = re.search(r'^(\s*(?:.{16,}?(?<!\d)[.!?;:]|.{26,}?(?<!\d),)\s+)', self.pending, re.S)
+                # A short opener ("Right, gotcha.") is spoken on its own so first audio starts sooner.
+                m = re.search(r'^(\s*(?:.{8,}?(?<!\d)[.!?;:]|.{26,}?(?<!\d),)\s+)', self.pending, re.S)
             else:
                 m = re.search(r'^(\s*.{45,}?(?<!\d)[.!?;:]\s+)', self.pending, re.S)
             if not m:

@@ -75,7 +75,7 @@ class CloudRecognizer:
                     },
                 )
                 control.check()
-                with open_request(oa_req, timeout=3.5) as oa_resp:
+                with open_request(oa_req, timeout=2.5) as oa_resp:
                     control.track(oa_resp)
                     oa_raw = oa_resp.read(65537)
                     control.check()
@@ -154,6 +154,10 @@ class CloudRecognizer:
                 raise ValueError('Unknown transcription source')
             models = tuple(model for model in models if model != confirmation_source)
         for model in models:
+            # A second provider after a slow failure only adds dead air; the caller's
+            # local Whisper words are the fallback instead.
+            if model != models[0] and time.monotonic() - began > 2.0:
+                break
             try:
                 result = self.request(model, pcm, control)
                 control.check()
@@ -184,15 +188,23 @@ class PreparedRecognition:
         self.pcm, self.control = pcm, control
         self.done = threading.Event()
         self.result = self.error = None
+        self._slot = recognizer.preparing
+        self._slot_guard = threading.Lock()
         def run():
             try:
                 self.result = recognizer.recognize(pcm, control, confirmation_source=confirmation_source)
             except Exception as error:
                 self.error = error
             finally:
-                recognizer.preparing.release()
+                self._release_slot()
                 self.done.set()
         threading.Thread(target=run, daemon=True).start()
+
+    def _release_slot(self):
+        with self._slot_guard:
+            if self._slot:
+                self._slot.release()
+                self._slot = None
 
     def finish(self, control):
         while not self.done.wait(.02):
@@ -204,3 +216,6 @@ class PreparedRecognition:
 
     def close(self):
         self.control.cancel()
+        # A discarded mid-pause request may still be in flight; free its slot now so
+        # the caller's real endpoint can still start cloud recognition early.
+        self._release_slot()

@@ -34,6 +34,22 @@ _NON_NAME_WORDS = {
     'available', 'hi', 'hello', 'hey',
 }
 
+_ACK = (r"(?:yes|yeah|yep|yup|no|nah|nope|correct|that['’]s\s+(?:right|correct)|all\s+correct"
+        r"|everything\s+is\s+correct|sure|okay|ok|thanks|thank\s+you|goodbye|bye|mate)")
+_SIMPLE_ACK_RE = re.compile(rf"[\s,!.?]*{_ACK}(?:[\s,!.?]+{_ACK})*[\s,!.?]*", re.I)
+_DETAIL_QUESTION_RE = re.compile(r'\b(?:name|address|street|suburb|postcode|email|e-mail|number|phone|spell)\b', re.I)
+_DETAIL_ANSWER_RE = re.compile(
+    r"\d|@|\b(?:name\s+is|i'?m\s+called|live\s+(?:at|in|on)|address|street|road|avenue|drive|court|crescent"
+    r"|email|gmail|hotmail|outlook|dot\s+com|spell(?:ed|t)?)\b", re.I)
+
+
+def _needs_precise_transcript(text, previous_reply=''):
+    """Cloud ASR only for names, addresses, emails and numbers; other turns stay on fast local Whisper."""
+    if _SIMPLE_ACK_RE.fullmatch(text or ''):
+        return False
+    question = re.search(r'[^.!?]*\?\s*$', previous_reply or '')
+    return bool(_DETAIL_ANSWER_RE.search(text or '') or (question and _DETAIL_QUESTION_RE.search(question.group(0))))
+
 
 def _cleanup_customer_call_audio(max_age_days=7, max_total_mb=500):
     """Auto-delete customer call audio recordings older than 1 week (7 days) and cap total storage."""
@@ -1109,13 +1125,13 @@ class StreamPhoneCall:
                         if (not text or quality.get('fallback_allowed')) and cloud:
                             text,quality=cloud.recognize(pcm,control)
                     elif getattr(self.service, 'recognize', None):
-                        # Fast path (~100ms, or 0ms if completed during early_quiet pause):
+                        # Fast path: local Whisper (~150ms, usually finished during the early_quiet
+                        # pause) answers the turn and the reply was already prefetched from its words.
                         early_local_done = audio.get('early_local_done') if isinstance(audio, dict) else None
                         early_entry = audio.get('early_entry') if isinstance(audio, dict) else None
-                        # Cloud ASR already in flight is the authority: never block it on CPU Whisper.
                         cloud_in_flight = bool(cloud and (early or (early_entry and early_entry.get('recognizer'))))
-                        if early_local_done is not None and early_entry is not None and not cloud_in_flight:
-                            early_local_done.wait(timeout=1.5)
+                        if early_local_done is not None and early_entry is not None:
+                            early_local_done.wait(timeout=.6 if cloud_in_flight else 1.5)
                         if early_entry and early_entry.get('local_result') is not None:
                             local_text, local_quality = early_entry['local_result']
                         elif cloud_in_flight:
@@ -1129,26 +1145,11 @@ class StreamPhoneCall:
                         if not early and early_entry and early_entry.get('recognizer'):
                             early = early_entry.get('recognizer')
                         used_local = True
-                        simple_ack_only = bool(
-                            local_text
-                            and len(local_text.split()) <= 3
-                            and re.fullmatch(
-                                r"[\s,!.?]*(?:yes|yeah|yep|yup|no|nah|nope|correct|that's\s+right|all\s+correct|everything\s+is\s+correct|sure|okay|ok|thanks|thank\s+you|goodbye|bye)[\s,!.?]*",
-                                local_text,
-                                flags=re.I,
-                            )
-                        )
+                        prev_asst = str(self.call_turns[-1].get('assistant') or '') if self.call_turns else ''
                         confident_local = (
                             bool(local_text)
                             and local_quality.get('decision') == 'accepted'
-                            and (
-                                not cloud
-                                or (
-                                    simple_ack_only
-                                    and float(local_quality.get('avg_logprob') or -2.0) >= -0.45
-                                    and float(local_quality.get('no_speech_prob') or 1.0) <= 0.30
-                                )
-                            )
+                            and not (cloud and _needs_precise_transcript(local_text, prev_asst))
                         )
                         if confident_local or not cloud:
                             text, quality = local_text, local_quality

@@ -115,6 +115,58 @@ class CustomerLineCallTests(unittest.TestCase):
             self.assertTrue(mock_proxy.called)
             self.assertTrue(any(chunk == b'\x01\x02' * 480 for chunk, _ in emitted))
 
+    def test_only_detail_turns_wait_for_cloud_transcription(self):
+        precise = whatsapp_stream._needs_precise_transcript
+        self.assertFalse(precise('Do you install batteries as well', 'Hi there! How can I help?'))
+        self.assertFalse(precise("Yeah, that's right.", 'Is that name and address all right?'))
+        self.assertTrue(precise('Mark Anthony Ebio', "Lovely, and what's your full name?"))
+        self.assertTrue(precise('I live at 12 Smith Street'))
+        self.assertTrue(precise('it is mark at gmail dot com'))
+
+    def test_fish_rest_speech_plays_clauses_in_order_while_next_synthesizes(self):
+        import time
+        import stream_conversation
+        started, emitted = [], []
+
+        def fake_tts(text, _config, _rate, audio, control=None):
+            started.append(time.monotonic())
+            time.sleep(.3 if text.startswith('Right') else .02)
+            audio(text.encode())
+
+        with patch.object(stream_conversation, 'fish_rest_tts', side_effect=fake_tts):
+            speech = stream_conversation.FishRestSpeech({'FISH_API_KEY': 'k', 'FISH_VOICE_ID': 'v'},
+                                                        emitted.append, stream_conversation.TurnControl(), rate=16000)
+            speech.text('Right, gotcha. A six kilowatt system would suit a bill that size nicely. ')
+            speech.finish()
+        self.assertEqual([b'Right, gotcha.', b'A six kilowatt system would suit a bill that size nicely.'], emitted)
+        self.assertLess(started[1] - started[0], .2, 'next clause synthesizes while the opener is still running')
+
+    def test_discarded_cloud_recognition_frees_its_slot(self):
+        import threading
+        import phone_cloud_asr
+        from stream_conversation import TurnControl
+        gate = threading.Event()
+        recognizer = phone_cloud_asr.CloudRecognizer(
+            {'OPENROUTER_API_KEY': 'k'}, request=lambda model, pcm, control: gate.wait(2) and {'text': 'hello'})
+        pcm = b'\x00\x10' * 1600
+        stale = [recognizer.prepare(pcm, TurnControl()) for _ in range(4)]
+        self.assertIsNone(recognizer.prepare(pcm, TurnControl()))
+        for prepared in stale:
+            prepared.close()
+        fresh = recognizer.prepare(pcm, TurnControl())
+        self.assertIsNotNone(fresh, 'mid-pause requests that were discarded must not block the real endpoint')
+        gate.set()
+        for prepared in (*stale, fresh):
+            prepared.done.wait(2)
+        self.assertEqual(('hello', 'accepted'), (fresh.result[0], fresh.result[1]['decision']))
+        gate.clear()
+        held = [recognizer.prepare(pcm, TurnControl()) for _ in range(5)]
+        self.assertEqual(4, sum(1 for item in held if item), 'each slot is released exactly once')
+        for item in held:
+            if item:
+                item.close()
+        gate.set()
+
 
 if __name__ == '__main__':
     unittest.main()
