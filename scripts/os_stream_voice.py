@@ -180,6 +180,8 @@ class OSStreamVoice:
             elif getattr(speech, 'provider_error', ''):
                 # Audio came from the offline backup, not the selected Fish voice.
                 emit({'type': 'status', 'state': f'Offline backup voice used - {speech.provider_error}'})
+            elif type(speech).__name__ == 'NativeSpeech':
+                emit({'type': 'status', 'state': 'Offline backup voice used - FISH_API_KEY is not configured in Box 1'})
             emit({'type':'done','timings':{'first_text_ms':round(((first or began)-began)*1000),
                 'first_audio_ms':round(((getattr(speech, 'first_audio', None) or began)-began)*1000)}})
         except TurnCancelled:
