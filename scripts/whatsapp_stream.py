@@ -12,7 +12,7 @@ import re
 import struct
 import time
 
-from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key, prewarm_openers, _is_valid_openrouter_voice_model
+from stream_conversation import Conversation, FreeSpeech, TurnControl, TurnCancelled, confirmed_text_key, _is_valid_openrouter_voice_model
 from fish_conversation import filter_playback_input, normalize_voice_greeting
 from whatsapp_audio import PhoneAudioFilter
 
@@ -1012,8 +1012,6 @@ class StreamPhoneCall:
             print(f"[StreamPhoneCall] native_conversation init fallback to fast stream: {exc}", flush=True)
 
     async def start(self):
-        # The reactions the call prompt asks every reply to open with.
-        prewarm_openers(self.speech_config, 16000, ('Oh, no worries at all.', 'Yeah, that makes sense.', 'Right, gotcha.'))
         self.task(self._warm_native_conversation())
         self.task(self.feed());self.task(self.tick())
 
@@ -1299,6 +1297,14 @@ class StreamPhoneCall:
                 stage='speech'
                 speech.finish()
                 output(b'',final=True)
+                import stream_conversation as sc
+                tts=getattr(speech,'fallback',None) or speech
+                self.service.metrics['last_tts']={
+                    'voice_id':(self.speech_config or {}).get('FISH_VOICE_ID'),
+                    'model':sc._fish_working_model or sc._resolve_fish_tts_model(self.speech_config),
+                    'offline_clauses':getattr(tts,'offline_clauses',0),
+                    'skipped_clauses':getattr(tts,'skipped_clauses',0),
+                    'provider_error':getattr(speech,'provider_error','') or ''}
                 self.service.metrics['last_tts_chunks']=framer.chunks
                 self.service.metrics['last_audio_padding_ms']=round(framer.padding/32,2)
                 self.service.metrics['last_audio_padding_avoided_ms']=round((framer.previous_padding-framer.padding)/32,2)

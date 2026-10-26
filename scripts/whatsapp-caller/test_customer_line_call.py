@@ -214,6 +214,64 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertTrue(base64.b64decode(body['input_audio']['data']).startswith(b'RIFF'))
         self.assertLessEqual(timeout, 2.5)
 
+    def test_reply_keeps_michael_voice_when_a_later_clause_fails(self):
+        import stream_conversation
+        emitted, offline = [], []
+
+        def fake_tts(text, _config, _rate, audio=None, control=None):
+            if text.startswith('Second'):
+                raise RuntimeError('Fish busy')
+            audio(b'FISH')
+
+        with patch.object(stream_conversation, 'fish_rest_tts', side_effect=fake_tts), \
+             patch.object(stream_conversation.time, 'sleep'), \
+             patch.dict(stream_conversation._opener_audio, clear=True), \
+             patch('native_call_speech.piper_available', return_value=True), \
+             patch('native_call_speech.pcm', side_effect=lambda *a, **k: offline.append(a[0]) or [b'PIPER']):
+            speech = stream_conversation.FishRestSpeech({'FISH_API_KEY': 'k', 'FISH_VOICE_ID': 'michael-voice'},
+                                                        emitted.append, stream_conversation.TurnControl(), rate=16000)
+            speech.lanes = __import__('threading').BoundedSemaphore(1)  # deterministic order for the test
+            speech.text('First clause is spoken by Fish here. Second clause fails at Fish twice. ')
+            speech.finish()
+        self.assertEqual([b'FISH'], emitted, 'no offline voice once Michael has spoken in the reply')
+        self.assertEqual([], offline)
+        self.assertEqual(1, speech.skipped_clauses)
+
+    def test_fish_400_for_one_text_does_not_switch_the_process_model(self):
+        import stream_conversation
+
+        class Resp:
+            def __init__(self, code):
+                self.status_code = code
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def raise_for_status(self):
+                pass
+
+            def iter_bytes(self, chunk_size=1920):
+                return iter([b'\x01\x02'])
+
+        models = []
+
+        class Client:
+            def stream(self, method, url, content, headers, timeout):
+                models.append(headers['model'])
+                return Resp(422 if headers['model'] == 's1' and len(models) == 1 else 200)
+
+        with patch('voice_http.client', return_value=Client()), \
+             patch.object(stream_conversation, '_fish_failed_models', set()), \
+             patch.object(stream_conversation, '_fish_working_model', None):
+            for _ in range(2):
+                stream_conversation.fish_rest_tts('Hello there.', {'FISH_API_KEY': 'k', 'FISH_VOICE_ID': 'v'},
+                                                  16000, lambda pcm: None)
+            self.assertNotIn('s1', stream_conversation._fish_failed_models)
+        self.assertEqual(['s1', 's2.1-pro-free', 's1'], models, 'the next clause goes back to the configured model')
+
     def test_discarded_cloud_recognition_frees_its_slot(self):
         import threading
         import phone_cloud_asr

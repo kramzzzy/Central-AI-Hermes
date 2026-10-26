@@ -99,22 +99,6 @@ def _opener_key(config, rate, text):
     return ((config or {}).get('FISH_VOICE_ID') or '', rate, re.sub(r'[\s.!?,;:]+$', '', text.strip()).casefold())
 
 
-def prewarm_openers(config, rate, phrases):
-    """Synthesize common openers in the background so a call's first replies start instantly."""
-    def run():
-        for phrase in phrases:
-            key = _opener_key(config, rate, phrase)
-            if key in _opener_audio or len(_opener_audio) >= 128:
-                continue
-            try:
-                pcm = fish_rest_tts(phrase, config, rate)
-                if pcm and len(pcm) % 2 == 0:
-                    _opener_audio[key] = pcm
-            except Exception:
-                pass
-    threading.Thread(target=run, daemon=True).start()
-
-
 def _resolve_fish_tts_model(config):
     raw = str((config or {}).get('FISH_TTS_MODEL') or '').strip()
     return raw or 's1'
@@ -237,7 +221,10 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
             with http_client().stream('POST', 'https://api.fish.audio/v1/tts',
                     content=payload, headers=headers, timeout=8.0) as resp:
                 if resp.status_code in {400, 404, 422}:
-                    _fish_failed_models.add(model)
+                    # Only a missing model (404) switches the whole process: a 400/422 is about this
+                    # text, and a sticky switch left Box 3 and WhatsApp on different Fish models.
+                    if resp.status_code == 404:
+                        _fish_failed_models.add(model)
                     if idx + 1 < len(models_to_try):
                         continue
                 resp.raise_for_status()
@@ -274,7 +261,8 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
                 raise
             status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
             if status_code in {400, 404, 422}:
-                _fish_failed_models.add(model)
+                if status_code == 404:
+                    _fish_failed_models.add(model)
                 if idx + 1 < len(models_to_try):
                     continue
             break
@@ -302,6 +290,8 @@ class FishRestSpeech:
         self.done = threading.Event()
         self._native_fallback = None
         self.provider_error = ''
+        self.fish_spoke = False
+        self.offline_clauses = self.skipped_clauses = 0
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _emit_chunk(self, pcm):
@@ -333,32 +323,48 @@ class FishRestSpeech:
         elif time.monotonic() < _fish_http_cooldown_until:
             self.provider_error = _fish_last_error or 'Fish TTS cooling down'
         if self._native_fallback is None and can_try_fish and time.monotonic() >= _fish_http_cooldown_until:
-            try:
-                fish_rest_tts(clause, self.config, self.rate, out, self.control)
-                if emitted[0]:
-                    if captured and len(_opener_audio) < 128:
-                        _opener_audio[opener] = b''.join(captured)
-                    return
-                self.provider_error = 'Fish TTS returned no audio'
-            except TurnCancelled:
-                raise
-            except Exception as exc:
-                self.control.check()
-                if emitted[0]:
-                    raise  # Never replay a partly spoken clause through another TTS.
-                status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
-                self.provider_error = _fish_last_error = (
-                    f'Fish TTS HTTP {status_code}' if status_code else f'Fish TTS {type(exc).__name__}')
-                # Only credential/credit failures pause Fish; a transient error must
-                # not silently skip the next clauses.
-                if status_code in {401, 402, 403} or any(code in str(exc) for code in ('401', '402', '403')):
-                    _fish_http_cooldown_until = time.monotonic() + 120.0
-                import sys
-                print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc})", file=sys.stderr)
-        # Silence is worse than a different voice: when the cloud voice produced
-        # nothing for this clause, speak it with the bundled offline voice.
+            for attempt in range(2):
+                if attempt:
+                    # One retry: a busy (429) or blipped Fish beats switching voices.
+                    time.sleep(.4)
+                    self.control.check()
+                try:
+                    fish_rest_tts(clause, self.config, self.rate, out, self.control)
+                    if emitted[0]:
+                        self.fish_spoke = True
+                        if captured and len(_opener_audio) < 128:
+                            _opener_audio[opener] = b''.join(captured)
+                        return
+                    self.provider_error = 'Fish TTS returned no audio'
+                except TurnCancelled:
+                    raise
+                except Exception as exc:
+                    self.control.check()
+                    if emitted[0]:
+                        raise  # Never replay a partly spoken clause through another TTS.
+                    status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
+                    self.provider_error = _fish_last_error = (
+                        f'Fish TTS HTTP {status_code}' if status_code else f'Fish TTS {type(exc).__name__}')
+                    import sys
+                    print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc})", file=sys.stderr)
+                    # Only credential/credit failures pause Fish; a transient error must
+                    # not silently skip the next clauses.
+                    if status_code in {401, 402, 403} or any(code in str(exc) for code in ('401', '402', '403')):
+                        _fish_http_cooldown_until = time.monotonic() + 120.0
+                        break
+                    if status_code in {400, 404, 422}:
+                        break  # Fish refused this text; the same request will not succeed.
+        if self.fish_spoke:
+            # The caller already hears Michael in this reply: a missing clause beats a voice switch.
+            # shortcut: with two clauses in flight, a failure racing the first Fish clause can still
+            # reach the offline voice; upgrade to per-reply voice locking if that is ever heard.
+            self.skipped_clauses += 1
+            return
+        # Fish is unavailable for this reply: the bundled offline voice beats silence, and the
+        # caller hears one consistent voice because no Michael audio was spoken before it.
         from native_call_speech import native_enabled, piper_available, pcm as native_pcm
         if native_enabled(self.config) or piper_available(self.config):
+            self.offline_clauses += 1
             for data in native_pcm(clause, self.config, self.rate, self.control):
                 out(data)
 
