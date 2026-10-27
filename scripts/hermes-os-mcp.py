@@ -661,6 +661,7 @@ def manage_video(
     prompt: str = '',
     target_duration_sec: int = 30,
     aspect_ratio: str = '9:16',
+    video_model: str = 'auto',
     voice_profile_id: str = '',
     project_folder: str = 'Social Visuals',
     project_id: str = '',
@@ -668,7 +669,7 @@ def manage_video(
     visual_prompt: str = '',
     voice_text: str = '',
 ) -> dict:
-    """Manage the Video & Voice Clone Studio in Box 3: list saved cloned voices ('list_voices'), list multi-scene video projects ('list_projects'), create/render a 10s–58s video project with optional cloned voice ('create_project'), or revise a single 10s scene ('revise_scene') and re-stitch."""
+    """Manage the Video & Voice Clone Studio in Box 3: list auto-sensed video generation models with live USD pricing ('list_models'), list saved cloned voices ('list_voices'), list multi-scene video projects ('list_projects'), create/render a 10s–58s video project with selectable video_model and optional cloned voice ('create_project'), or revise a single 10s scene ('revise_scene') and re-stitch."""
     payload = {
         k: v for k, v in {
             'action': action,
@@ -676,6 +677,7 @@ def manage_video(
             'prompt': prompt,
             'target_duration_sec': target_duration_sec,
             'aspect_ratio': aspect_ratio,
+            'video_model': video_model,
             'voice_profile_id': voice_profile_id,
             'project_folder': project_folder,
             'project_id': project_id,

@@ -370,13 +370,15 @@ def generate(body):
     if not isinstance(body, dict):
         raise ArtworkError('Supply a valid artwork request payload.', 400)
     mode = body.get('mode')
-    if mode in ('voice_clone', 'voice_tts', 'video_plan', 'video_scene', 'video_stitch'):
+    if mode in ('voice_clone', 'voice_tts', 'video_models', 'video_plan', 'video_scene', 'video_stitch'):
         import hermes_video
         try:
             if mode == 'voice_clone':
                 return hermes_video.clone_voice_model(body)
             if mode == 'voice_tts':
                 return hermes_video.generate_voice_tts(body)
+            if mode == 'video_models':
+                return hermes_video.list_video_models(body)
             if mode == 'video_plan':
                 return hermes_video.plan_video_storyboard(body)
             if mode == 'video_scene':

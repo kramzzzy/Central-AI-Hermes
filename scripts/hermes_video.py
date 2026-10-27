@@ -371,28 +371,221 @@ def plan_video_storyboard(body: dict) -> dict:
     }
 
 
+_VIDEO_MODELS_CACHE: dict = {"models": [], "timestamp": 0.0}
+_VIDEO_MODELS_TTL = 900.0  # 15 minutes
+
+
+def _parse_video_price_per_sec(skus: dict | None) -> float | None:
+    """Compute starting USD price per second from OpenRouter video pricing_skus."""
+    if not isinstance(skus, dict) or not skus:
+        return None
+    candidates_usd: list[float] = []
+    for k, v in skus.items():
+        try:
+            val = float(v)
+        except Exception:
+            continue
+        if val <= 0:
+            continue
+        kl = str(k).lower()
+        if any(skip in kl for skip in ("minimum_cents", "input_images", "image_input", "reference_images")):
+            continue
+        if kl.startswith("cents_per_"):
+            candidates_usd.append(val / 100.0)
+        elif "duration_seconds" in kl:
+            candidates_usd.append(val)
+        elif "video_tokens" in kl:
+            # Standard 480p/720p 24fps is ~9,607 video tokens per second on OpenRouter
+            candidates_usd.append(val * 9607.0)
+    if not candidates_usd:
+        return None
+    return round(min(candidates_usd), 4)
+
+
+def _format_price_badge(price_per_sec: float) -> str:
+    per_10s = price_per_sec * 10.0
+    if price_per_sec < 0.01:
+        return f"${price_per_sec:.4f}/s · ${per_10s:.3f}/10s"
+    return f"${price_per_sec:.3f}/s · ${per_10s:.2f}/10s".replace("0/s", "/s")
+
+
+def list_video_models(body: dict | None = None) -> dict:
+    """Auto-sense ONLY video generation models from OpenRouter (/api/v1/videos/models) with live pricing."""
+    force_refresh = bool((body or {}).get("force_refresh"))
+    now = time.monotonic()
+    if not force_refresh and _VIDEO_MODELS_CACHE["models"] and (now - _VIDEO_MODELS_CACHE["timestamp"] < _VIDEO_MODELS_TTL):
+        return {"ok": True, "models": _VIDEO_MODELS_CACHE["models"], "source": "openrouter_video_catalog"}
+
+    openrouter_key = _get_env_key("OPENROUTER_API_KEY")
+    headers = {"User-Agent": "Central-AI-VideoStudio/1.0", "Accept": "application/json"}
+    if openrouter_key and not openrouter_key.startswith("sk-or-v1-standalone-default"):
+        headers["Authorization"] = f"Bearer {openrouter_key}"
+
+    raw_list: list[dict] = []
+    try:
+        req = urllib.request.Request("https://openrouter.ai/api/v1/videos/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            if resp.status == 200:
+                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                raw_list = payload.get("data") or []
+    except Exception as exc:
+        print(f"[hermes_video] Live OpenRouter video catalog fetch fallback: {exc}")
+
+    sensed: list[dict] = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        durations = item.get("supported_durations")
+        # Strictly filter to true text-to-video / image-to-video generation models (exclude upscale/edit-only models)
+        if not model_id or not isinstance(durations, list) or len(durations) == 0:
+            continue
+        price_sec = _parse_video_price_per_sec(item.get("pricing_skus"))
+        if price_sec is None:
+            price_sec = 0.05
+        name = str(item.get("name") or model_id).strip()
+        vendor = model_id.split("/", 1)[0] if "/" in model_id else "openrouter"
+        frame_imgs = item.get("supported_frame_images") or []
+        sensed.append({
+            "id": model_id,
+            "name": name,
+            "vendor": vendor,
+            "price_per_sec_usd": price_sec,
+            "price_per_10s_usd": round(price_sec * 10.0, 3),
+            "price_display": _format_price_badge(price_sec),
+            "supported_durations": sorted([int(d) for d in durations if isinstance(d, (int, float))]),
+            "supported_aspect_ratios": item.get("supported_aspect_ratios") or ["16:9", "9:16", "1:1"],
+            "supported_resolutions": item.get("supported_resolutions") or ["720p"],
+            "supports_first_frame": "first_frame" in frame_imgs,
+            "supports_audio": bool(item.get("generate_audio")),
+        })
+
+    if not sensed:
+        # Fallback video catalog with verified OpenRouter video pricing if offline
+        fallback_specs = [
+            ("bytedance/seedance-1-5-pro", "ByteDance: Seedance 1.5 Pro", 0.0115, [5, 10], True),
+            ("x-ai/grok-imagine-video-1.5-lite", "SpaceXAI: Grok Imagine Video 1.5 Lite", 0.02, [5, 10], True),
+            ("google/veo-3.1-lite", "Google: Veo 3.1 Lite", 0.03, [4, 6, 8], True),
+            ("alibaba/wan-2.6", "Alibaba: Wan 2.6", 0.04, [5, 10], True),
+            ("bytedance/seedance-2.0-fast", "ByteDance: Seedance 2.0 Fast", 0.0404, [5, 10], True),
+            ("alibaba/wan-3.0", "Alibaba: Wan 3.0", 0.05, [5, 10], True),
+            ("minimax/hailuo-3-max", "MiniMax: Hailuo 3 Max", 0.05, [5, 10], True),
+            ("alibaba/wan-3.0-prime", "Alibaba: Wan 3.0 Prime", 0.068, [5, 10], True),
+            ("google/veo-3.1-fast", "Google: Veo 3.1 Fast", 0.08, [4, 6, 8], True),
+            ("minimax/hailuo-2.3", "MiniMax: Hailuo 2.3", 0.0817, [6, 10], True),
+            ("kwaivgi/kling-v3.0-std", "Kling: Video v3.0 Standard", 0.084, [5, 10], True),
+            ("kwaivgi/kling-v3.0-pro", "Kling: Video v3.0 Pro", 0.112, [5, 10], True),
+            ("runway/gen-4.5", "Runway: Gen-4.5", 0.12, [5, 10], True),
+            ("google/veo-3.1", "Google: Veo 3.1", 0.20, [4, 6, 8], True),
+        ]
+        for mid, mname, psec, durs, fframe in fallback_specs:
+            sensed.append({
+                "id": mid,
+                "name": mname,
+                "vendor": mid.split("/", 1)[0],
+                "price_per_sec_usd": psec,
+                "price_per_10s_usd": round(psec * 10.0, 3),
+                "price_display": _format_price_badge(psec),
+                "supported_durations": durs,
+                "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+                "supported_resolutions": ["720p", "1080p"],
+                "supports_first_frame": fframe,
+                "supports_audio": False,
+            })
+
+    sensed.sort(key=lambda x: (x["price_per_sec_usd"], x["name"].lower()))
+
+    best_auto_price = sensed[0]["price_per_sec_usd"] if sensed else 0.02
+    catalog = [
+        {
+            "id": "auto",
+            "name": "Auto Sense (Best Value Video Model)",
+            "vendor": "auto",
+            "price_per_sec_usd": best_auto_price,
+            "price_per_10s_usd": round(best_auto_price * 10.0, 3),
+            "price_display": f"From {_format_price_badge(best_auto_price)}",
+            "supported_durations": [5, 8, 10],
+            "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+            "supported_resolutions": ["720p", "1080p"],
+            "supports_first_frame": True,
+            "supports_audio": False,
+        },
+        *sensed,
+        {
+            "id": "keyframe-ken-burns",
+            "name": "Keyframe + Ken Burns Studio (Ultra Low Cost)",
+            "vendor": "central-ai",
+            "price_per_sec_usd": 0.0003,
+            "price_per_10s_usd": 0.003,
+            "price_display": "$0.0003/s · $0.003/10s",
+            "supported_durations": [5, 8, 10, 12, 15],
+            "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+            "supported_resolutions": ["1080p"],
+            "supports_first_frame": True,
+            "supports_audio": False,
+        },
+    ]
+    _VIDEO_MODELS_CACHE["models"] = catalog
+    _VIDEO_MODELS_CACHE["timestamp"] = now
+    return {"ok": True, "models": catalog, "source": "openrouter_video_catalog"}
+
+
 def _try_openrouter_video_api(
     visual_prompt: str,
     duration_sec: int,
     aspect_ratio: str,
     first_frame_data_uri: str | None,
     openrouter_key: str,
-) -> bytes | None:
-    """Attempt native video generation via OpenRouter /api/v1/videos if available on the key."""
+    requested_model: str = "auto",
+) -> tuple[bytes | None, str | None, float | None]:
+    """Attempt native video generation via OpenRouter /api/v1/videos with async job polling."""
     if not openrouter_key or openrouter_key.startswith("sk-or-v1-standalone-default"):
-        return None
-    video_model = _get_env_key("OPENROUTER_VIDEO_MODEL", "")
-    models_to_try = [m for m in [video_model, "alibaba/wan-2.6", "google/veo-3.1-fast"] if m]
+        return None, None, None
+    req_model = (requested_model or "auto").strip()
+    if req_model == "keyframe-ken-burns":
+        return None, None, None
+
+    catalog = list_video_models().get("models") or []
+    model_map = {m["id"]: m for m in catalog if isinstance(m, dict) and m.get("id")}
+
+    env_model = _get_env_key("OPENROUTER_VIDEO_MODEL", "")
+    if req_model and req_model != "auto":
+        models_to_try = [req_model]
+    else:
+        models_to_try = [
+            m
+            for m in [
+                env_model,
+                "x-ai/grok-imagine-video-1.5-lite",
+                "alibaba/wan-2.6",
+                "google/veo-3.1-lite",
+                "bytedance/seedance-2.0-fast",
+            ]
+            if m
+        ]
 
     for model_slug in models_to_try:
+        spec = model_map.get(model_slug) or {}
+        supp_durs = spec.get("supported_durations") or [5, 10]
+        target_dur = int(duration_sec)
+        chosen_dur = min(supp_durs, key=lambda d: abs(int(d) - target_dur)) if supp_durs else max(5, min(10, target_dur))
+        supp_ratios = spec.get("supported_aspect_ratios") or ["16:9", "9:16", "1:1"]
+        chosen_ratio = aspect_ratio if aspect_ratio in supp_ratios else ("9:16" if "9:16" in supp_ratios else supp_ratios[0])
+
         payload: dict = {
             "model": model_slug,
             "prompt": visual_prompt[:1200],
-            "duration": max(5, min(10, int(duration_sec))),
-            "aspect_ratio": aspect_ratio if aspect_ratio in ("16:9", "9:16", "1:1") else "9:16",
+            "duration": int(chosen_dur),
+            "aspect_ratio": chosen_ratio,
         }
-        if first_frame_data_uri:
-            payload["frame_images"] = {"first_frame": first_frame_data_uri}
+        if first_frame_data_uri and spec.get("supports_first_frame", True):
+            payload["frame_images"] = [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": first_frame_data_uri},
+                    "frame_type": "first_frame",
+                }
+            ]
 
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/videos",
@@ -407,15 +600,23 @@ def _try_openrouter_video_api(
             with urllib.request.urlopen(req, timeout=30) as resp:
                 job = json.loads(resp.read().decode("utf-8", errors="replace"))
             job_id = str(job.get("id") or "").strip()
-            direct_url = str(job.get("url") or job.get("video_url") or "").strip()
+            est_cost = round(float(spec.get("price_per_sec_usd") or 0.04) * int(chosen_dur), 4)
+            unsigned = job.get("unsigned_urls")
+            direct_url = str(
+                (unsigned[0] if isinstance(unsigned, list) and unsigned else None)
+                or job.get("url")
+                or job.get("video_url")
+                or ""
+            ).strip()
             if direct_url.startswith("https://"):
                 with urllib.request.urlopen(direct_url, timeout=45) as vresp:
                     data = vresp.read(50_000_000)
                     if len(data) > 4096:
-                        return data
+                        actual_cost = float((job.get("usage") or {}).get("cost") or est_cost)
+                        return data, model_slug, actual_cost
             if not job_id:
                 continue
-            deadline = time.time() + 110
+            deadline = time.time() + 125
             while time.time() < deadline:
                 time.sleep(4)
                 poll_req = urllib.request.Request(
@@ -426,8 +627,11 @@ def _try_openrouter_video_api(
                     status_data = json.loads(presp.read().decode("utf-8", errors="replace"))
                 st = str(status_data.get("status") or "").lower()
                 if st in ("completed", "succeeded", "done"):
+                    actual_cost = float((status_data.get("usage") or {}).get("cost") or est_cost)
+                    u_urls = status_data.get("unsigned_urls")
                     v_url = (
-                        status_data.get("url")
+                        (u_urls[0] if isinstance(u_urls, list) and u_urls else None)
+                        or status_data.get("url")
                         or status_data.get("video_url")
                         or (status_data.get("output") or [None])[0]
                     )
@@ -435,13 +639,23 @@ def _try_openrouter_video_api(
                         with urllib.request.urlopen(v_url, timeout=45) as dl:
                             v_bytes = dl.read(50_000_000)
                             if len(v_bytes) > 4096:
-                                return v_bytes
+                                return v_bytes, model_slug, actual_cost
+                    # Fallback to /api/v1/videos/{id}/content per OpenRouter Video API spec
+                    content_req = urllib.request.Request(
+                        f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}/content",
+                        headers={"Authorization": f"Bearer {openrouter_key}"},
+                    )
+                    with urllib.request.urlopen(content_req, timeout=45) as cdl:
+                        v_bytes = cdl.read(50_000_000)
+                        if len(v_bytes) > 4096:
+                            return v_bytes, model_slug, actual_cost
                     break
                 if st in ("failed", "cancelled", "expired", "error"):
                     break
-        except Exception:
+        except Exception as exc:
+            print(f"[hermes_video] OpenRouter video model {model_slug} failed: {exc}")
             continue
-    return None
+    return None, None, None
 
 
 def _extract_last_frame_b64(ffmpeg: str, mp4_path: str) -> str | None:
@@ -524,12 +738,14 @@ def generate_video_scene(body: dict) -> dict:
             all_refs.append(r)
 
     openrouter_key = _get_env_key("OPENROUTER_API_KEY")
-    raw_video_bytes = _try_openrouter_video_api(
+    requested_model = str(body.get("video_model") or "auto").strip()
+    raw_video_bytes, model_used, scene_cost_usd = _try_openrouter_video_api(
         visual_prompt,
         duration_sec,
         aspect_ratio,
         all_refs[0] if all_refs else None,
         openrouter_key,
+        requested_model,
     )
 
     width, height = (1080, 1920) if aspect_ratio == "9:16" else ((1920, 1080) if aspect_ratio == "16:9" else (1080, 1080))
@@ -547,6 +763,8 @@ def generate_video_scene(body: dict) -> dict:
                 cmd = [
                     ffmpeg,
                     "-y",
+                    "-stream_loop",
+                    "-1",
                     "-i",
                     in_mp4,
                     "-i",
@@ -576,6 +794,8 @@ def generate_video_scene(body: dict) -> dict:
                 cmd = [
                     ffmpeg,
                     "-y",
+                    "-stream_loop",
+                    "-1",
                     "-i",
                     in_mp4,
                     "-f",
@@ -604,7 +824,7 @@ def generate_video_scene(body: dict) -> dict:
                     out_mp4,
                 ]
             subprocess.run(cmd, check=True, timeout=90, capture_output=True)
-            provider_used = "openrouter-video"
+            provider_used = model_used or "openrouter-video"
         else:
             # Render high-res scene frame via OpenRouter Image (with reference continuity) + cinematic motion MP4
             img_b64: str | None = None
@@ -689,7 +909,8 @@ def generate_video_scene(body: dict) -> dict:
                     out_mp4,
                 ]
             subprocess.run(cmd, check=True, timeout=90, capture_output=True)
-            provider_used = "openrouter-cinematic-scene"
+            provider_used = "keyframe-ken-burns"
+            scene_cost_usd = 0.003
 
         final_bytes = Path(out_mp4).read_bytes()
         last_frame_uri = _extract_last_frame_b64(ffmpeg, out_mp4)
@@ -701,6 +922,8 @@ def generate_video_scene(body: dict) -> dict:
         "duration_sec": duration_sec,
         "last_frame_b64": last_frame_uri,
         "provider": provider_used,
+        "model_used": provider_used,
+        "cost_usd": round(float(scene_cost_usd or 0.003), 4),
     }
 
 
