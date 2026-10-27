@@ -174,6 +174,68 @@ def _hermes_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=None):
     raise RuntimeError('Hermes TTS proxy unavailable')
 
 
+def _voice_service_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=None):
+    import urllib.request
+    voice_key = ''
+    try:
+        keyfile = Path('/data/voice-key')
+        if keyfile.is_file():
+            voice_key = keyfile.read_text(encoding='utf-8', errors='ignore').strip()
+    except Exception:
+        pass
+    if not voice_key:
+        voice_key = (os.environ.get('HERMES_API_KEY') or 'hermes_standalone_secret_token_32chars').strip().strip('\'"')
+    req_rate = rate if rate in (16000, 24000) else 24000
+    payload = json.dumps({
+        'text': cleaned_text,
+        'voice_id': voice_id or 'a30d099a643d4173836cfee1d8ae6c13',
+        'voice': 'michael',
+        'sample_rate': req_rate,
+    }).encode('utf-8')
+    headers = {
+        'Authorization': 'Bearer ' + voice_key,
+        'Content-Type': 'application/json',
+    }
+    last_err = None
+    for base_url in ('http://voice:8081', 'http://127.0.0.1:8081'):
+        try:
+            req = urllib.request.Request(f'{base_url}/tts', data=payload, headers=headers, method='POST')
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                if resp.status != 200:
+                    continue
+                if audio is None:
+                    return resp.read()
+                if control:
+                    control.track(resp)
+                carry, size, deadline = b'', 0, time.monotonic() + 180
+                while True:
+                    if control:
+                        control.check()
+                    if time.monotonic() > deadline:
+                        raise RuntimeError('Speech deadline exceeded')
+                    chunk = resp.read(4096)
+                    if not chunk:
+                        break
+                    data = carry + chunk
+                    cut = len(data) - len(data) % 2
+                    carry = data[cut:]
+                    if cut:
+                        pcm_chunk = data[:cut]
+                        size += len(pcm_chunk)
+                        if size > rate * 2 * 180:
+                            raise RuntimeError('Speech size exceeded')
+                        if control:
+                            control.check()
+                        audio(pcm_chunk)
+                return b''
+        except Exception as exc:
+            last_err = exc
+            continue
+    if last_err:
+        raise last_err
+    raise RuntimeError('Voice service TTS proxy unavailable')
+
+
 def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
     global _fish_working_model
     from voice_http import client as http_client
@@ -188,6 +250,13 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
         except Exception:
             pass
     voice_id = (config.get('FISH_VOICE_ID') or '').strip()
+    if voice_id in {
+        '612b878b113047d9a770c069c8b4fdfe',
+        '31d3dd937d2944a1b06da3db533d27f9',
+        '711cf3ed00ab441a8f54a45058047b7a',
+        'bf342d9e9e5b44e0ade1ccfd1abb4815',
+    }:
+        voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
     if not voice_id or not text or not text.strip():
         return b''
     cleaned_text = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', text, flags=re.I).strip()
@@ -196,6 +265,8 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
     if not key:
         if os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
             return _hermes_proxy_tts(cleaned_text, voice_id, rate, audio, control)
+        if Path('/data/voice-key').is_file():
+            return _voice_service_proxy_tts(cleaned_text, voice_id, rate, audio, control)
         return b''
     payload = json.dumps({
         'text': cleaned_text,
@@ -266,8 +337,14 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
                 if idx + 1 < len(models_to_try):
                     continue
             break
-    if not emitted_any and os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
-        return _hermes_proxy_tts(cleaned_text, voice_id, rate, audio, control)
+    if not emitted_any:
+        if os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
+            return _hermes_proxy_tts(cleaned_text, voice_id, rate, audio, control)
+        if Path('/data/voice-key').is_file():
+            try:
+                return _voice_service_proxy_tts(cleaned_text, voice_id, rate, audio, control)
+            except Exception:
+                pass
     if last_exc:
         raise last_exc
     return b''
@@ -285,7 +362,7 @@ class FishRestSpeech:
         self.bytes = 0
         self.error = None
         self.queue = queue.Queue(maxsize=32)
-        # The next clause synthesizes while the current one plays: no dead air between sentences.
+        # Synthesize the next clause while the current one is still arriving, but cap concurrent Fish calls.
         self.lanes = threading.BoundedSemaphore(2)
         self.done = threading.Event()
         self._native_fallback = None
@@ -317,7 +394,20 @@ class FishRestSpeech:
             out(cached)
             return
         fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
-        can_try_fish = bool(fish_key or os.environ.get('HERMES_PHONE_CONVERSATION') == 'true')
+        if not fish_key:
+            try:
+                from central_ai_integrations import discover_fish_credentials, valid_fish_key
+                discovered = discover_fish_credentials('/opt/data')
+                fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
+                if fish_key and isinstance(self.config, dict):
+                    self.config['FISH_API_KEY'] = fish_key
+            except Exception:
+                pass
+        can_try_fish = bool(
+            fish_key
+            or os.environ.get('HERMES_PHONE_CONVERSATION') == 'true'
+            or Path('/data/voice-key').is_file()
+        )
         if not can_try_fish:
             self.provider_error = 'Fish API key is not configured'
         elif time.monotonic() < _fish_http_cooldown_until:
@@ -354,19 +444,8 @@ class FishRestSpeech:
                         break
                     if status_code in {400, 404, 422}:
                         break  # Fish refused this text; the same request will not succeed.
-        if self.fish_spoke:
-            # The caller already hears Michael in this reply: a missing clause beats a voice switch.
-            # shortcut: with two clauses in flight, a failure racing the first Fish clause can still
-            # reach the offline voice; upgrade to per-reply voice locking if that is ever heard.
-            self.skipped_clauses += 1
-            return
-        # Fish is unavailable for this reply: the bundled offline voice beats silence, and the
-        # caller hears one consistent voice because no Michael audio was spoken before it.
-        from native_call_speech import native_enabled, piper_available, pcm as native_pcm
-        if native_enabled(self.config) or piper_available(self.config):
-            self.offline_clauses += 1
-            for data in native_pcm(clause, self.config, self.rate, self.control):
-                out(data)
+        self.skipped_clauses += 1
+        return
 
     def _start_clause(self, clause):
         import queue
@@ -460,10 +539,6 @@ class FishRestSpeech:
 class FreeSpeech:
     """One free synthesis socket per reply; start it while the model is thinking."""
     def __new__(cls, config=None, audio=None, control=None, rate=16000):
-        if config:
-            from native_call_speech import native_enabled, NativeSpeech
-            if native_enabled(config):
-                return NativeSpeech(config, audio, control, rate)
         return super().__new__(cls)
 
     def __init__(self, config, audio, control, rate=16000):

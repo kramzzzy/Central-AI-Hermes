@@ -40,34 +40,48 @@ def discover_fish_credentials(root='/opt/data'):
     env_key = valid_fish_key(os.environ.get('FISH_API_KEY'))
     if env_key:
         result['FISH_API_KEY'] = env_key
-    for json_name in ('.runtime-fish-voice.json', '.app-voice.json'):
-        path = base / json_name
-        try:
-            if path.is_file() and not path.is_symlink():
-                data = json.loads(path.read_text(encoding='utf-8'))
-                if isinstance(data, dict):
-                    k = valid_fish_key(data.get('FISH_API_KEY'))
-                    if k and not result.get('FISH_API_KEY'):
-                        result['FISH_API_KEY'] = k
-                    for vk in ('FISH_VOICE_ID', 'FISH_VOICE_NAME', 'CENTRAL_AI_CALL_SPEECH'):
-                        if data.get(vk) and vk not in result:
-                            result[vk] = str(data[vk]).strip()
-        except Exception:
-            pass
+    search_roots = [base]
+    for extra_root in (Path('/data'), Path('/opt/os-adapter/.runtime')):
+        if extra_root not in search_roots:
+            search_roots.append(extra_root)
+    for search_dir in search_roots:
+        for json_name in ('.runtime-fish-voice.json', '.app-voice.json'):
+            path = search_dir / json_name
+            try:
+                if path.is_file() and not path.is_symlink():
+                    data = json.loads(path.read_text(encoding='utf-8'))
+                    if isinstance(data, dict):
+                        k = valid_fish_key(data.get('FISH_API_KEY'))
+                        if k and not result.get('FISH_API_KEY'):
+                            result['FISH_API_KEY'] = k
+                        for vk in ('FISH_VOICE_ID', 'FISH_VOICE_NAME', 'CENTRAL_AI_CALL_SPEECH'):
+                            if data.get(vk) and vk not in result:
+                                result[vk] = str(data[vk]).strip()
+            except Exception:
+                pass
     if not result.get('FISH_API_KEY'):
-        profiles_dir = base / 'profiles'
         candidates = []
+        for idx, env_file in enumerate((
+            base / '.env',
+            Path('/opt/os-adapter/.runtime/hermes.env'),
+            Path('/data/.env'),
+            Path('/data/voice/.env'),
+        )):
+            candidates.append((-1, f'{idx:02d}', env_file))
+        profiles_dir = base / 'profiles'
         try:
             if profiles_dir.is_dir():
                 for env_file in sorted(profiles_dir.glob('*/.env')):
                     name = env_file.parent.name
                     priority = 0 if name.startswith('team-owner-') else (1 if name == 'leo' else 2)
-                    candidates.append((priority, env_file))
-                candidates.sort(key=lambda item: (item[0], str(item[1])))
+                    candidates.append((priority, str(env_file), env_file))
+                candidates.sort(key=lambda item: (item[0], item[1]))
         except Exception:
             pass
-        for _, env_file in candidates:
+        for _, _, env_file in candidates:
             try:
+                if not env_file.is_file():
+                    continue
                 for line in env_file.read_text(encoding='utf-8-sig', errors='ignore').splitlines():
                     if line.strip().startswith('#') or '=' not in line:
                         continue
@@ -81,6 +95,16 @@ def discover_fish_credentials(root='/opt/data'):
                     break
             except Exception:
                 pass
+    if result.get('FISH_VOICE_ID') in {
+        '612b878b113047d9a770c069c8b4fdfe',
+        '31d3dd937d2944a1b06da3db533d27f9',
+        '711cf3ed00ab441a8f54a45058047b7a',
+        'bf342d9e9e5b44e0ade1ccfd1abb4815',
+    }:
+        result['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
+        result['FISH_VOICE_NAME'] = 'Michael'
+    if result.get('CENTRAL_AI_CALL_SPEECH') == 'piper':
+        result['CENTRAL_AI_CALL_SPEECH'] = 'fish'
     return result
 
 

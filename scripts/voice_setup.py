@@ -22,7 +22,10 @@ def load_settings(settings):
     allowed = {'CENTRAL_AI_CALL_SPEECH', 'FISH_API_KEY', 'FISH_VOICE_ID', 'FISH_VOICE_NAME', 'FISH_OS_CALL_ENGINE', 'FISH_ASR_ENABLED'}
     if not isinstance(value, dict) or set(value) - allowed or any(not isinstance(v, str) for v in value.values()):
         raise RuntimeError('Invalid private voice settings')
-    return value
+    cleaned = {k: v for k, v in value.items() if v}
+    if cleaned.get('CENTRAL_AI_CALL_SPEECH') == 'piper':
+        cleaned['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+    return cleaned
 
 
 def validate(value):
@@ -56,7 +59,7 @@ def configure(settings, value):
         if not voice_id:
             raise ValueError('Fish Voice ID is not configured in backend')
         changes.update(FISH_API_KEY=key, FISH_VOICE_ID=voice_id,
-                       FISH_VOICE_NAME='Jarvis', FISH_OS_CALL_ENGINE='stream', FISH_ASR_ENABLED='false')
+                       FISH_VOICE_NAME='Michael', FISH_OS_CALL_ENGINE='stream', FISH_ASR_ENABLED='false')
     provider.config.update(changes)
     if not provider.status().get('realtime'):
         raise ValueError('This voice provider is not ready. Check its settings or choose Set up later.')

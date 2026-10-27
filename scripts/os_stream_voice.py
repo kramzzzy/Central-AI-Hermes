@@ -48,7 +48,10 @@ class OSStreamVoice:
             with self.guard:
                 if call in self.contexts: raise ValueError('Call already started')
                 if len(self.contexts) >= 4: raise RuntimeError('Voice calls are busy')
-                config = dict((self.team_voice if scope.get('assistant') else self.voice).config)
+                provider = self.team_voice if scope.get('assistant') else self.voice
+                if hasattr(provider, 'refresh_credentials'):
+                    provider.refresh_credentials()
+                config = dict(provider.config)
                 if not config.get('FISH_API_KEY'):
                     try:
                         from central_ai_integrations import discover_fish_credentials, valid_fish_key
@@ -58,14 +61,9 @@ class OSStreamVoice:
                             config['FISH_API_KEY'] = fish_key
                     except Exception:
                         pass
-                voice_id = body.get('voice_id')
-                if not voice_id and body.get('voice') == 'jarvis':
-                    voice_id = '612b878b113047d9a770c069c8b4fdfe'
-                elif not voice_id:
-                    voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
-                config['FISH_VOICE_ID'] = voice_id
-                if config.get('FISH_API_KEY'):
-                    config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+                config['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
+                config['FISH_VOICE_NAME'] = 'Michael'
+                config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
                 self.contexts[call] = {'identity': identity, 'scope': dict(scope), 'config': config,
                     'conversation': self.calls.conversation(call, scope), 'control': None, 'turn': None,
                     'until': time.monotonic()+180, 'greeting': call_greeting(body.get('display_name', '')),
@@ -80,22 +78,18 @@ class OSStreamVoice:
                 if item['turn'] == body.get('turn_id') and item['control']: item['control'].cancel()
                 return handler.reply(200, {'stopped': True})
             if action not in {'turn', 'greeting', 'notice'}: raise ValueError('Unsupported voice action')
-            turn_voice_id = body.get('voice_id')
-            if not turn_voice_id and body.get('voice') == 'jarvis':
-                turn_voice_id = '612b878b113047d9a770c069c8b4fdfe'
-            elif not turn_voice_id and body.get('voice') == 'michael':
-                turn_voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
-            if turn_voice_id:
-                item['config']['FISH_VOICE_ID'] = turn_voice_id
-            elif not item['config'].get('FISH_VOICE_ID') or item['config'].get('FISH_VOICE_ID') in {
-                '612b878b113047d9a770c069c8b4fdfe',
-                '31d3dd937d2944a1b06da3db533d27f9',
-                '711cf3ed00ab441a8f54a45058047b7a',
-                'bf342d9e9e5b44e0ade1ccfd1abb4815',
-            }:
-                item['config']['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-            if item['config'].get('FISH_API_KEY'):
-                item['config']['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+            if not item['config'].get('FISH_API_KEY'):
+                try:
+                    from central_ai_integrations import discover_fish_credentials, valid_fish_key
+                    discovered = discover_fish_credentials('/opt/data')
+                    fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
+                    if fish_key:
+                        item['config']['FISH_API_KEY'] = fish_key
+                except Exception:
+                    pass
+            item['config']['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
+            item['config']['FISH_VOICE_NAME'] = 'Michael'
+            item['config']['CENTRAL_AI_CALL_SPEECH'] = 'fish'
             turn = str(UUID(body['turn_id']))
             prior_playback = [entry['text'] for entry in item['playback']
                               if time.monotonic() - entry['at'] < 30]
@@ -177,11 +171,6 @@ class OSStreamVoice:
             if not getattr(speech, 'bytes', 0) and reply.strip():
                 detail = getattr(speech, 'provider_error', '') or 'no audio returned'
                 emit({'type': 'status', 'state': f'Voice unavailable ({detail})'})
-            elif getattr(speech, 'provider_error', ''):
-                # Audio came from the offline backup, not the selected Fish voice.
-                emit({'type': 'status', 'state': f'Offline backup voice used - {speech.provider_error}'})
-            elif type(speech).__name__ == 'NativeSpeech':
-                emit({'type': 'status', 'state': 'Offline backup voice used - FISH_API_KEY is not configured in Box 1'})
             emit({'type':'done','timings':{'first_text_ms':round(((first or began)-began)*1000),
                 'first_audio_ms':round(((getattr(speech, 'first_audio', None) or began)-began)*1000)}})
         except TurnCancelled:

@@ -142,16 +142,24 @@ if not os.environ.get('CUSTOMER_FISH_VOICE_ID') or os.environ.get('CUSTOMER_FISH
     'bf342d9e9e5b44e0ade1ccfd1abb4815',
 }:
     os.environ['CUSTOMER_FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-if os.environ.get('CENTRAL_AI_CALL_SPEECH'):
-    config['CENTRAL_AI_CALL_SPEECH'] = os.environ['CENTRAL_AI_CALL_SPEECH'].strip()
-elif config.get('FISH_API_KEY'):
-    config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
-if config.get('FISH_API_KEY'):
-    config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
-from native_call_speech import native_enabled
-if not native_enabled(config) and (not config.get('FISH_API_KEY') or not config.get('FISH_VOICE_ID')):
+config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+if not config.get('FISH_API_KEY') or not config.get('FISH_VOICE_ID'):
     print("[voice] Warning: FISH_API_KEY or FISH_VOICE_ID missing; voice service running in idle waiting for credentials", flush=True)
     config['FISH_API_KEY'] = config.get('FISH_API_KEY') or ''
+else:
+    for _shared_dir in ('/opt/data', '/data'):
+        try:
+            _rt_path = Path(_shared_dir) / '.runtime-fish-voice.json'
+            if _rt_path.parent.is_dir():
+                _rt_path.write_text(json.dumps({
+                    'FISH_API_KEY': config['FISH_API_KEY'],
+                    'FISH_VOICE_ID': config.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13',
+                    'FISH_VOICE_NAME': 'Michael',
+                    'FISH_TTS_MODEL': config.get('FISH_TTS_MODEL') or 's1',
+                }), encoding='utf-8')
+                os.chmod(_rt_path, 0o644)
+        except Exception:
+            pass
 config = phone_speech(config)
 for _k in ('HERMES_API_KEY', 'APP_OS_URL', 'MICHAEL_OS_URL'):
     if not os.environ.get(_k) and config.get(_k):
@@ -484,10 +492,6 @@ def speech(text):
             if v and not config.get(k):
                 config[k] = v
         fish_key = valid_fish_key(config.get('FISH_API_KEY'))
-    if native_enabled(config) and not fish_key:
-        from native_call_speech import pcm
-        from stream_conversation import TurnControl
-        return b''.join(pcm(text[:1800], config, 16000, TurnControl()))
     if fish_key:
         payload = json.dumps({'text': text[:1800], 'reference_id': config['FISH_VOICE_ID'],
             'format': 'pcm', 'sample_rate': 16000, 'latency': 'balanced'}).encode()
@@ -509,9 +513,7 @@ def speech(text):
             return audio
     except Exception:
         pass
-    from native_call_speech import pcm
-    from stream_conversation import TurnControl
-    return b''.join(pcm(text[:1800], config, 16000, TurnControl()))
+    return b''
 
 
 GREETING = "Hey Mark! It's Leo. I'm here. What can I help you with?"
@@ -524,7 +526,7 @@ def fixed_speech(text):
     # private replies or arbitrary text. Includes voice/model in cache identity.
     if text not in {GREETING, RECOVERY, TASK_ACK}:
         raise ValueError('Only fixed phone phrases can be cached')
-    speech_mode = 'piper-alan' if native_enabled(config) else ('fish-' + (config.get('FISH_VOICE_ID') or 'jarvis'))
+    speech_mode = 'fish-' + (config.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13')
     stamp = hashlib.sha256((speech_mode + '\0' + (config.get('FISH_TTS_MODEL') or 's1') + '\0' + text).encode()).hexdigest()
     path = DATA / ('fixed-' + stamp + '.pcm')
     if path.exists():
@@ -532,8 +534,9 @@ def fixed_speech(text):
         if 0 < len(audio) <= 16000*2*45 and len(audio)%2 == 0:
             return audio
     audio = speech(text)
-    path.write_bytes(audio)
-    path.chmod(0o600)
+    if audio:
+        path.write_bytes(audio)
+        path.chmod(0o600)
     return audio
 
 
@@ -681,7 +684,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {})
         task_counts = fish_service.task_counts() if fish_service else {}
         return self.reply(200, {'ready': ready, 'text_ready': text_supervisor.ready() if text_supervisor else False,
-                              'voice': 'Jarvis (offline)' if native_enabled(config) else (config.get('FISH_VOICE_NAME') or 'Jarvis'),
+                              'voice': config.get('FISH_VOICE_NAME') or 'Michael',
                               'conversation_mode': CONVERSATION_MODE,
                               'active_call': active is not None, 'native_task_active': chat.voice_turn is not None or
                                   bool(business_chat and business_chat.voice_turn is not None) or
@@ -701,6 +704,30 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         global active, active_caller, active_customer, turns, last_metrics, last_recognition, snapshot_changes, interruptions
         auth = self.headers.get('Authorization', '')
+        if self.path == '/tts':
+            her_key = (os.environ.get('HERMES_API_KEY') or config.get('HERMES_API_KEY') or '').strip()
+            if not (hmac.compare_digest(auth, 'Bearer ' + KEY) or (her_key and hmac.compare_digest(auth, 'Bearer ' + her_key))):
+                return self.reply(401, {})
+            fish_key = valid_fish_key(config.get('FISH_API_KEY'))
+            if not fish_key:
+                for k, v in discover_fish_credentials('/opt/data').items():
+                    if v and not config.get(k):
+                        config[k] = v
+                fish_key = valid_fish_key(config.get('FISH_API_KEY'))
+            if not fish_key:
+                return self.reply(503, {'error': 'FISH_API_KEY missing on voice service'})
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 65536:
+                return self.reply(400, {})
+            body = json.loads(self.rfile.read(length))
+            text = str(body.get('text') or '').strip()[:1800]
+            voice_id = str(body.get('voice_id') or config.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13').strip()
+            sample_rate = int(body.get('sample_rate') or 24000)
+            if not text:
+                return self.reply(200, b'', 'application/octet-stream')
+            from stream_conversation import fish_rest_tts
+            pcm_bytes = fish_rest_tts(text, {**config, 'FISH_API_KEY': fish_key, 'FISH_VOICE_ID': voice_id}, rate=sample_rate)
+            return self.reply(200 if pcm_bytes else 503, pcm_bytes or b'', 'application/octet-stream')
         # The line comes from the credential, never from a header alone.
         customer_auth = bool(CUSTOMER_KEY) and hmac.compare_digest(auth, 'Bearer ' + CUSTOMER_KEY)
         if not customer_auth and not hmac.compare_digest(auth, 'Bearer ' + KEY):
