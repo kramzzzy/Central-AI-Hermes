@@ -992,6 +992,8 @@ def end_call(arguments=None, **kwargs):
 
 
 def manage_submissions(arguments=None, **kwargs):
+    if not owner_tools_available():
+        return json.dumps({"error": "Owner workspace access required."})
     params = {k: v for k, v in dict(arguments or kwargs or {}).items() if v not in ('', None)}
     raw = _call_app_os_mcp("central_ai_manage_submissions", params, timeout=15)
     return raw or json.dumps({"error": "App OS is unreachable; the submission was not changed."})
