@@ -14,7 +14,7 @@ from hermes_voice import VOICE_CALL_NOTE
 
 class WorkspaceToolsTests(unittest.TestCase):
     def test_new_sections_validate_and_do_not_fabricate_empty_snapshot(self):
-        sections = {'communications', 'comments', 'social_posts', 'files', 'capabilities'}
+        sections = {'communications', 'comments', 'submissions', 'social_posts', 'files', 'capabilities'}
         schema = TOOLS['mcp__michael_os__inspect_workspace']['schema']['parameters']['properties']['section']['enum']
         for section in sections:
             client.validate({'section': section})

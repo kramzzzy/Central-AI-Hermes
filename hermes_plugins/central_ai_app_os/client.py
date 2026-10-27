@@ -20,7 +20,7 @@ SECTIONS = {
     "calendar",
     "crm",
     "clients",
-    "contacts", "communications", "comments", "social_posts", "files", "capabilities",
+    "contacts", "communications", "comments", "submissions", "social_posts", "files", "capabilities",
 }
 
 
@@ -326,7 +326,7 @@ def owner_tools_available():
 def inspect_workspace(arguments, **kwargs):
     try:
         validate(arguments)
-        if arguments.get("section") in {"communications", "comments", "social_posts", "files", "capabilities"} and not owner_tools_available():
+        if arguments.get("section") in {"communications", "comments", "submissions", "social_posts", "files", "capabilities"} and not owner_tools_available():
             return json.dumps({"error": "Owner workspace access required."})
         token = process_token()
         api_key = _hermes_api_key()

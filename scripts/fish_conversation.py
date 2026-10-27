@@ -45,9 +45,9 @@ WORKSPACE_OVERVIEW_TOOL = {
 
 INSPECT_WORKSPACE_TOOL = {
     'tool_type': 'client', 'name': 'inspect_workspace',
-    'description': 'Inspect live Central AI App OS Box 3 & PostgreSQL workspace data across sections: status, overview, tasks, knowledge, agents, runs, activity, members, calendar, crm, clients, contacts.',
+    'description': 'Inspect live Central AI App OS Box 3 & PostgreSQL workspace data across sections: status, overview, tasks, knowledge, agents, runs, activity, members, calendar, crm, clients, contacts, submissions (website Contact and Quote form enquiries).',
     'arguments': [
-        {'name': 'section', 'description': 'Workspace section to inspect: status, overview, tasks, knowledge, agents, runs, activity, members, calendar, crm, clients, or contacts.'},
+        {'name': 'section', 'description': 'Workspace section to inspect: status, overview, tasks, knowledge, agents, runs, activity, members, calendar, crm, clients, contacts, or submissions.'},
         {'name': 'search', 'description': 'Optional search filter string (pass empty string if none).'}
     ],
     'expects_response': True, 'timeout_seconds': 10,

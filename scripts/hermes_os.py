@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 from central_ai_identity import central_ai_identity
 
-SECTIONS = {'status', 'overview', 'tasks', 'knowledge', 'agents', 'runs', 'activity', 'members', 'calendar', 'crm', 'clients', 'contacts', 'communications', 'comments', 'social_posts', 'files', 'capabilities'}
+SECTIONS = {'status', 'overview', 'tasks', 'knowledge', 'agents', 'runs', 'activity', 'members', 'calendar', 'crm', 'clients', 'contacts', 'communications', 'comments', 'submissions', 'social_posts', 'files', 'capabilities'}
 WORKSPACE_TOOLS_NOTE = """[Current workspace workflow]
 Authorized owner sessions only.
 Use only tools exposed to this session and respect permission failures. On App OS chat/voice and owner WhatsApp chat/calls, inspect_workspace(section='capabilities') discovers current controls; never infer live records from memory or invent counts.
@@ -36,7 +36,7 @@ You have a comprehensive suite of real native and integration tools that you mus
    - Use web_extract to extract readable markdown text from articles and static pages.
 3. App OS Workspace & Full CRM Control (mcp__michael_os__inspect_workspace & mcp__michael_os__manage_crm):
    - For questions about 'the app', 'our system', 'Central OS', 'the database connection', 'CRM', 'clients', 'contacts', or workspace records, use mcp__michael_os__inspect_workspace or mcp__michael_os__manage_crm.
-   - Supported inspect_workspace sections: status (health/DB), overview (counts), tasks, knowledge, agents, runs, activity, members, calendar, crm, clients, contacts, communications, comments, social_posts, files, capabilities.
+   - Supported inspect_workspace sections: status (health/DB), overview (counts), tasks, knowledge, agents, runs, activity, members, calendar, crm, clients, contacts, communications, comments, submissions (website Contact/Quote forms), social_posts, files, capabilities.
    - You have FULL READ AND WRITE CONTROL over the Box 3 CRM via mcp__michael_os__manage_crm:
      * action='list': Search and list CRM clients, contacts, properties, sales deals/opportunities, and delivery jobs.
      * action='get_client': View complete CRM client record (contacts, properties, sales, jobs, notes).
