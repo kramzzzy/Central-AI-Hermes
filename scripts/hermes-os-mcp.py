@@ -550,6 +550,16 @@ def end_call() -> dict:
     return {'ok': True, 'action': 'end_call', 'status': 'Call termination signal dispatched.'}
 
 
+@server.tool(name='manage_submissions')
+def manage_submissions(action: str, id: str, status: str = '') -> dict:
+    """Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify') or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions')."""
+    try:
+        raw = _plugin_client.manage_submissions({'action': action, 'id': id, 'status': status})
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        return {'error': f'Submission update failed: {str(exc)}'}
+
+
 @server.tool(name='manage_whatsapp_customer_line')
 def manage_whatsapp_customer_line(
     action: str = 'status',

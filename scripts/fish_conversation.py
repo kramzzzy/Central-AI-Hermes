@@ -68,6 +68,17 @@ MANAGE_CRM_TOOL = {
     'expects_response': True, 'timeout_seconds': 15,
 }
 
+MANAGE_SUBMISSIONS_TOOL = {
+    'tool_type': 'client', 'name': 'manage_submissions',
+    'description': "Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify') or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions').",
+    'arguments': [
+        {'name': 'action', 'description': 'qualify (add to CRM as a lead) or status.'},
+        {'name': 'id', 'description': 'Submission ID from inspect_workspace section submissions.'},
+        {'name': 'status', 'description': 'For action status: new, processing, contacted, or spam (pass empty string otherwise).'}
+    ],
+    'expects_response': True, 'timeout_seconds': 15,
+}
+
 MANAGE_TASKS_TOOL = {
     'tool_type': 'client', 'name': 'manage_tasks',
     'description': 'Create, assign, run, list, approve, or reject Box 3 workspace tasks and AI automation runs that appear in Tasks and Approvals. Use whenever the caller asks to make a social media post, create a task, assign work to Social Media / Customer Service / Appointment Coordinator, or approve/check tasks.',
@@ -137,6 +148,7 @@ TASK_TOOLS = [
     TOOL,
     INSPECT_WORKSPACE_TOOL,
     MANAGE_CRM_TOOL,
+    MANAGE_SUBMISSIONS_TOOL,
     MANAGE_TASKS_TOOL,
     ADD_KNOWLEDGE_TOOL,
     SEARCH_KNOWLEDGE_TOOL,
@@ -474,6 +486,11 @@ class NativeTaskBridge:
 
         if name == 'manage_crm':
             mcp_res = call_app_os_mcp('central_ai_manage_crm', {k: v for k, v in params.items() if v not in ('', None)})
+            return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
+                    'result': mcp_res}
+
+        if name == 'manage_submissions':
+            mcp_res = call_app_os_mcp('central_ai_manage_submissions', {k: v for k, v in params.items() if v not in ('', None)}, timeout=15)
             return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
                     'result': mcp_res}
 

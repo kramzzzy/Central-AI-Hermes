@@ -895,7 +895,7 @@ class Conversation:
         self.names = (names if names is not None else {
             'native_leo', 'task_status', 'cancel_task', 'send_whatsapp_message',
             'call_whatsapp_contact', 'get_live_weather', 'control_widget',
-            'end_call', 'inspect_workspace', 'manage_crm', 'manage_tasks', 'search_knowledge', 'get_knowledge', 'add_knowledge', 'get_workspace_overview'
+            'end_call', 'inspect_workspace', 'manage_crm', 'manage_submissions', 'manage_tasks', 'search_knowledge', 'get_knowledge', 'add_knowledge', 'get_workspace_overview'
         }) & available_names
         self.stream = stream or openrouter_stream
         self.history = []

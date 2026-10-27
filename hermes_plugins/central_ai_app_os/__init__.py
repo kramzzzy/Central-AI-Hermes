@@ -11,7 +11,7 @@ from .client import (
     open_widget, close_widget, control_widget,
     navigate_browser, get_live_weather, calculate_solar,
     google_workspace, social_media, end_call,
-    manage_whatsapp_customer_line, manage_mailing
+    manage_whatsapp_customer_line, manage_mailing, manage_submissions
 )
 
 TOOLS = {
@@ -505,6 +505,9 @@ for tool_name, handler, description, properties, required in [
     ("generate_image", generate_image,
      "Generate one image using the workspace image provider and save it to Files. Does not publish. For social post approval workflows create a task with the enabled Social Media agent instead.",
      {"prompt": {"type": "string", "minLength": 3, "maxLength": 1400}, "aspect_ratio": {"type": "string", "enum": ["1:1", "3:4", "4:5", "4:3", "16:9", "9:16"], "default": "3:4"}}, ["prompt"]),
+    ("manage_submissions", manage_submissions,
+     "Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify') or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions').",
+     {"action": {"type": "string", "enum": ["qualify", "status"]}, "id": {"type": "string"}, "status": {"type": "string", "enum": ["new", "processing", "contacted", "spam"]}}, ["action", "id"]),
     ("manage_whatsapp_customer_line", manage_whatsapp_customer_line,
      "Inspect or update the Customer WhatsApp Line settings (enable/disable customer voice call answering, enable/disable public solar inquiry text auto-reply, or change the assigned customer inquiry agent).",
      {"action": {"type": "string", "enum": ["status", "update"]}, "auto_reply": {"type": "boolean"}, "calls_enabled": {"type": "boolean"}, "assigned_agent": {"type": "string"}}, []),

@@ -991,6 +991,12 @@ def end_call(arguments=None, **kwargs):
     return json.dumps({"ok": True, "action": "end_call", "status": "Call termination signal dispatched."})
 
 
+def manage_submissions(arguments=None, **kwargs):
+    params = {k: v for k, v in dict(arguments or kwargs or {}).items() if v not in ('', None)}
+    raw = _call_app_os_mcp("central_ai_manage_submissions", params, timeout=15)
+    return raw or json.dumps({"error": "App OS is unreachable; the submission was not changed."})
+
+
 def manage_whatsapp_customer_line(arguments=None, **kwargs):
     params = dict(arguments or kwargs or {})
     raw = _call_app_os_mcp("central_ai_manage_whatsapp_customer_line", params, timeout=10)

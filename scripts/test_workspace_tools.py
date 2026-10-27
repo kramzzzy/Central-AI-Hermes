@@ -21,6 +21,8 @@ class WorkspaceToolsTests(unittest.TestCase):
             self.assertIn(section, SECTIONS)
             self.assertIn(section, schema)
             self.assertIsNone(client._inspect_from_snapshot({'section': section}, {}))
+        submissions_tool = TOOLS['mcp__michael_os__manage_submissions']['schema']['parameters']
+        self.assertEqual(['action', 'id'], submissions_tool['required'])
 
     def test_owner_tools_shared_and_restricted_context_denied(self):
         with tempfile.TemporaryDirectory() as directory:
