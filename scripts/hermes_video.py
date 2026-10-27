@@ -388,7 +388,7 @@ def _parse_video_price_per_sec(skus: dict | None) -> float | None:
         if val <= 0:
             continue
         kl = str(k).lower()
-        if any(skip in kl for skip in ("minimum_cents", "input_images", "image_input", "reference_images")):
+        if any(skip in kl for skip in ("minimum_cents", "input_images", "image_input", "reference_", "with_video_input")):
             continue
         if kl.startswith("cents_per_"):
             candidates_usd.append(val / 100.0)
@@ -495,39 +495,9 @@ def list_video_models(body: dict | None = None) -> dict:
 
     sensed.sort(key=lambda x: (x["price_per_sec_usd"], x["name"].lower()))
 
-    best_auto_price = sensed[0]["price_per_sec_usd"] if sensed else 0.02
-    catalog = [
-        {
-            "id": "auto",
-            "name": "Auto Sense (Best Value Video Model)",
-            "vendor": "auto",
-            "price_per_sec_usd": best_auto_price,
-            "price_per_10s_usd": round(best_auto_price * 10.0, 3),
-            "price_display": f"From {_format_price_badge(best_auto_price)}",
-            "supported_durations": [5, 8, 10],
-            "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
-            "supported_resolutions": ["720p", "1080p"],
-            "supports_first_frame": True,
-            "supports_audio": False,
-        },
-        *sensed,
-        {
-            "id": "keyframe-ken-burns",
-            "name": "Keyframe + Ken Burns Studio (Ultra Low Cost)",
-            "vendor": "central-ai",
-            "price_per_sec_usd": 0.0003,
-            "price_per_10s_usd": 0.003,
-            "price_display": "$0.0003/s · $0.003/10s",
-            "supported_durations": [5, 8, 10, 12, 15],
-            "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
-            "supported_resolutions": ["1080p"],
-            "supports_first_frame": True,
-            "supports_audio": False,
-        },
-    ]
-    _VIDEO_MODELS_CACHE["models"] = catalog
+    _VIDEO_MODELS_CACHE["models"] = sensed
     _VIDEO_MODELS_CACHE["timestamp"] = now
-    return {"ok": True, "models": catalog, "source": "openrouter_video_catalog"}
+    return {"ok": True, "models": sensed, "source": "openrouter_video_catalog"}
 
 
 def _try_openrouter_video_api(
