@@ -520,9 +520,43 @@ def manage_communications(action: str, id: str, version: int | None = None) -> d
 
 
 @server.tool(name='generate_image')
-def generate_image(prompt: str, aspect_ratio: str = '3:4') -> dict:
-    """Generate and save one image to Files; ratios 1:1,3:4,4:5,4:3,16:9,9:16. Does not publish."""
-    return json.loads(_plugin_client.generate_image({'prompt': prompt, 'aspect_ratio': aspect_ratio}))
+def generate_image(prompt: str, aspect_ratio: str = '3:4', project: str = '') -> dict:
+    """Generate and save one image to Files (and optional project folder); ratios 1:1,3:4,4:5,4:3,16:9,9:16. Does not publish."""
+    payload = {'prompt': prompt, 'aspect_ratio': aspect_ratio}
+    if project.strip():
+        payload['project'] = project.strip()
+    return json.loads(_plugin_client.generate_image(payload))
+
+
+@server.tool(name='manage_files')
+def manage_files(
+    action: str = 'list_folders',
+    name: str = '',
+    old_name: str = '',
+    new_name: str = '',
+    folder: str = '',
+    file_ids: list[str] | None = None,
+    search: str = '',
+    delete_files: bool = False,
+) -> dict:
+    """Manage project folders and organize files in the Files Library. Actions: 'list_folders', 'create_folder', 'rename_folder', 'delete_folder', 'move_files'."""
+    payload = {
+        k: v for k, v in {
+            'action': action,
+            'name': name,
+            'old_name': old_name,
+            'new_name': new_name,
+            'folder': folder,
+            'file_ids': file_ids,
+            'search': search,
+            'delete_files': delete_files,
+        }.items() if v not in ('', None)
+    }
+    try:
+        raw = _plugin_client.manage_files(payload)
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        return {'error': f'File library operation failed: {str(exc)}'}
 
 
 @server.tool(name='social_media')

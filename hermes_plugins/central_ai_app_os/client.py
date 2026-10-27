@@ -1060,3 +1060,14 @@ def manage_mailing(arguments=None, **kwargs):
         return raw
     return json.dumps({"ok": False, "error": "App OS mailing service is unreachable."})
 
+
+def manage_files(arguments=None, **kwargs):
+    if not owner_tools_available():
+        return json.dumps({"error": "Owner workspace access required."})
+    params = {k: v for k, v in dict(arguments or kwargs or {}).items() if v is not None}
+    raw = _call_app_os_mcp("central_ai_manage_files", params, timeout=20)
+    if raw:
+        return raw
+    return json.dumps({"ok": False, "error": "App OS file library service is unreachable."})
+
+

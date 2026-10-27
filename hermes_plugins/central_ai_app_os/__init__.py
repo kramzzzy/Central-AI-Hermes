@@ -11,7 +11,7 @@ from .client import (
     open_widget, close_widget, control_widget,
     navigate_browser, get_live_weather, calculate_solar,
     google_workspace, social_media, end_call,
-    manage_whatsapp_customer_line, manage_mailing, manage_submissions
+    manage_whatsapp_customer_line, manage_mailing, manage_submissions, manage_files
 )
 
 TOOLS = {
@@ -503,8 +503,20 @@ for tool_name, handler, description, properties, required in [
      "Archive/restore or take over/resume a conversation. Inspect it first; takeover/resume requires its current control_version as version. Does not send a reply or delete history.",
      {"action": {"type": "string", "enum": ["archive", "restore", "takeover", "resume"]}, "id": {"type": "string"}, "version": {"type": "integer", "minimum": 1}}, ["action", "id"]),
     ("generate_image", generate_image,
-     "Generate one image using the workspace image provider and save it to Files. Does not publish. For social post approval workflows create a task with the enabled Social Media agent instead.",
-     {"prompt": {"type": "string", "minLength": 3, "maxLength": 1400}, "aspect_ratio": {"type": "string", "enum": ["1:1", "3:4", "4:5", "4:3", "16:9", "9:16"], "default": "3:4"}}, ["prompt"]),
+     "Generate one image using the workspace image provider and save it to Files (and optional project folder). Does not publish. For social post approval workflows create a task with the enabled Social Media agent instead.",
+     {"prompt": {"type": "string", "minLength": 3, "maxLength": 1400}, "aspect_ratio": {"type": "string", "enum": ["1:1", "3:4", "4:5", "4:3", "16:9", "9:16"], "default": "3:4"}, "project": {"type": "string", "maxLength": 80}}, ["prompt"]),
+    ("manage_files", manage_files,
+     "Manage project folders and organize files in the Files Library. Actions: 'list_folders' (list project folders and file counts), 'create_folder' (create a new project folder and optionally move file_ids into it), 'rename_folder' (rename old_name/name to new_name), 'delete_folder' (delete folder name; if delete_files=true deletes files inside, otherwise moves them to root), 'move_files' (move file_ids or files matching search into target folder, or folder='' for root).",
+     {
+         "action": {"type": "string", "enum": ["list_folders", "create_folder", "rename_folder", "delete_folder", "move_files"]},
+         "name": {"type": "string", "maxLength": 80},
+         "old_name": {"type": "string", "maxLength": 80},
+         "new_name": {"type": "string", "maxLength": 80},
+         "folder": {"type": "string", "maxLength": 80},
+         "file_ids": {"type": "array", "items": {"type": "string"}},
+         "search": {"type": "string", "maxLength": 120},
+         "delete_files": {"type": "boolean"},
+     }, ["action"]),
     ("manage_submissions", manage_submissions,
      "Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify'), reply by email using the workspace's branded Mailing template (action='reply', message, subject?), or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions').",
      {"action": {"type": "string", "enum": ["qualify", "status", "reply"]}, "id": {"type": "string"}, "status": {"type": "string", "enum": ["new", "processing", "contacted", "spam"]}, "message": {"type": "string", "maxLength": 4000}, "subject": {"type": "string", "maxLength": 200}}, ["action", "id"]),

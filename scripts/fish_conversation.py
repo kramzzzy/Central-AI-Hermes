@@ -79,6 +79,19 @@ MANAGE_SUBMISSIONS_TOOL = {
     'expects_response': True, 'timeout_seconds': 15,
 }
 
+MANAGE_FILES_TOOL = {
+    'tool_type': 'client', 'name': 'manage_files',
+    'description': "Manage project folders and organize files in the Files Library (action='list_folders'|'create_folder'|'rename_folder'|'delete_folder'|'move_files').",
+    'arguments': [
+        {'name': 'action', 'description': 'list_folders, create_folder, rename_folder, delete_folder, or move_files.'},
+        {'name': 'name', 'description': 'Folder name for create_folder, delete_folder, or old folder name for rename_folder (pass empty string if none).'},
+        {'name': 'new_name', 'description': 'New folder name when action is rename_folder (pass empty string if none).'},
+        {'name': 'folder', 'description': 'Target folder name when action is move_files (pass empty string if none).'},
+        {'name': 'search', 'description': 'Optional search query to match files to move when action is move_files (pass empty string if none).'}
+    ],
+    'expects_response': True, 'timeout_seconds': 15,
+}
+
 MANAGE_TASKS_TOOL = {
     'tool_type': 'client', 'name': 'manage_tasks',
     'description': 'Create, assign, run, list, approve, or reject Box 3 workspace tasks and AI automation runs that appear in Tasks and Approvals. Use whenever the caller asks to make a social media post, create a task, assign work to Social Media / Customer Service / Appointment Coordinator, or approve/check tasks.',
@@ -149,6 +162,7 @@ TASK_TOOLS = [
     INSPECT_WORKSPACE_TOOL,
     MANAGE_CRM_TOOL,
     MANAGE_SUBMISSIONS_TOOL,
+    MANAGE_FILES_TOOL,
     MANAGE_TASKS_TOOL,
     ADD_KNOWLEDGE_TOOL,
     SEARCH_KNOWLEDGE_TOOL,
@@ -491,6 +505,11 @@ class NativeTaskBridge:
 
         if name == 'manage_submissions':
             mcp_res = call_app_os_mcp('central_ai_manage_submissions', {k: v for k, v in params.items() if v not in ('', None)}, timeout=15)
+            return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
+                    'result': mcp_res}
+
+        if name == 'manage_files':
+            mcp_res = call_app_os_mcp('central_ai_manage_files', {k: v for k, v in params.items() if v not in ('', None)}, timeout=15)
             return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
                     'result': mcp_res}
 
