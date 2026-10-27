@@ -577,14 +577,18 @@ def _try_openrouter_video_api(
     first_frame_data_uri: str | None,
     openrouter_key: str,
     requested_model: str = "auto",
+    fast_fallback: bool = False,
 ) -> tuple[bytes | None, str | None, float | None]:
     """Attempt native video generation via OpenRouter /api/v1/videos with async job polling."""
+    if fast_fallback:
+        return None, None, None
     if not openrouter_key or openrouter_key.startswith("sk-or-v1-standalone-default"):
         return None, None, None
     req_model = (requested_model or "auto").strip()
     if req_model == "keyframe-ken-burns":
         return None, None, None
 
+    overall_deadline = time.time() + 48.0
     catalog = list_video_models().get("models") or []
     model_map = {m["id"]: m for m in catalog if isinstance(m, dict) and m.get("id")}
 
@@ -601,6 +605,8 @@ def _try_openrouter_video_api(
     normalized_frame = _normalize_first_frame_uri(_ffmpeg_bin(), first_frame_data_uri, aspect_ratio)
 
     for model_slug in models_to_try:
+        if time.time() >= overall_deadline:
+            break
         spec = model_map.get(model_slug) or {}
         supp_durs = spec.get("supported_durations") or [5, 10]
         target_dur = int(duration_sec)
@@ -615,6 +621,8 @@ def _try_openrouter_video_api(
         )
 
         for frame_uri in frame_variants:
+            if time.time() >= overall_deadline:
+                break
             payload: dict = {
                 "model": model_slug,
                 "prompt": visual_prompt[:1200],
@@ -640,7 +648,7 @@ def _try_openrouter_video_api(
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req, timeout=25) as resp:
+                with urllib.request.urlopen(req, timeout=20) as resp:
                     job = json.loads(resp.read().decode("utf-8", errors="replace"))
                 job_id = str(job.get("id") or "").strip()
                 est_cost = round(float(spec.get("price_per_sec_usd") or 0.04) * int(chosen_dur), 4)
@@ -652,21 +660,21 @@ def _try_openrouter_video_api(
                     or ""
                 ).strip()
                 if direct_url.startswith("https://"):
-                    with urllib.request.urlopen(direct_url, timeout=40) as vresp:
+                    with urllib.request.urlopen(direct_url, timeout=25) as vresp:
                         data = vresp.read(50_000_000)
                         if len(data) > 4096:
                             actual_cost = float((job.get("usage") or {}).get("cost") or est_cost)
                             return data, model_slug, actual_cost
                 if not job_id:
                     continue
-                deadline = time.time() + 65
+                deadline = min(overall_deadline, time.time() + 40.0)
                 while time.time() < deadline:
-                    time.sleep(3)
+                    time.sleep(2.5)
                     poll_req = urllib.request.Request(
                         f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}",
                         headers={"Authorization": f"Bearer {openrouter_key}"},
                     )
-                    with urllib.request.urlopen(poll_req, timeout=15) as presp:
+                    with urllib.request.urlopen(poll_req, timeout=12) as presp:
                         status_data = json.loads(presp.read().decode("utf-8", errors="replace"))
                     st = str(status_data.get("status") or "").lower()
                     if st in ("completed", "succeeded", "done"):
@@ -679,7 +687,7 @@ def _try_openrouter_video_api(
                             or (status_data.get("output") or [None])[0]
                         )
                         if isinstance(v_url, str) and v_url.startswith("https://"):
-                            with urllib.request.urlopen(v_url, timeout=40) as dl:
+                            with urllib.request.urlopen(v_url, timeout=25) as dl:
                                 v_bytes = dl.read(50_000_000)
                                 if len(v_bytes) > 4096:
                                     return v_bytes, model_slug, actual_cost
@@ -687,7 +695,7 @@ def _try_openrouter_video_api(
                             f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}/content",
                             headers={"Authorization": f"Bearer {openrouter_key}"},
                         )
-                        with urllib.request.urlopen(content_req, timeout=40) as cdl:
+                        with urllib.request.urlopen(content_req, timeout=25) as cdl:
                             v_bytes = cdl.read(50_000_000)
                             if len(v_bytes) > 4096:
                                 return v_bytes, model_slug, actual_cost
@@ -793,6 +801,7 @@ def generate_video_scene(body: dict) -> dict:
 
     openrouter_key = _get_env_key("OPENROUTER_API_KEY")
     requested_model = str(body.get("video_model") or "auto").strip()
+    fast_fallback = bool(body.get("fast_fallback"))
     raw_video_bytes, model_used, scene_cost_usd = _try_openrouter_video_api(
         visual_prompt,
         duration_sec,
@@ -800,6 +809,7 @@ def generate_video_scene(body: dict) -> dict:
         all_refs[0] if all_refs else None,
         openrouter_key,
         requested_model,
+        fast_fallback=fast_fallback,
     )
 
     width, height = (720, 1280) if aspect_ratio == "9:16" else ((1280, 720) if aspect_ratio == "16:9" else (720, 720))
