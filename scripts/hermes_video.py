@@ -32,15 +32,30 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _get_env_key(name: str, default: str = "") -> str:
-    val = os.environ.get(name, "").strip()
-    if val:
+    val = os.environ.get(name, "").strip().strip('"').strip("'")
+    if val and not val.startswith("sk-or-v1-standalone-default"):
         return val
-    for env_path in (
-        Path(os.environ.get("HERMES_PROFILE_ROOT", "/opt/data")) / "profiles" / os.environ.get("HERMES_PROFILE", "default") / ".env",
-        Path("/opt/data/.env"),
+    root = Path(os.environ.get("HERMES_PROFILE_ROOT", "/opt/data"))
+    profile = os.environ.get("HERMES_PROFILE", "leo")
+    candidate_paths: list[Path] = [
+        root / "profiles" / profile / ".env",
+        root / "profiles" / "leo" / ".env",
+        Path("/opt/os-adapter/.runtime/hermes.env"),
+        root / ".env",
+        Path("/data/.env"),
+        Path("/data/voice/.env"),
         Path(".env.local"),
         Path(".env"),
-    ):
+    ]
+    try:
+        profiles_dir = root / "profiles"
+        if profiles_dir.is_dir():
+            for p_env in sorted(profiles_dir.glob("*/.env")):
+                if p_env not in candidate_paths:
+                    candidate_paths.append(p_env)
+    except Exception:
+        pass
+    for env_path in candidate_paths:
         try:
             if env_path.is_file():
                 for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -50,8 +65,17 @@ def _get_env_key(name: str, default: str = "") -> str:
                     k, v = line.split("=", 1)
                     if k.strip() == name:
                         cleaned = v.strip().strip('"').strip("'")
-                        if cleaned:
+                        if cleaned and not cleaned.startswith("sk-or-v1-standalone-default"):
                             return cleaned
+        except Exception:
+            pass
+    if name in ("FISH_API_KEY", "FISH_VOICE_ID", "FISH_TTS_MODEL"):
+        try:
+            from central_ai_integrations import discover_fish_credentials
+            fish_creds = discover_fish_credentials(str(root))
+            found = str(fish_creds.get(name) or "").strip()
+            if found:
+                return found
         except Exception:
             pass
     return default
@@ -175,7 +199,8 @@ def generate_voice_tts(body: dict) -> dict:
     reference_text = str(body.get("reference_text") or "").strip()
 
     fish_key = _get_env_key("FISH_API_KEY")
-    default_voice_id = _get_env_key("FISH_VOICE_ID")
+    default_voice_id = _get_env_key("FISH_VOICE_ID", "a30d099a643d4173836cfee1d8ae6c13") or "a30d099a643d4173836cfee1d8ae6c13"
+    fish_tts_model = _get_env_key("FISH_TTS_MODEL", "s1") or "s1"
 
     if fish_key:
         tts_payload: dict = {
@@ -204,6 +229,7 @@ def generate_voice_tts(body: dict) -> dict:
             headers={
                 "Authorization": f"Bearer {fish_key}",
                 "Content-Type": "application/json",
+                "model": fish_tts_model,
                 "User-Agent": "Central-AI-VoiceStudio/1.0",
             },
             method="POST",
@@ -500,6 +526,50 @@ def list_video_models(body: dict | None = None) -> dict:
     return {"ok": True, "models": sensed, "source": "openrouter_video_catalog"}
 
 
+def _normalize_first_frame_uri(ffmpeg: str | None, data_uri: str | None, aspect_ratio: str) -> str | None:
+    """Convert any reference image into an aspect-ratio-matched 720p JPEG data URI (<150 KB) for OpenRouter video APIs."""
+    if not data_uri or not isinstance(data_uri, str):
+        return None
+    if not ffmpeg:
+        return data_uri
+    raw_b64 = data_uri.split(",", 1)[1].strip() if "," in data_uri else data_uri.strip()
+    try:
+        img_bytes = base64.b64decode(raw_b64)
+    except Exception:
+        return data_uri
+    w, h = (720, 1280) if aspect_ratio == "9:16" else ((1280, 720) if aspect_ratio == "16:9" else (720, 720))
+    try:
+        with tempfile.TemporaryDirectory(prefix="central-fframe-") as tdir:
+            in_p = os.path.join(tdir, "in_img")
+            out_p = os.path.join(tdir, "out.jpg")
+            Path(in_p).write_bytes(img_bytes)
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    in_p,
+                    "-vf",
+                    f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1",
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "3",
+                    out_p,
+                ],
+                check=True,
+                timeout=10,
+                capture_output=True,
+            )
+            if os.path.isfile(out_p):
+                jpg_bytes = Path(out_p).read_bytes()
+                if len(jpg_bytes) > 512:
+                    return "data:image/jpeg;base64," + base64.b64encode(jpg_bytes).decode("ascii")
+    except Exception:
+        pass
+    return data_uri
+
+
 def _try_openrouter_video_api(
     visual_prompt: str,
     duration_sec: int,
@@ -519,20 +589,16 @@ def _try_openrouter_video_api(
     model_map = {m["id"]: m for m in catalog if isinstance(m, dict) and m.get("id")}
 
     env_model = _get_env_key("OPENROUTER_VIDEO_MODEL", "")
-    if req_model and req_model != "auto":
-        models_to_try = [req_model]
-    else:
-        models_to_try = [
-            m
-            for m in [
-                env_model,
-                "x-ai/grok-imagine-video-1.5-lite",
-                "alibaba/wan-2.6",
-                "google/veo-3.1-lite",
-                "bytedance/seedance-2.0-fast",
-            ]
-            if m
-        ]
+    fallback_chain = [
+        req_model if (req_model and req_model != "auto") else "",
+        env_model,
+        "bytedance/seedance-1-5-pro",
+        "x-ai/grok-imagine-video-1.5-lite",
+        "google/veo-3.1-lite",
+        "alibaba/wan-2.6",
+    ]
+    models_to_try = list(dict.fromkeys([m for m in fallback_chain if m]))[:3]
+    normalized_frame = _normalize_first_frame_uri(_ffmpeg_bin(), first_frame_data_uri, aspect_ratio)
 
     for model_slug in models_to_try:
         spec = model_map.get(model_slug) or {}
@@ -542,94 +608,111 @@ def _try_openrouter_video_api(
         supp_ratios = spec.get("supported_aspect_ratios") or ["16:9", "9:16", "1:1"]
         chosen_ratio = aspect_ratio if aspect_ratio in supp_ratios else ("9:16" if "9:16" in supp_ratios else supp_ratios[0])
 
-        payload: dict = {
-            "model": model_slug,
-            "prompt": visual_prompt[:1200],
-            "duration": int(chosen_dur),
-            "aspect_ratio": chosen_ratio,
-        }
-        if first_frame_data_uri and spec.get("supports_first_frame", True):
-            payload["frame_images"] = [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": first_frame_data_uri},
-                    "frame_type": "first_frame",
-                }
-            ]
-
-        req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/videos",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        frame_variants = (
+            [normalized_frame, None]
+            if (normalized_frame and spec.get("supports_first_frame", True))
+            else [None]
         )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                job = json.loads(resp.read().decode("utf-8", errors="replace"))
-            job_id = str(job.get("id") or "").strip()
-            est_cost = round(float(spec.get("price_per_sec_usd") or 0.04) * int(chosen_dur), 4)
-            unsigned = job.get("unsigned_urls")
-            direct_url = str(
-                (unsigned[0] if isinstance(unsigned, list) and unsigned else None)
-                or job.get("url")
-                or job.get("video_url")
-                or ""
-            ).strip()
-            if direct_url.startswith("https://"):
-                with urllib.request.urlopen(direct_url, timeout=45) as vresp:
-                    data = vresp.read(50_000_000)
-                    if len(data) > 4096:
-                        actual_cost = float((job.get("usage") or {}).get("cost") or est_cost)
-                        return data, model_slug, actual_cost
-            if not job_id:
-                continue
-            deadline = time.time() + 125
-            while time.time() < deadline:
-                time.sleep(4)
-                poll_req = urllib.request.Request(
-                    f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}",
-                    headers={"Authorization": f"Bearer {openrouter_key}"},
-                )
-                with urllib.request.urlopen(poll_req, timeout=20) as presp:
-                    status_data = json.loads(presp.read().decode("utf-8", errors="replace"))
-                st = str(status_data.get("status") or "").lower()
-                if st in ("completed", "succeeded", "done"):
-                    actual_cost = float((status_data.get("usage") or {}).get("cost") or est_cost)
-                    u_urls = status_data.get("unsigned_urls")
-                    v_url = (
-                        (u_urls[0] if isinstance(u_urls, list) and u_urls else None)
-                        or status_data.get("url")
-                        or status_data.get("video_url")
-                        or (status_data.get("output") or [None])[0]
-                    )
-                    if isinstance(v_url, str) and v_url.startswith("https://"):
-                        with urllib.request.urlopen(v_url, timeout=45) as dl:
-                            v_bytes = dl.read(50_000_000)
-                            if len(v_bytes) > 4096:
-                                return v_bytes, model_slug, actual_cost
-                    # Fallback to /api/v1/videos/{id}/content per OpenRouter Video API spec
-                    content_req = urllib.request.Request(
-                        f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}/content",
+
+        for frame_uri in frame_variants:
+            payload: dict = {
+                "model": model_slug,
+                "prompt": visual_prompt[:1200],
+                "duration": int(chosen_dur),
+                "aspect_ratio": chosen_ratio,
+            }
+            if frame_uri:
+                payload["frame_images"] = [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": frame_uri},
+                        "frame_type": "first_frame",
+                    }
+                ]
+
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/videos",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {openrouter_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=25) as resp:
+                    job = json.loads(resp.read().decode("utf-8", errors="replace"))
+                job_id = str(job.get("id") or "").strip()
+                est_cost = round(float(spec.get("price_per_sec_usd") or 0.04) * int(chosen_dur), 4)
+                unsigned = job.get("unsigned_urls")
+                direct_url = str(
+                    (unsigned[0] if isinstance(unsigned, list) and unsigned else None)
+                    or job.get("url")
+                    or job.get("video_url")
+                    or ""
+                ).strip()
+                if direct_url.startswith("https://"):
+                    with urllib.request.urlopen(direct_url, timeout=40) as vresp:
+                        data = vresp.read(50_000_000)
+                        if len(data) > 4096:
+                            actual_cost = float((job.get("usage") or {}).get("cost") or est_cost)
+                            return data, model_slug, actual_cost
+                if not job_id:
+                    continue
+                deadline = time.time() + 65
+                while time.time() < deadline:
+                    time.sleep(3)
+                    poll_req = urllib.request.Request(
+                        f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}",
                         headers={"Authorization": f"Bearer {openrouter_key}"},
                     )
-                    with urllib.request.urlopen(content_req, timeout=45) as cdl:
-                        v_bytes = cdl.read(50_000_000)
-                        if len(v_bytes) > 4096:
-                            return v_bytes, model_slug, actual_cost
-                    break
-                if st in ("failed", "cancelled", "expired", "error"):
-                    break
-        except Exception as exc:
-            print(f"[hermes_video] OpenRouter video model {model_slug} failed: {exc}")
-            continue
+                    with urllib.request.urlopen(poll_req, timeout=15) as presp:
+                        status_data = json.loads(presp.read().decode("utf-8", errors="replace"))
+                    st = str(status_data.get("status") or "").lower()
+                    if st in ("completed", "succeeded", "done"):
+                        actual_cost = float((status_data.get("usage") or {}).get("cost") or est_cost)
+                        u_urls = status_data.get("unsigned_urls")
+                        v_url = (
+                            (u_urls[0] if isinstance(u_urls, list) and u_urls else None)
+                            or status_data.get("url")
+                            or status_data.get("video_url")
+                            or (status_data.get("output") or [None])[0]
+                        )
+                        if isinstance(v_url, str) and v_url.startswith("https://"):
+                            with urllib.request.urlopen(v_url, timeout=40) as dl:
+                                v_bytes = dl.read(50_000_000)
+                                if len(v_bytes) > 4096:
+                                    return v_bytes, model_slug, actual_cost
+                        content_req = urllib.request.Request(
+                            f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}/content",
+                            headers={"Authorization": f"Bearer {openrouter_key}"},
+                        )
+                        with urllib.request.urlopen(content_req, timeout=40) as cdl:
+                            v_bytes = cdl.read(50_000_000)
+                            if len(v_bytes) > 4096:
+                                return v_bytes, model_slug, actual_cost
+                        break
+                    if st in ("failed", "cancelled", "expired", "error"):
+                        break
+                break
+            except urllib.error.HTTPError as he:
+                err_detail = ""
+                try:
+                    err_detail = he.read().decode("utf-8", errors="replace")[:300]
+                except Exception:
+                    pass
+                print(f"[hermes_video] OpenRouter video model {model_slug} (frame={bool(frame_uri)}) HTTP {he.code}: {err_detail}")
+                if frame_uri and he.code in (400, 413, 415, 422, 500, 502):
+                    continue
+                break
+            except Exception as exc:
+                print(f"[hermes_video] OpenRouter video model {model_slug} failed: {exc}")
+                break
     return None, None, None
 
 
 def _extract_last_frame_b64(ffmpeg: str, mp4_path: str) -> str | None:
-    out_png = mp4_path + ".last.png"
+    out_jpg = mp4_path + ".last.jpg"
     try:
         subprocess.run(
             [
@@ -642,21 +725,21 @@ def _extract_last_frame_b64(ffmpeg: str, mp4_path: str) -> str | None:
                 "-frames:v",
                 "1",
                 "-q:v",
-                "2",
-                out_png,
+                "3",
+                out_jpg,
             ],
             check=True,
-            timeout=20,
+            timeout=15,
             capture_output=True,
         )
-        if os.path.isfile(out_png):
-            raw = Path(out_png).read_bytes()
+        if os.path.isfile(out_jpg):
+            raw = Path(out_jpg).read_bytes()
             if len(raw) > 512:
-                return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+                return "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
     except Exception:
         pass
     finally:
-        with_ignore_unlink(out_png)
+        with_ignore_unlink(out_jpg)
     return None
 
 
@@ -705,7 +788,8 @@ def generate_video_scene(body: dict) -> dict:
         all_refs.append(first_frame_b64)
     for r in references:
         if isinstance(r, str) and r.startswith("data:image/") and len(all_refs) < 6:
-            all_refs.append(r)
+            if r not in all_refs:
+                all_refs.append(r)
 
     openrouter_key = _get_env_key("OPENROUTER_API_KEY")
     requested_model = str(body.get("video_model") or "auto").strip()
@@ -718,7 +802,7 @@ def generate_video_scene(body: dict) -> dict:
         requested_model,
     )
 
-    width, height = (1080, 1920) if aspect_ratio == "9:16" else ((1920, 1080) if aspect_ratio == "16:9" else (1080, 1080))
+    width, height = (720, 1280) if aspect_ratio == "9:16" else ((1280, 720) if aspect_ratio == "16:9" else (720, 720))
 
     with tempfile.TemporaryDirectory(prefix="central-video-scene-") as tmpdir:
         out_mp4 = os.path.join(tmpdir, "scene_out.mp4")
@@ -729,109 +813,83 @@ def generate_video_scene(body: dict) -> dict:
         if raw_video_bytes:
             in_mp4 = os.path.join(tmpdir, "raw.mp4")
             Path(in_mp4).write_bytes(raw_video_bytes)
-            if voice_mp3_bytes:
-                cmd = [
-                    ffmpeg,
-                    "-y",
-                    "-stream_loop",
-                    "-1",
-                    "-i",
-                    in_mp4,
-                    "-i",
-                    audio_path,
-                    "-t",
-                    str(duration_sec),
-                    "-vf",
-                    f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "1:a:0",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
-                    "-shortest",
-                    out_mp4,
-                ]
-            else:
-                cmd = [
-                    ffmpeg,
-                    "-y",
-                    "-stream_loop",
-                    "-1",
-                    "-i",
-                    in_mp4,
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "anullsrc=channel_layout=stereo:sample_rate=44100",
-                    "-t",
-                    str(duration_sec),
-                    "-vf",
-                    f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "1:a:0",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
-                    "-shortest",
-                    out_mp4,
-                ]
-            subprocess.run(cmd, check=True, timeout=90, capture_output=True)
+            audio_inputs = ["-i", audio_path] if voice_mp3_bytes else ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-stream_loop",
+                "-1",
+                "-i",
+                in_mp4,
+                *audio_inputs,
+                "-t",
+                str(duration_sec),
+                "-vf",
+                f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-shortest",
+                out_mp4,
+            ]
+            try:
+                subprocess.run(cmd, check=True, timeout=60, capture_output=True)
+            except Exception as exc:
+                raise VideoStudioError(f"Scene video encoding failed: {exc}", 502) from None
             provider_used = model_used or "openrouter-video"
         else:
-            # Render high-res scene frame via OpenRouter Image (with reference continuity) + cinematic motion MP4
+            # Render scene frame via OpenRouter Image / attached reference + fast 720p Ken Burns motion MP4
             img_b64: str | None = None
-            try:
-                art = hermes_artwork.generate_social_image({
-                    "prompt": visual_prompt[:1350],
-                    "aspect_ratio": aspect_ratio,
-                    "references": all_refs[:6],
-                })
-                img_b64 = art["data"][0]["b64_json"]
-            except Exception:
+            if all_refs:
                 try:
-                    art = hermes_artwork.generate_marketing_image({"prompt": visual_prompt[:1350]})
+                    img_b64 = all_refs[0].split(",", 1)[1].strip() if "," in all_refs[0] else all_refs[0].strip()
+                except Exception:
+                    img_b64 = None
+            if not img_b64:
+                try:
+                    art = hermes_artwork.generate_social_image({
+                        "prompt": visual_prompt[:1350],
+                        "aspect_ratio": aspect_ratio,
+                        "references": all_refs[:6],
+                    })
                     img_b64 = art["data"][0]["b64_json"]
-                except Exception as exc:
-                    raise VideoStudioError(f"Scene frame generation failed: {exc}", 502) from None
+                except Exception:
+                    try:
+                        art = hermes_artwork.generate_marketing_image({"prompt": visual_prompt[:1350]})
+                        img_b64 = art["data"][0]["b64_json"]
+                    except Exception:
+                        img_b64 = None
 
-            frame_path = os.path.join(tmpdir, "frame.png")
-            Path(frame_path).write_bytes(base64.b64decode(img_b64))
-            fps = 25
+            fps = 24
             total_frames = duration_sec * fps
-            vf_filter = (
-                f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
-                f"crop={width * 2}:{height * 2},"
-                f"zoompan=z='min(zoom+0.0005,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                f"d={total_frames}:s={width}x{height}:fps={fps},setsar=1"
-            )
-            if voice_mp3_bytes:
+            audio_inputs = ["-i", audio_path] if voice_mp3_bytes else ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+
+            if img_b64:
+                frame_path = os.path.join(tmpdir, "frame_in")
+                Path(frame_path).write_bytes(base64.b64decode(img_b64))
+                vf_filter = (
+                    f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                    f"crop={width}:{height},"
+                    f"zoompan=z='min(zoom+0.0006,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                    f"d={total_frames}:s={width}x{height}:fps={fps},setsar=1"
+                )
                 cmd = [
                     ffmpeg,
                     "-y",
-                    "-loop",
-                    "1",
                     "-i",
                     frame_path,
-                    "-i",
-                    audio_path,
+                    *audio_inputs,
                     "-t",
                     str(duration_sec),
                     "-vf",
@@ -839,7 +897,7 @@ def generate_video_scene(body: dict) -> dict:
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "veryfast",
+                    "ultrafast",
                     "-pix_fmt",
                     "yuv420p",
                     "-c:a",
@@ -853,22 +911,17 @@ def generate_video_scene(body: dict) -> dict:
                 cmd = [
                     ffmpeg,
                     "-y",
-                    "-loop",
-                    "1",
-                    "-i",
-                    frame_path,
                     "-f",
                     "lavfi",
                     "-i",
-                    "anullsrc=channel_layout=stereo:sample_rate=44100",
+                    f"color=c=0x161a1b:s={width}x{height}:r={fps}:d={duration_sec}",
+                    *audio_inputs,
                     "-t",
                     str(duration_sec),
-                    "-vf",
-                    vf_filter,
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "veryfast",
+                    "ultrafast",
                     "-pix_fmt",
                     "yuv420p",
                     "-c:a",
@@ -878,7 +931,10 @@ def generate_video_scene(body: dict) -> dict:
                     "-shortest",
                     out_mp4,
                 ]
-            subprocess.run(cmd, check=True, timeout=90, capture_output=True)
+            try:
+                subprocess.run(cmd, check=True, timeout=60, capture_output=True)
+            except Exception as exc:
+                raise VideoStudioError(f"Scene fallback render failed: {exc}", 502) from None
             provider_used = "keyframe-ken-burns"
             scene_cost_usd = 0.003
 
@@ -924,7 +980,8 @@ def stitch_video_scenes(body: dict) -> dict:
                 clean = clean.split(",", 1)[1].strip()
             clip_path = os.path.join(tmpdir, f"scene_{idx:02d}.mp4")
             Path(clip_path).write_bytes(base64.b64decode(clean))
-            concat_lines.append(f"file '{clip_path}'")
+            safe_clip_path = clip_path.replace("\\", "/")
+            concat_lines.append(f"file '{safe_clip_path}'")
 
         list_file = os.path.join(tmpdir, "concat.txt")
         Path(list_file).write_text("\n".join(concat_lines), encoding="utf-8")
@@ -944,7 +1001,7 @@ def stitch_video_scenes(body: dict) -> dict:
             "-c:v",
             "libx264",
             "-preset",
-            "veryfast",
+            "ultrafast",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
@@ -955,7 +1012,10 @@ def stitch_video_scenes(body: dict) -> dict:
             "+faststart",
             out_mp4,
         ]
-        subprocess.run(cmd, check=True, timeout=120, capture_output=True)
+        try:
+            subprocess.run(cmd, check=True, timeout=90, capture_output=True)
+        except Exception as exc:
+            raise VideoStudioError(f"Video stitching failed: {exc}", 502) from None
         master_bytes = Path(out_mp4).read_bytes()
 
     return {

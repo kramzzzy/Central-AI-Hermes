@@ -633,16 +633,16 @@ class Handler(BaseHTTPRequestHandler):
    acquired=False
    try:
     length=int(self.headers.get('Content-Length','0'))
-    if not 0<length<=12*1024*1024:return self.reply(413,{'error':'Artwork request too large'})
+    if not 0<length<=64*1024*1024:return self.reply(413,{'error':'Artwork request too large'})
     req_body=json.loads(self.rfile.read(length))
-    is_marketing=isinstance(req_body,dict) and (req_body.get('mode')=='marketing' or bool(req_body.get('prompt')))
+    is_marketing=isinstance(req_body,dict) and (req_body.get('mode') in {'marketing','social','voice_clone','voice_tts','video_models','video_plan','video_scene','video_stitch'} or bool(req_body.get('prompt')))
     if not is_marketing:
      acquired=portrait_slot.acquire(blocking=False)
      if not acquired:return self.reply(429,{'error':'Another portrait is being generated. Please wait.'})
     return self.reply(200,generate(req_body))
    except ArtworkError as exc:return self.reply(exc.status,{'error':str(exc)})
    except (ValueError,TypeError):return self.reply(400,{'error':'Invalid artwork request.'})
-   except Exception:return self.reply(503,{'error':'Artwork generation is unavailable.'})
+   except Exception as exc:return self.reply(503,{'error':f'Artwork generation is unavailable: {exc}'})
    finally:
     if acquired:portrait_slot.release()
   if self.path=='/voice/conversation':

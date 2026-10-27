@@ -270,6 +270,12 @@ def generate_marketing_image(body):
         )
 
     openrouter_key = os.environ.get('OPENROUTER_API_KEY', '').strip()
+    if not openrouter_key or openrouter_key.startswith('sk-or-v1-standalone-default'):
+        try:
+            import hermes_video
+            openrouter_key = hermes_video._get_env_key('OPENROUTER_API_KEY')
+        except Exception:
+            pass
     openai_key = os.environ.get('OPENAI_API_KEY', '').strip()
 
     res = _try_openrouter_image(photorealistic_prompt, openrouter_key)
@@ -304,6 +310,12 @@ def generate_social_image(body):
     if aspect_ratio not in ('1:1', '3:4', '4:5', '4:3', '16:9', '9:16'):
         raise ArtworkError('Choose a supported image ratio.', 400)
     key = os.environ.get('OPENROUTER_API_KEY', '').strip()
+    if not key or key.startswith('sk-or-v1-standalone-default'):
+        try:
+            import hermes_video
+            key = hermes_video._get_env_key('OPENROUTER_API_KEY')
+        except Exception:
+            pass
     if not key or key.startswith('sk-or-v1-standalone-default'):
         raise ArtworkError('Configure OPENROUTER_API_KEY on Box 1 to generate social images.', 503)
     model = os.environ.get('SOCIAL_IMAGE_MODEL', '').strip() or 'google/gemini-nano-banana-2.1'
@@ -408,6 +420,12 @@ def generate(body):
     )
 
     openrouter_key = os.environ.get('OPENROUTER_API_KEY', '').strip()
+    if not openrouter_key or openrouter_key.startswith('sk-or-v1-standalone-default'):
+        try:
+            import hermes_video
+            openrouter_key = hermes_video._get_env_key('OPENROUTER_API_KEY')
+        except Exception:
+            pass
     openai_key = os.environ.get('OPENAI_API_KEY', '').strip()
 
     res = _try_openrouter_image(prompt, openrouter_key)
