@@ -580,36 +580,45 @@ def _try_openrouter_video_api(
     fast_fallback: bool = False,
 ) -> tuple[bytes | None, str | None, float | None]:
     """Attempt native video generation via OpenRouter /api/v1/videos with async job polling."""
-    if fast_fallback:
-        return None, None, None
     if not openrouter_key or openrouter_key.startswith("sk-or-v1-standalone-default"):
         return None, None, None
     req_model = (requested_model or "auto").strip()
     if req_model == "keyframe-ken-burns":
         return None, None, None
 
-    overall_deadline = time.time() + 48.0
+    overall_deadline = time.time() + (55.0 if fast_fallback else 82.0)
     catalog = list_video_models().get("models") or []
     model_map = {m["id"]: m for m in catalog if isinstance(m, dict) and m.get("id")}
 
     env_model = _get_env_key("OPENROUTER_VIDEO_MODEL", "")
-    fallback_chain = [
-        req_model if (req_model and req_model != "auto") else "",
-        env_model,
-        "bytedance/seedance-1-5-pro",
-        "x-ai/grok-imagine-video-1.5-lite",
-        "google/veo-3.1-lite",
-        "alibaba/wan-2.6",
-    ]
+    if fast_fallback:
+        fallback_chain = [
+            "bytedance/seedance-1-5-pro",
+            "x-ai/grok-imagine-video-1.5-lite",
+            "alibaba/wan-2.6",
+        ]
+    else:
+        fallback_chain = [
+            req_model if (req_model and req_model != "auto") else "",
+            env_model,
+            "bytedance/seedance-1-5-pro",
+            "x-ai/grok-imagine-video-1.5-lite",
+            "google/veo-3.1-lite",
+            "alibaba/wan-2.6",
+        ]
     models_to_try = list(dict.fromkeys([m for m in fallback_chain if m]))[:3]
-    normalized_frame = _normalize_first_frame_uri(_ffmpeg_bin(), first_frame_data_uri, aspect_ratio)
+    normalized_frame = (
+        None
+        if fast_fallback
+        else _normalize_first_frame_uri(_ffmpeg_bin(), first_frame_data_uri, aspect_ratio)
+    )
 
     for model_slug in models_to_try:
         if time.time() >= overall_deadline:
             break
         spec = model_map.get(model_slug) or {}
         supp_durs = spec.get("supported_durations") or [5, 10]
-        target_dur = int(duration_sec)
+        target_dur = 5 if fast_fallback else int(duration_sec)
         chosen_dur = min(supp_durs, key=lambda d: abs(int(d) - target_dur)) if supp_durs else max(5, min(10, target_dur))
         supp_ratios = spec.get("supported_aspect_ratios") or ["16:9", "9:16", "1:1"]
         chosen_ratio = aspect_ratio if aspect_ratio in supp_ratios else ("9:16" if "9:16" in supp_ratios else supp_ratios[0])
@@ -667,7 +676,7 @@ def _try_openrouter_video_api(
                             return data, model_slug, actual_cost
                 if not job_id:
                     continue
-                deadline = min(overall_deadline, time.time() + 40.0)
+                deadline = min(overall_deadline, time.time() + (45.0 if fast_fallback else 68.0))
                 while time.time() < deadline:
                     time.sleep(2.5)
                     poll_req = urllib.request.Request(
@@ -701,7 +710,11 @@ def _try_openrouter_video_api(
                                 return v_bytes, model_slug, actual_cost
                         break
                     if st in ("failed", "cancelled", "expired", "error"):
+                        print(f"[hermes_video] OpenRouter video job {job_id} ({model_slug}, frame={bool(frame_uri)}) status={st}: {status_data.get('error')}")
                         break
+                # If frame_uri attempt failed, continue loop to retry with frame_uri=None
+                if frame_uri:
+                    continue
                 break
             except urllib.error.HTTPError as he:
                 err_detail = ""
@@ -710,11 +723,13 @@ def _try_openrouter_video_api(
                 except Exception:
                     pass
                 print(f"[hermes_video] OpenRouter video model {model_slug} (frame={bool(frame_uri)}) HTTP {he.code}: {err_detail}")
-                if frame_uri and he.code in (400, 413, 415, 422, 500, 502):
+                if frame_uri:
                     continue
                 break
             except Exception as exc:
-                print(f"[hermes_video] OpenRouter video model {model_slug} failed: {exc}")
+                print(f"[hermes_video] OpenRouter video model {model_slug} (frame={bool(frame_uri)}) failed: {exc}")
+                if frame_uri:
+                    continue
                 break
     return None, None, None
 
@@ -802,11 +817,14 @@ def generate_video_scene(body: dict) -> dict:
     openrouter_key = _get_env_key("OPENROUTER_API_KEY")
     requested_model = str(body.get("video_model") or "auto").strip()
     fast_fallback = bool(body.get("fast_fallback"))
+    # Only lock first_frame for explicit /avatar or animate_first_frame requests;
+    # otherwise generate full-motion AI video from the scene prompt so static posters never freeze the video.
+    use_first_frame = "/avatar" in visual_prompt.lower() or bool(body.get("animate_first_frame"))
     raw_video_bytes, model_used, scene_cost_usd = _try_openrouter_video_api(
         visual_prompt,
         duration_sec,
         aspect_ratio,
-        all_refs[0] if all_refs else None,
+        (all_refs[0] if all_refs else None) if use_first_frame else None,
         openrouter_key,
         requested_model,
         fast_fallback=fast_fallback,
@@ -859,27 +877,22 @@ def generate_video_scene(body: dict) -> dict:
                 raise VideoStudioError(f"Scene video encoding failed: {exc}", 502) from None
             provider_used = model_used or "openrouter-video"
         else:
-            # Render scene frame via OpenRouter Image / attached reference + fast 720p Ken Burns motion MP4
+            # Emergency fallback only if all OpenRouter video models are unreachable:
+            # generate a fresh cinematic scene frame (never reuse a static poster directly) + strong dynamic camera pan/zoom
             img_b64: str | None = None
-            if all_refs:
+            try:
+                art = hermes_artwork.generate_social_image({
+                    "prompt": visual_prompt[:1350],
+                    "aspect_ratio": aspect_ratio,
+                    "references": all_refs[:6],
+                })
+                img_b64 = art["data"][0]["b64_json"]
+            except Exception:
                 try:
-                    img_b64 = all_refs[0].split(",", 1)[1].strip() if "," in all_refs[0] else all_refs[0].strip()
-                except Exception:
-                    img_b64 = None
-            if not img_b64:
-                try:
-                    art = hermes_artwork.generate_social_image({
-                        "prompt": visual_prompt[:1350],
-                        "aspect_ratio": aspect_ratio,
-                        "references": all_refs[:6],
-                    })
+                    art = hermes_artwork.generate_marketing_image({"prompt": visual_prompt[:1350]})
                     img_b64 = art["data"][0]["b64_json"]
                 except Exception:
-                    try:
-                        art = hermes_artwork.generate_marketing_image({"prompt": visual_prompt[:1350]})
-                        img_b64 = art["data"][0]["b64_json"]
-                    except Exception:
-                        img_b64 = None
+                    img_b64 = None
 
             fps = 24
             total_frames = duration_sec * fps
@@ -889,9 +902,11 @@ def generate_video_scene(body: dict) -> dict:
                 frame_path = os.path.join(tmpdir, "frame_in")
                 Path(frame_path).write_bytes(base64.b64decode(img_b64))
                 vf_filter = (
-                    f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                    f"crop={width}:{height},"
-                    f"zoompan=z='min(zoom+0.0006,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                    f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
+                    f"crop={width * 2}:{height * 2},"
+                    f"zoompan=z='min(zoom+0.0022,1.35)':"
+                    f"x='iw/2-(iw/zoom/2)+sin(on/18)*45':"
+                    f"y='ih/2-(ih/zoom/2)+cos(on/24)*30':"
                     f"d={total_frames}:s={width}x{height}:fps={fps},setsar=1"
                 )
                 cmd = [
