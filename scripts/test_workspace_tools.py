@@ -36,7 +36,7 @@ class WorkspaceToolsTests(unittest.TestCase):
                 for config in ['phone_business_context: true', 'os_specialist: {id: fixture}']:
                     (home/'config.yaml').write_text(config)
                     call.reset_mock()
-                    for tool in (client.generate_image, client.manage_communications, client.manage_tasks):
+                    for tool in (client.generate_image, client.manage_video, client.manage_communications, client.manage_tasks):
                         self.assertIn('error', json.loads(tool({})))
                     self.assertIn('error', json.loads(client.inspect_workspace({'section':'communications'})))
                     call.assert_not_called()
@@ -49,7 +49,7 @@ class WorkspaceToolsTests(unittest.TestCase):
         refreshed = _without_app_blocks('Configured identity\n'+WORKSPACE_TOOLS_NOTE)+'\n'+WORKSPACE_TOOLS_NOTE
         self.assertEqual(refreshed.count('[Current workspace workflow]'),1)
         self.assertIn('Configured identity',refreshed)
-        for tool in ('manage_tasks','manage_communications','generate_image'):
+        for tool in ('manage_tasks','manage_communications','generate_image','manage_video'):
             self.assertIn('mcp__michael_os__'+tool, TOOLS)
 
     def test_mcp_child_inherits_active_profile_and_team_restriction(self):

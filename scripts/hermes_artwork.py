@@ -369,7 +369,23 @@ def generate_social_image(body):
 def generate(body):
     if not isinstance(body, dict):
         raise ArtworkError('Supply a valid artwork request payload.', 400)
-    if body.get('mode') == 'social':
+    mode = body.get('mode')
+    if mode in ('voice_clone', 'voice_tts', 'video_plan', 'video_scene', 'video_stitch'):
+        import hermes_video
+        try:
+            if mode == 'voice_clone':
+                return hermes_video.clone_voice_model(body)
+            if mode == 'voice_tts':
+                return hermes_video.generate_voice_tts(body)
+            if mode == 'video_plan':
+                return hermes_video.plan_video_storyboard(body)
+            if mode == 'video_scene':
+                return hermes_video.generate_video_scene(body)
+            if mode == 'video_stitch':
+                return hermes_video.stitch_video_scenes(body)
+        except hermes_video.VideoStudioError as exc:
+            raise ArtworkError(str(exc), exc.status) from None
+    if mode == 'social':
         return generate_social_image(body)
     if body.get('mode') == 'marketing' or body.get('prompt'):
         return generate_marketing_image(body)

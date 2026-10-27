@@ -11,7 +11,7 @@ from .client import (
     open_widget, close_widget, control_widget,
     navigate_browser, get_live_weather, calculate_solar,
     google_workspace, social_media, end_call,
-    manage_whatsapp_customer_line, manage_mailing, manage_submissions, manage_files
+    manage_whatsapp_customer_line, manage_mailing, manage_submissions, manage_files, manage_video
 )
 
 TOOLS = {
@@ -537,6 +537,21 @@ for tool_name, handler, description, properties, required in [
          "body": {"type": "string"},
          "sync_to_communications": {"type": "boolean"},
          "assigned_agent": {"type": "string"},
+     }, ["action"]),
+    ("manage_video", manage_video,
+     "Manage the Video & Voice Clone Studio in Box 3: list saved cloned voices ('list_voices'), list multi-scene video projects ('list_projects'), create/render a 10s–58s video project with optional cloned voice ('create_project'), or revise a single 10s scene ('revise_scene') and re-stitch.",
+     {
+         "action": {"type": "string", "enum": ["list_voices", "list_projects", "create_project", "revise_scene"]},
+         "title": {"type": "string"},
+         "prompt": {"type": "string"},
+         "target_duration_sec": {"type": "integer", "minimum": 10, "maximum": 58},
+         "aspect_ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1"]},
+         "voice_profile_id": {"type": "string"},
+         "project_folder": {"type": "string"},
+         "project_id": {"type": "string"},
+         "scene_index": {"type": "integer", "minimum": 1, "maximum": 8},
+         "visual_prompt": {"type": "string"},
+         "voice_text": {"type": "string"},
      }, ["action"]),
 ]:
     name = "mcp__michael_os__" + tool_name

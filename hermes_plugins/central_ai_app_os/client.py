@@ -1071,3 +1071,14 @@ def manage_files(arguments=None, **kwargs):
     return json.dumps({"ok": False, "error": "App OS file library service is unreachable."})
 
 
+def manage_video(arguments=None, **kwargs):
+    if not owner_tools_available():
+        return json.dumps({"error": "Owner workspace access required."})
+    params = {k: v for k, v in dict(arguments or kwargs or {}).items() if v is not None}
+    raw = _call_app_os_mcp("central_ai_manage_video", params, timeout=180, retry=False)
+    if raw:
+        return raw
+    return json.dumps({"ok": False, "error": "App OS video studio service is unreachable."})
+
+
+

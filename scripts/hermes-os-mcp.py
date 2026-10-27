@@ -654,6 +654,44 @@ def manage_mailing(
         return {'error': f'Mailing action failed: {str(exc)}'}
 
 
+@server.tool(name='manage_video')
+def manage_video(
+    action: str = 'list_projects',
+    title: str = '',
+    prompt: str = '',
+    target_duration_sec: int = 30,
+    aspect_ratio: str = '9:16',
+    voice_profile_id: str = '',
+    project_folder: str = 'Social Visuals',
+    project_id: str = '',
+    scene_index: int = 1,
+    visual_prompt: str = '',
+    voice_text: str = '',
+) -> dict:
+    """Manage the Video & Voice Clone Studio in Box 3: list saved cloned voices ('list_voices'), list multi-scene video projects ('list_projects'), create/render a 10s–58s video project with optional cloned voice ('create_project'), or revise a single 10s scene ('revise_scene') and re-stitch."""
+    payload = {
+        k: v for k, v in {
+            'action': action,
+            'title': title,
+            'prompt': prompt,
+            'target_duration_sec': target_duration_sec,
+            'aspect_ratio': aspect_ratio,
+            'voice_profile_id': voice_profile_id,
+            'project_folder': project_folder,
+            'project_id': project_id,
+            'scene_index': scene_index,
+            'visual_prompt': visual_prompt,
+            'voice_text': voice_text,
+        }.items() if v not in ('', None)
+    }
+    try:
+        raw = _plugin_client.manage_video(payload)
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        return {'error': f'Video studio action failed: {str(exc)}'}
+
+
+
 
 @server.tool(name='calculate_solar')
 def calculate_solar(
