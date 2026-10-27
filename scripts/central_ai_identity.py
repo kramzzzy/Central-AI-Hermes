@@ -6,6 +6,9 @@ import re
 from uuid import uuid4
 
 
+PLACEHOLDER_COMPANY_NAMES = {'central ai workspace', 'central ai', 'central os', 'central ai os'}
+
+
 def get_company_name(home=None):
     """Dynamically look up the company or organization name."""
     candidates = [
@@ -24,12 +27,13 @@ def get_company_name(home=None):
                 data = json.loads(p.read_text(encoding='utf-8'))
                 if isinstance(data, dict):
                     name = (data.get('company_name') or data.get('company') or '').strip()
-                    if name:
+                    # An auto-created workspace is named "Central AI Workspace"; that is not a company.
+                    if name and name.lower() not in PLACEHOLDER_COMPANY_NAMES:
                         return name
             except Exception:
                 pass
     env_name = (os.environ.get('COMPANY_NAME') or os.environ.get('ORGANIZATION_NAME') or os.environ.get('CENTRAL_AI_COMPANY_NAME') or '').strip()
-    return env_name or ''
+    return '' if env_name.lower() in PLACEHOLDER_COMPANY_NAMES else env_name
 
 
 def get_business_knowledge_summary():
@@ -66,9 +70,9 @@ def get_central_ai_identity(company_name=None):
 When introducing yourself, speaking to users, customers, or team members across WhatsApp, Voice, and Web Chat, represent {company_name} naturally and professionally.
 Core business knowledge & operations:
 {biz_summary}
-You are fully connected to the central knowledge base, long-term memory ('michael-os-leo'), and Central OS. You know all about {company_name}'s solar products, installation, and maintenance services across Australia.
+You are fully connected to the central knowledge base and long-term memory ('michael-os-leo'). You know all about {company_name}'s solar products, installation, and maintenance services across Australia.
 Whenever a customer or team member gives an electricity bill amount (in AUD) or kWh usage, or asks to calculate their kWh usage, recommended solar panel system size (kW / 440W panel count), or bill savings, use the Official Your Choice Solar Website Calculator tool (`mcp__michael_os__calculate_solar` / `planning-v2`) or the live calculator result provided in context to share accurate starting figures immediately.
-The underlying AI operating platform is Central AI.
+Central AI, Central OS and Hermes are internal platform names: never present yourself or the company with them. Customers only ever hear {company_name} and your configured assistant name.
 Your own assistant name is the configured name from your deployment; keep that identity when speaking.
 Always communicate strictly and exclusively in clear, warm, professional English across Web Chat, Voice Calls, and WhatsApp. Always use polite professional greetings such as 'Hi' or 'Hello' (never use casual slang like 'G'day' or 'mate') while keeping your configured Jarvis voice on voice calls. Never switch to Tagalog, Taglish, Filipino, or any other language.
 Names found in internal tools, configuration, older messages or documentation
@@ -77,8 +81,8 @@ Answer naturally in plain language. Do not add branding headers, signatures or
 technical explanations to ordinary answers."""
     else:
         identity_body = """The platform you work in is Central AI, serving Central OS.
-Use Central AI as the platform name in your replies. Your own assistant name is
-the configured name from your deployment; keep that identity when speaking.
+Your own assistant name is the configured name from your deployment; keep that
+identity when speaking, and never present yourself as Central AI or Central OS.
 Always communicate strictly and exclusively in clear, warm, professional English across Web Chat, Voice Calls, and WhatsApp. Always use polite professional greetings such as 'Hi' or 'Hello' (never use casual slang like 'G'day' or 'mate') while keeping your configured Jarvis voice on voice calls. Never switch to Tagalog, Taglish, Filipino, or any other language.
 Names found in internal tools, configuration, older messages or documentation
 are implementation details, not your public assistant or platform name.
@@ -100,9 +104,9 @@ def central_ai_identity(prompt, home=None):
     company_name = get_company_name(home)
     if company_name:
         prompt = prompt.replace('You are Hermes Agent, built by Nous Research.',
-                                f'You are an assistant representing {company_name} on Central AI. Use your configured assistant name.')
+                                f'You are an assistant representing {company_name}. Use your configured assistant name.')
         prompt = prompt.replace('You are an assistant on Central AI.',
-                                f'You are an assistant representing {company_name} on Central AI.')
+                                f'You are an assistant representing {company_name}.')
     else:
         prompt = prompt.replace('You are Hermes Agent, built by Nous Research.',
                                 'You are an assistant on Central AI. Use your configured assistant name.')

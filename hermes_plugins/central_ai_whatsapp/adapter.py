@@ -473,7 +473,8 @@ def _load_live_customer_config():
                 if isinstance(data.get('customer_agent_knowledge'), list):
                     cfg['customer_agent_knowledge'] = data['customer_agent_knowledge']
                 raw_company = str(data.get('company_name') or data.get('company') or '').strip()
-                if raw_company:
+                # An auto-created "Central AI Workspace" is not a company name customers should hear.
+                if raw_company and raw_company.lower() not in {'central ai workspace', 'central ai', 'central os', 'central ai os'}:
                     cfg['company_name'] = raw_company
                 owner_num = re.sub(r'\D', '', str(data.get('owner') or ''))
                 if owner_num:

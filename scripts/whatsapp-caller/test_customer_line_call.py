@@ -122,6 +122,24 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertNotIn('Oh, no worries at all.', prompt)
         self.assertIn('Be friendly with a light sense of humour.', prompt, 'persona comes from the agent profile')
 
+    def test_placeholder_workspace_name_is_never_the_company(self):
+        import json
+        import tempfile
+        import central_ai_identity
+        import whatsapp_routing
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = Path(tmp) / 'contacts.json'
+            routing_file.write_text(json.dumps({'company_name': 'Central AI Workspace', 'customer_agent': 'james', 'contacts': []}))
+            with patch.object(whatsapp_routing, 'DYNAMIC_FILES', [routing_file]):
+                self.assertEqual('', whatsapp_routing.routing()['company_name'])
+            company_file = Path(tmp) / 'company.json'
+            company_file.write_text(json.dumps({'company_name': 'Central AI Workspace'}))
+            with patch.object(central_ai_identity, 'Path', side_effect=lambda *a: company_file if a and str(a[0]).endswith('company.json') else Path(tmp) / 'missing'):
+                self.assertEqual('', central_ai_identity.get_company_name())
+        block = central_ai_identity.get_central_ai_identity('Your Choice Solar')
+        self.assertIn('never present yourself or the company with them', block)
+        self.assertNotIn('The underlying AI operating platform is Central AI', block)
+
     def test_new_setup_answer_counts_as_existing_solar_answered(self):
         sys.path.insert(0, str(Path(__file__).parents[2]))
         from hermes_plugins.central_ai_whatsapp.adapter import _extract_and_analyze_customer_lead

@@ -23,6 +23,10 @@ def routing():
                             contacts_list[0],
                         )
                         data['owner'] = re.sub(r'\D', '', str(owner_contact.get('number') or owner_contact.get('phone_number') or ''))
+                    # An auto-created "Central AI Workspace" is not a company name customers should hear.
+                    for key in ('company_name', 'company'):
+                        if str(data.get(key) or '').strip().lower() in {'central ai workspace', 'central ai', 'central os', 'central ai os'}:
+                            data[key] = ''
                     data.setdefault('owner', '')
                     data.setdefault('business', '')
                     data.setdefault('group', '')
