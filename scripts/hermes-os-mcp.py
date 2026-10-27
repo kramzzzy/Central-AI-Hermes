@@ -551,10 +551,10 @@ def end_call() -> dict:
 
 
 @server.tool(name='manage_submissions')
-def manage_submissions(action: str, id: str, status: str = '') -> dict:
-    """Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify') or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions')."""
+def manage_submissions(action: str, id: str, status: str = '', message: str = '', subject: str = '') -> dict:
+    """Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify'), reply by email using the workspace's branded Mailing template (action='reply', message, subject?), or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions')."""
     try:
-        raw = _plugin_client.manage_submissions({'action': action, 'id': id, 'status': status})
+        raw = _plugin_client.manage_submissions({'action': action, 'id': id, 'status': status, 'message': message, 'subject': subject})
         return json.loads(raw) if isinstance(raw, str) else raw
     except Exception as exc:
         return {'error': f'Submission update failed: {str(exc)}'}
