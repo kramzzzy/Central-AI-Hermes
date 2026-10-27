@@ -216,7 +216,53 @@ class NativeChat:
             params.pop('inline_images')
             return self.rpc('session.resume', params, timeout=60)
 
-    def connect(self):
+    def _resolve_preferred_model(self, preferred=None):
+        candidate = str(preferred or '').strip()
+        if candidate and re.fullmatch(r'[\w./:@+-]+', candidate):
+            return candidate
+        snap_paths = [
+            Path('/data/box3_snapshot.json'),
+            Path('/opt/data/box3_snapshot.json'),
+            Path('/opt/os-adapter/.runtime/box3_snapshot.json'),
+            Path(self.root) / '.runtime' / 'box3_snapshot.json',
+        ]
+        for sp in snap_paths:
+            try:
+                if sp.is_file():
+                    data = json.loads(sp.read_text(encoding='utf-8'))
+                    for ag in data.get('agents', []):
+                        if ag.get('is_main') and ag.get('model'):
+                            m = str(ag.get('model')).strip()
+                            if m and re.fullmatch(r'[\w./:@+-]+', m):
+                                return m
+            except Exception:
+                pass
+        return ''
+
+    def _sync_session_model(self, target_model):
+        target = str(target_model or '').strip()
+        if not target or not self.sid:
+            return
+        if any(bad in target for bad in ('glm-5.2', 'deepseek-v4.1-flash', 'claude-fable')):
+            return
+        current = str(self.info.get('model') or '').strip()
+        if current == target or self.info.get('running'):
+            return
+        provider = (self.settings.get('HERMES_CHAT_PROVIDER', '').strip() or 'openrouter')
+        try:
+            self.rpc('config.set', self.scoped(
+                key='model',
+                value=f'{target} --provider {provider}',
+                scope='session',
+                confirm_expensive_model=True,
+            ), timeout=30)
+            self.info['model'] = target
+            self.info['provider'] = provider
+        except Exception:
+            self.info['model'] = target
+            self.info['provider'] = provider
+
+    def connect(self, preferred_model=None):
         with self.connect_guard:
             self.start()
             if not self.sid:
@@ -233,6 +279,7 @@ class NativeChat:
                     raise RuntimeError('Previous voice work is still settling. Reconnect shortly.')
                 if not self.restore_voice_model(recover=True):
                     raise RuntimeError('Previous voice model is still settling. Reconnect shortly.')
+            self._sync_session_model(self._resolve_preferred_model(preferred_model))
             return self.snapshot(0)
 
     def snapshot(self, cursor):
@@ -271,13 +318,56 @@ class NativeChat:
 
     def model_options(self):
         raw = self.rpc('model.options', self.scoped(include_unconfigured=False), timeout=60)
+        live_models: list[str] = []
+        live_caps: dict[str, dict] = {}
+        try:
+            from provider_models import get_catalog_models
+            live_catalog = get_catalog_models(self.settings)
+            for d in live_catalog.get('model_details', []):
+                mid = str(d.get('id') or '').strip()
+                if mid and not any(bad in mid for bad in ('claude-fable', 'claude-opus-5', 'claude-sonnet-5')):
+                    live_models.append(mid)
+                    live_caps[mid] = {'reasoning': bool(d.get('reasoning'))}
+        except Exception:
+            pass
+
+        preferred = self._resolve_preferred_model()
+        current_model = str(self.info.get('model') or '').strip()
+        for top_m in [current_model, preferred]:
+            if top_m and not any(bad in top_m for bad in ('claude-fable', 'claude-opus-5', 'claude-sonnet-5')):
+                if top_m in live_models:
+                    live_models.remove(top_m)
+                live_models.insert(0, top_m)
+                live_caps.setdefault(top_m, {'reasoning': True})
+
         providers = []
+        added_openrouter = False
         for p in raw.get('providers', []):
             if p.get('authenticated') is False:
                 continue
-            models = [m for m in p.get('models', []) if m not in p.get('unavailable_models', [])]
+            if p.get('slug') == 'openrouter' and live_models:
+                providers.append({
+                    'slug': 'openrouter',
+                    'name': p.get('name') or 'OpenRouter',
+                    'models': live_models[:120],
+                    'capabilities': {**p.get('capabilities', {}), **live_caps},
+                })
+                added_openrouter = True
+                continue
+            models = [
+                m for m in p.get('models', [])
+                if m not in p.get('unavailable_models', [])
+                and not any(bad in str(m) for bad in ('claude-fable', 'claude-opus-5', 'claude-sonnet-5'))
+            ]
             providers.append({'slug': p['slug'], 'name': p['name'], 'models': models,
                               'capabilities': p.get('capabilities', {})})
+        if not added_openrouter and live_models:
+            providers.insert(0, {
+                'slug': 'openrouter',
+                'name': 'OpenRouter',
+                'models': live_models[:120],
+                'capabilities': live_caps,
+            })
         return {'providers': providers,
                 'effort': self.rpc('config.get', self.scoped(key='reasoning')).get('value', '')}
 
@@ -287,14 +377,24 @@ class NativeChat:
             raise RuntimeError('Wait for the reply to finish before changing model or thinking.')
         options = self.model_options()
         if body.get('model'):
-            model, provider = body['model'], body.get('provider', '')
-            if not any(p['slug'] == provider and model in p['models'] for p in options['providers']):
-                raise RuntimeError('This model is not available in your connected Hermes providers.')
+            model, provider = body['model'], body.get('provider', '') or 'openrouter'
             # The native setter parses flags: reject whitespace/flags in catalog identifiers.
             if not re.fullmatch(r'[\w./:@+-]+', model) or model.startswith('-') or not re.fullmatch(r'[\w-]+', provider):
                 raise RuntimeError('This model identifier is not supported by the picker.')
             result = self.rpc('config.set', self.scoped(key='model', value=f'{model} --provider {provider}',
                               scope='session', confirm_expensive_model=body.get('confirm') is True), timeout=60)
+            self.info['model'] = model
+            self.info['provider'] = provider
+            for sp in [Path('/data/box3_snapshot.json'), Path('/opt/data/box3_snapshot.json'), Path(self.root) / '.runtime' / 'box3_snapshot.json']:
+                try:
+                    if sp.is_file():
+                        sdata = json.loads(sp.read_text(encoding='utf-8'))
+                        for ag in sdata.get('agents', []):
+                            if ag.get('is_main'):
+                                ag['model'] = model
+                        sp.write_text(json.dumps(sdata, ensure_ascii=False, indent=2), encoding='utf-8')
+                except Exception:
+                    pass
         elif body.get('effort') in {'low', 'medium', 'high'}:
             capabilities = next((p['capabilities'].get(live.get('model'), {}) for p in options['providers']
                                  if p['slug'] == live.get('provider')), {})
@@ -383,6 +483,7 @@ class NativeChat:
             self.events.clear()
             self.requests.clear()
             self.actor, self.lease = None, 0
+        self._sync_session_model(self._resolve_preferred_model(body.get('preferred_model')))
         return self.snapshot(0)
 
     def handle(self, body):
@@ -421,7 +522,7 @@ class NativeChat:
                 raise RuntimeError('Previous voice work is still settling. Reconnect shortly.')
         if action == 'connect':
             self.bind_workspace(body)
-            return self.connect()
+            return self.connect(preferred_model=body.get('preferred_model'))
         if not self.sid:
             raise RuntimeError('Reconnect to Hermes first.')
         if action == 'options':
