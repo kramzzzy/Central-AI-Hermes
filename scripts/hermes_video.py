@@ -187,8 +187,35 @@ def clone_voice_model(body: dict) -> dict:
     }
 
 
+def _pcm24k_to_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
+    """Wrap raw 16-bit mono little-endian PCM in a 44-byte RIFF WAV header."""
+    import struct
+    num_channels = 1
+    bits_per_sample = 16
+    byte_rate = sample_rate * num_channels * (bits_per_sample // 8)
+    block_align = num_channels * (bits_per_sample // 8)
+    data_size = len(pcm_bytes)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        num_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        data_size,
+    )
+    return header + pcm_bytes
+
+
 def generate_voice_tts(body: dict) -> dict:
-    """Synthesize speech audio (.mp3 base64) using a cloned Fish voice, default Fish voice, or Edge TTS."""
+    """Synthesize speech audio (.mp3/.wav base64) using Fish Audio, Voice Service proxy, Edge TTS, or Piper."""
     text = str(body.get("text") or "").strip()
     if not text:
         raise VideoStudioError("Speech text is required.", 400)
@@ -199,86 +226,117 @@ def generate_voice_tts(body: dict) -> dict:
     reference_text = str(body.get("reference_text") or "").strip()
 
     fish_key = _get_env_key("FISH_API_KEY")
-    default_voice_id = _get_env_key("FISH_VOICE_ID", "a30d099a643d4173836cfee1d8ae6c13") or "a30d099a643d4173836cfee1d8ae6c13"
+    default_voice_id = _get_env_key("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe") or "612b878b113047d9a770c069c8b4fdfe"
     fish_tts_model = _get_env_key("FISH_TTS_MODEL", "s1") or "s1"
 
     if fish_key:
-        tts_payload: dict = {
-            "text": text,
-            "format": "mp3",
-            "mp3_bitrate": 128,
-            "normalize": True,
-            "latency": "normal",
-        }
-        if reference_audio_b64:
-            clean_b64 = reference_audio_b64.split(",", 1)[1].strip() if "," in reference_audio_b64 else reference_audio_b64
-            tts_payload["references"] = [
-                {
-                    "audio": clean_b64,
-                    "text": reference_text or "Hello, this is my natural speaking voice for video narration.",
-                }
-            ]
-        elif fish_voice_id and not fish_voice_id.startswith("ref:"):
-            tts_payload["reference_id"] = fish_voice_id
-        elif default_voice_id:
-            tts_payload["reference_id"] = default_voice_id
+        voice_candidates = []
+        if not reference_audio_b64:
+            if fish_voice_id and not fish_voice_id.startswith("ref:"):
+                voice_candidates.append(fish_voice_id)
+            if default_voice_id and default_voice_id not in voice_candidates:
+                voice_candidates.append(default_voice_id)
+            if "a30d099a643d4173836cfee1d8ae6c13" not in voice_candidates:
+                voice_candidates.append("a30d099a643d4173836cfee1d8ae6c13")
+        else:
+            voice_candidates = [""]
 
-        req = urllib.request.Request(
-            "https://api.fish.audio/v1/tts",
-            data=json.dumps(tts_payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {fish_key}",
-                "Content-Type": "application/json",
-                "model": fish_tts_model,
-                "User-Agent": "Central-AI-VoiceStudio/1.0",
+        for cand_voice in voice_candidates:
+            for model_name in list(dict.fromkeys([fish_tts_model, "s1", "s2.1-pro-free"])):
+                tts_payload: dict = {
+                    "text": text,
+                    "format": "mp3",
+                    "mp3_bitrate": 128,
+                    "normalize": True,
+                    "latency": "normal",
+                }
+                if reference_audio_b64:
+                    clean_b64 = reference_audio_b64.split(",", 1)[1].strip() if "," in reference_audio_b64 else reference_audio_b64
+                    tts_payload["references"] = [
+                        {
+                            "audio": clean_b64,
+                            "text": reference_text or "Hello, this is my natural speaking voice for video narration.",
+                        }
+                    ]
+                elif cand_voice:
+                    tts_payload["reference_id"] = cand_voice
+
+                req = urllib.request.Request(
+                    "https://api.fish.audio/v1/tts",
+                    data=json.dumps(tts_payload).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {fish_key}",
+                        "Content-Type": "application/json",
+                        "model": model_name,
+                        "User-Agent": "Central-AI-VoiceStudio/1.0",
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=35) as resp:
+                        audio_data = resp.read(15_000_000)
+                        if len(audio_data) > 512:
+                            return {
+                                "ok": True,
+                                "audio_b64": base64.b64encode(audio_data).decode("ascii"),
+                                "mime": "audio/mpeg",
+                                "provider": "fish-audio",
+                            }
+                except Exception as exc:
+                    print(f"[hermes_video] Fish Audio TTS ({model_name}, {cand_voice}) failed: {exc}")
+
+    # Layer 2: Box 1 stream_conversation / voice:8081 proxy TTS
+    try:
+        from stream_conversation import fish_rest_tts
+        pcm_data = fish_rest_tts(
+            text,
+            {
+                "FISH_API_KEY": fish_key,
+                "FISH_VOICE_ID": fish_voice_id if (fish_voice_id and not fish_voice_id.startswith("ref:")) else default_voice_id,
             },
-            method="POST",
+            rate=24000,
         )
+        if pcm_data and len(pcm_data) > 1024:
+            wav_bytes = _pcm24k_to_wav(pcm_data, 24000)
+            return {
+                "ok": True,
+                "audio_b64": base64.b64encode(wav_bytes).decode("ascii"),
+                "mime": "audio/wav",
+                "provider": "fish-voice-proxy",
+            }
+    except Exception as exc:
+        print(f"[hermes_video] Voice proxy TTS fallback: {exc}")
+
+    # Layer 3: Guaranteed fallback via edge-tts (pre-installed in Box 1)
+    for py_bin in ("/opt/hermes/.venv/bin/python", "python3", "python"):
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                audio_data = resp.read(15_000_000)
-                if len(audio_data) > 512:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                cmd = [
+                    py_bin,
+                    "-m",
+                    "edge_tts",
+                    "--voice",
+                    "en-AU-WilliamNeural",
+                    "--text",
+                    text,
+                    "--write-media",
+                    tmp_path,
+                ]
+                subprocess.run(cmd, check=True, timeout=30, capture_output=True)
+                audio_bytes = Path(tmp_path).read_bytes()
+                if len(audio_bytes) > 256:
                     return {
                         "ok": True,
-                        "audio_b64": base64.b64encode(audio_data).decode("ascii"),
+                        "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
                         "mime": "audio/mpeg",
-                        "provider": "fish-audio",
+                        "provider": "edge-tts-au",
                     }
+            finally:
+                with_ignore_unlink(tmp_path)
         except Exception as exc:
-            print(f"[hermes_video] Fish Audio TTS failed, falling back to Edge TTS: {exc}")
-
-    # Guaranteed fallback via edge-tts (pre-installed in Box 1)
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            voice_name = "en-AU-WilliamNeural"
-            cmd = [
-                "/opt/hermes/.venv/bin/python",
-                "-m",
-                "edge_tts",
-                "--voice",
-                voice_name,
-                "--text",
-                text,
-                "--write-media",
-                tmp_path,
-            ]
-            if not os.path.isfile(cmd[0]):
-                cmd[0] = "python3"
-            subprocess.run(cmd, check=True, timeout=30, capture_output=True)
-            audio_bytes = Path(tmp_path).read_bytes()
-            if len(audio_bytes) > 256:
-                return {
-                    "ok": True,
-                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
-                    "mime": "audio/mpeg",
-                    "provider": "edge-tts-au",
-                }
-        finally:
-            with_ignore_unlink(tmp_path)
-    except Exception as exc:
-        print(f"[hermes_video] Edge TTS fallback error: {exc}")
+            print(f"[hermes_video] Edge TTS ({py_bin}) fallback error: {exc}")
 
     raise VideoStudioError("Voice synthesis failed. Check FISH_API_KEY in Box 1.", 502)
 
@@ -350,12 +408,15 @@ def plan_video_storyboard(body: dict) -> dict:
                     for idx, s in enumerate(raw_scenes[:scene_count]):
                         start_s = round(idx * scene_duration)
                         end_s = min(target_duration, round((idx + 1) * scene_duration))
+                        v_text = str(s.get("voice_text") or "").strip()[:400]
+                        if not v_text:
+                            v_text = str(s.get("visual_prompt") or prompt).strip()[:200]
                         scenes.append({
                             "index": idx + 1,
                             "label": str(s.get("label") or f"Scene {idx + 1} ({start_s}–{end_s}s)")[:80],
                             "duration_sec": round(scene_duration),
                             "visual_prompt": str(s.get("visual_prompt") or prompt)[:1200],
-                            "voice_text": str(s.get("voice_text") or "")[:400],
+                            "voice_text": v_text,
                         })
                     return {
                         "ok": True,
@@ -461,8 +522,8 @@ def list_video_models(body: dict | None = None) -> dict:
 
     free_keyframe_entry = {
         "id": "keyframe-ken-burns",
-        "name": "Free: AI Keyframe Motion",
-        "vendor": "central-ai",
+        "name": "Free: LTX-Video AI (Fast)",
+        "vendor": "lightricks",
         "price_per_sec_usd": 0.0,
         "price_per_10s_usd": 0.0,
         "price_display": "Free · $0.00/10s",
@@ -834,6 +895,81 @@ def _try_openrouter_video_api(
     return None, None, None
 
 
+def _try_free_ltx_video_api(
+    visual_prompt: str,
+    duration_sec: int,
+    aspect_ratio: str,
+) -> bytes | None:
+    """Generate a real full-motion AI video MP4 for free via Lightricks LTX-Video-Distilled."""
+    base_url = "https://Lightricks-ltx-video-distilled.hf.space"
+    height_ui, width_ui = (
+        (704, 512)
+        if aspect_ratio == "9:16"
+        else ((512, 704) if aspect_ratio == "16:9" else (512, 512))
+    )
+    dur_ui = min(8.5, max(5.0, float(duration_sec)))
+    payload = {
+        "data": [
+            visual_prompt[:1000],
+            "worst quality, inconsistent motion, blurry, jittery, distorted, static image, still frame",
+            None,
+            None,
+            height_ui,
+            width_ui,
+            "text-to-video",
+            dur_ui,
+            9,
+            int(time.time()) % 100000,
+            True,
+            1.0,
+            True,
+        ]
+    }
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/gradio_api/call/text_to_video",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "CentralAI-VideoStudio/1.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            call_data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        event_id = str(call_data.get("event_id") or "").strip()
+        if not event_id:
+            return None
+
+        stream_req = urllib.request.Request(
+            f"{base_url}/gradio_api/call/text_to_video/{urllib.parse.quote(event_id)}",
+            headers={"User-Agent": "CentralAI-VideoStudio/1.0"},
+        )
+        video_url = ""
+        with urllib.request.urlopen(stream_req, timeout=65) as sresp:
+            for raw_line in sresp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if line.startswith("data:"):
+                    data_str = line[5:].strip()
+                    if data_str.startswith("["):
+                        try:
+                            arr = json.loads(data_str)
+                            if isinstance(arr, list) and arr and isinstance(arr[0], dict):
+                                v_info = arr[0].get("video") if isinstance(arr[0].get("video"), dict) else arr[0]
+                                candidate = str((v_info or {}).get("url") or "").strip()
+                                if candidate.startswith("http"):
+                                    video_url = candidate
+                                    break
+                        except Exception:
+                            pass
+        if video_url:
+            dl_req = urllib.request.Request(video_url, headers={"User-Agent": "CentralAI-VideoStudio/1.0"})
+            with urllib.request.urlopen(dl_req, timeout=35) as dl:
+                v_bytes = dl.read(50_000_000)
+                if len(v_bytes) > 4096:
+                    return v_bytes
+    except Exception as exc:
+        print(f"[hermes_video] Free LTX-Video generation failed: {exc}")
+    return None
+
+
 def _extract_last_frame_b64(ffmpeg: str, mp4_path: str) -> str | None:
     out_jpg = mp4_path + ".last.jpg"
     try:
@@ -875,6 +1011,8 @@ def generate_video_scene(body: dict) -> dict:
         raise VideoStudioError("Scene visual prompt is required.", 400)
 
     voice_text = str(body.get("voice_text") or "").strip()
+    if not voice_text and body.get("use_default_voice") is not False:
+        voice_text = visual_prompt[:200]
     duration_sec = max(5, min(15, int(body.get("duration_sec") or 10)))
     aspect_ratio = str(body.get("aspect_ratio") or "9:16").strip()
     if aspect_ratio not in ("9:16", "16:9", "1:1"):
@@ -904,22 +1042,38 @@ def generate_video_scene(body: dict) -> dict:
     requested_model = str(body.get("video_model") or "auto").strip()
     fast_fallback = bool(body.get("fast_fallback"))
     use_first_frame = "/avatar" in visual_prompt.lower() or bool(body.get("animate_first_frame"))
-    raw_video_bytes, model_used, scene_cost_usd = _try_openrouter_video_api(
-        visual_prompt,
-        duration_sec,
-        aspect_ratio,
-        (all_refs[0] if all_refs else None) if use_first_frame else None,
-        openrouter_key,
-        requested_model,
-        fast_fallback=fast_fallback,
-    )
 
-    if scene_cost_usd == -1.0:
-        return {
-            "ok": True,
-            "in_progress": True,
-            "model_used": model_used or requested_model,
-        }
+    raw_video_bytes: bytes | None = None
+    model_used: str | None = None
+    scene_cost_usd: float | None = 0.0
+
+    if requested_model == "keyframe-ken-burns":
+        raw_video_bytes = _try_free_ltx_video_api(visual_prompt, duration_sec, aspect_ratio)
+        if raw_video_bytes:
+            model_used = "keyframe-ken-burns"
+            scene_cost_usd = 0.0
+    else:
+        raw_video_bytes, model_used, scene_cost_usd = _try_openrouter_video_api(
+            visual_prompt,
+            duration_sec,
+            aspect_ratio,
+            (all_refs[0] if all_refs else None) if use_first_frame else None,
+            openrouter_key,
+            requested_model,
+            fast_fallback=fast_fallback,
+        )
+        if scene_cost_usd == -1.0:
+            return {
+                "ok": True,
+                "in_progress": True,
+                "model_used": model_used or requested_model,
+            }
+        if not raw_video_bytes:
+            ltx_bytes = _try_free_ltx_video_api(visual_prompt, duration_sec, aspect_ratio)
+            if ltx_bytes:
+                raw_video_bytes = ltx_bytes
+                model_used = "keyframe-ken-burns"
+                scene_cost_usd = 0.0
 
     if not raw_video_bytes and requested_model != "keyframe-ken-burns":
         raise VideoStudioError(
@@ -942,6 +1096,7 @@ def generate_video_scene(body: dict) -> dict:
             print(f"[hermes_video] Scene voiceover skipped: {exc}")
 
     width, height = (720, 1280) if aspect_ratio == "9:16" else ((1280, 720) if aspect_ratio == "16:9" else (720, 720))
+    audio_pad_filter = f"aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,apad=whole_dur={duration_sec}"
 
     with tempfile.TemporaryDirectory(prefix="central-video-scene-") as tmpdir:
         out_mp4 = os.path.join(tmpdir, "scene_out.mp4")
@@ -964,7 +1119,9 @@ def generate_video_scene(body: dict) -> dict:
                 "-t",
                 str(duration_sec),
                 "-vf",
-                f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+                f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},fps=24,setsar=1",
+                "-af",
+                audio_pad_filter,
                 "-map",
                 "0:v:0",
                 "-map",
@@ -983,11 +1140,14 @@ def generate_video_scene(body: dict) -> dict:
                 "yuv420p",
                 "-c:a",
                 "aac",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
                 "-b:a",
                 "128k",
                 "-movflags",
                 "+faststart",
-                "-shortest",
                 out_mp4,
             ]
             try:
@@ -996,7 +1156,7 @@ def generate_video_scene(body: dict) -> dict:
                 raise VideoStudioError(f"Scene video encoding failed: {exc}", 502) from None
             provider_used = model_used or "openrouter-video"
         else:
-            # Explicit Free: AI Keyframe Motion (keyframe-ken-burns) mode only
+            # Emergency fallback only if both OpenRouter and LTX-Video are unreachable
             img_b64: str | None = None
             try:
                 art = hermes_artwork.generate_social_image({
@@ -1037,6 +1197,12 @@ def generate_video_scene(body: dict) -> dict:
                     str(duration_sec),
                     "-vf",
                     vf_filter,
+                    "-af",
+                    audio_pad_filter,
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
                     "-c:v",
                     "libx264",
                     "-preset",
@@ -1051,11 +1217,14 @@ def generate_video_scene(body: dict) -> dict:
                     "yuv420p",
                     "-c:a",
                     "aac",
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "2",
                     "-b:a",
                     "128k",
                     "-movflags",
                     "+faststart",
-                    "-shortest",
                     out_mp4,
                 ]
             else:
@@ -1069,6 +1238,12 @@ def generate_video_scene(body: dict) -> dict:
                     *audio_inputs,
                     "-t",
                     str(duration_sec),
+                    "-af",
+                    audio_pad_filter,
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
                     "-c:v",
                     "libx264",
                     "-preset",
@@ -1079,11 +1254,14 @@ def generate_video_scene(body: dict) -> dict:
                     "yuv420p",
                     "-c:a",
                     "aac",
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "2",
                     "-b:a",
                     "128k",
                     "-movflags",
                     "+faststart",
-                    "-shortest",
                     out_mp4,
                 ]
             try:
@@ -1167,6 +1345,10 @@ def stitch_video_scenes(body: dict) -> dict:
             "yuv420p",
             "-c:a",
             "aac",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
             "-b:a",
             "128k",
             "-movflags",
