@@ -27,7 +27,7 @@ class VideoStudioError(Exception):
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, fp, code, message, headers, newurl):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -89,7 +89,7 @@ def _ffmpeg_bin() -> str | None:
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     try:
-        import imageio_ffmpeg
+        import imageio_ffmpeg  # type: ignore
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
         return None
@@ -348,12 +348,12 @@ def plan_video_storyboard(body: dict) -> dict:
                 if isinstance(raw_scenes, list) and len(raw_scenes) > 0:
                     scenes = []
                     for idx, s in enumerate(raw_scenes[:scene_count]):
-                        start_s = int(round(idx * scene_duration))
-                        end_s = min(target_duration, int(round((idx + 1) * scene_duration)))
+                        start_s = round(idx * scene_duration)
+                        end_s = min(target_duration, round((idx + 1) * scene_duration))
                         scenes.append({
                             "index": idx + 1,
                             "label": str(s.get("label") or f"Scene {idx + 1} ({start_s}–{end_s}s)")[:80],
-                            "duration_sec": int(round(scene_duration)),
+                            "duration_sec": round(scene_duration),
                             "visual_prompt": str(s.get("visual_prompt") or prompt)[:1200],
                             "voice_text": str(s.get("voice_text") or "")[:400],
                         })
@@ -379,12 +379,12 @@ def plan_video_storyboard(body: dict) -> dict:
     scenes = []
     for idx in range(scene_count):
         beat_name, beat_desc = role_beats[min(idx, len(role_beats) - 1)]
-        start_s = int(round(idx * scene_duration))
-        end_s = min(target_duration, int(round((idx + 1) * scene_duration)))
+        start_s = round(idx * scene_duration)
+        end_s = min(target_duration, round((idx + 1) * scene_duration))
         scenes.append({
             "index": idx + 1,
             "label": f"Scene {idx + 1}: {beat_name} ({start_s}–{end_s}s)",
-            "duration_sec": int(round(scene_duration)),
+            "duration_sec": round(scene_duration),
             "visual_prompt": f"{beat_desc}. {prompt}. Ultra-realistic 8K commercial cinematography, smooth gimbal motion, no baked-in text.",
             "voice_text": prompt[:220] if scene_count == 1 else f"{beat_name}: {prompt[:160]}",
         })
@@ -653,7 +653,7 @@ def _try_openrouter_video_api(
             break
         spec = model_map.get(model_slug) or {}
         supp_durs = spec.get("supported_durations") or [5, 10]
-        target_dur = 5 if fast_fallback else int(duration_sec)
+        target_dur = 5 if fast_fallback else duration_sec
         chosen_dur = min(supp_durs, key=lambda d: abs(int(d) - target_dur)) if supp_durs else max(5, min(10, target_dur))
         supp_ratios = spec.get("supported_aspect_ratios") or ["16:9", "9:16", "1:1"]
         chosen_ratio = aspect_ratio if aspect_ratio in supp_ratios else ("9:16" if "9:16" in supp_ratios else supp_ratios[0])
