@@ -521,7 +521,7 @@ def list_video_models(body: dict | None = None) -> dict:
         print(f"[hermes_video] Live OpenRouter video catalog fetch fallback: {exc}")
 
     free_keyframe_entry = {
-        "id": "keyframe-ken-burns",
+        "id": "free/ltx-video",
         "name": "Free: LTX-Video AI (Fast)",
         "vendor": "lightricks",
         "price_per_sec_usd": 0.0,
@@ -734,7 +734,7 @@ def _try_openrouter_video_api(
         _LAST_OPENROUTER_VIDEO_ERROR = "OPENROUTER_API_KEY is not configured in Box 1."
         return None, None, None
     req_model = (requested_model or "auto").strip()
-    if req_model == "keyframe-ken-burns":
+    if req_model in ("free/ltx-video", "keyframe-ken-burns"):
         return None, None, None
 
     overall_deadline = time.time() + 76.0
@@ -901,72 +901,135 @@ def _try_free_ltx_video_api(
     aspect_ratio: str,
 ) -> bytes | None:
     """Generate a real full-motion AI video MP4 for free via Lightricks LTX-Video-Distilled."""
-    base_url = "https://Lightricks-ltx-video-distilled.hf.space"
+    import random
+
     height_ui, width_ui = (
         (704, 512)
         if aspect_ratio == "9:16"
         else ((512, 704) if aspect_ratio == "16:9" else (512, 512))
     )
-    dur_ui = min(8.5, max(5.0, float(duration_sec)))
-    payload = {
-        "data": [
-            visual_prompt[:1000],
-            "worst quality, inconsistent motion, blurry, jittery, distorted, static image, still frame",
-            None,
-            None,
-            height_ui,
-            width_ui,
-            "text-to-video",
-            dur_ui,
-            9,
-            int(time.time()) % 100000,
-            True,
-            1.0,
-            True,
-        ]
-    }
-    try:
-        req = urllib.request.Request(
-            f"{base_url}/gradio_api/call/text_to_video",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "User-Agent": "CentralAI-VideoStudio/1.0"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            call_data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        event_id = str(call_data.get("event_id") or "").strip()
-        if not event_id:
-            return None
+    hf_token = _get_env_key("HF_TOKEN") or _get_env_key("HUGGINGFACE_API_KEY")
+    # IMPORTANT: Lightricks/ltx-video-distilled requests 75s of ZeroGPU quota if dur_ui > 7.0,
+    # which exceeds HuggingFace's 60s anonymous cap and fails immediately. Keep dur_ui <= 5.0.
+    dur_lightricks = min(5.0, max(3.0, float(duration_sec)))
+    candidates = [
+        (
+            "https://Lightricks-ltx-video-distilled.hf.space",
+            [
+                visual_prompt[:1000],
+                "worst quality, inconsistent motion, blurry, jittery, distorted, static image, still frame",
+                None,
+                None,
+                height_ui,
+                width_ui,
+                "text-to-video",
+                dur_lightricks,
+                9,
+                random.randint(100, 999999),
+                True,
+                1.0,
+                True,
+            ],
+        ),
+        (
+            "https://DeepRat-LTX-Video-ZeroGPU-Optimized.hf.space",
+            [
+                visual_prompt[:1000],
+                "worst quality, inconsistent motion, blurry, jittery, distorted, static image, still frame",
+                None,
+                None,
+                height_ui,
+                width_ui,
+                "text-to-video",
+                2.5,
+                9,
+                random.randint(100, 999999),
+                True,
+                1.0,
+                False,
+                False,
+            ],
+        ),
+        (
+            "https://Lightricks-ltx-video-distilled.hf.space",
+            [
+                visual_prompt[:1000],
+                "worst quality, inconsistent motion, blurry, jittery, distorted, static image, still frame",
+                None,
+                None,
+                height_ui,
+                width_ui,
+                "text-to-video",
+                3.0,
+                9,
+                random.randint(100, 999999),
+                True,
+                1.0,
+                False,
+            ],
+        ),
+    ]
 
-        stream_req = urllib.request.Request(
-            f"{base_url}/gradio_api/call/text_to_video/{urllib.parse.quote(event_id)}",
-            headers={"User-Agent": "CentralAI-VideoStudio/1.0"},
-        )
-        video_url = ""
-        with urllib.request.urlopen(stream_req, timeout=65) as sresp:
-            for raw_line in sresp:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if line.startswith("data:"):
-                    data_str = line[5:].strip()
-                    if data_str.startswith("["):
-                        try:
-                            arr = json.loads(data_str)
-                            if isinstance(arr, list) and arr and isinstance(arr[0], dict):
-                                v_info = arr[0].get("video") if isinstance(arr[0].get("video"), dict) else arr[0]
-                                candidate = str((v_info or {}).get("url") or "").strip()
-                                if candidate.startswith("http"):
-                                    video_url = candidate
-                                    break
-                        except Exception:
-                            pass
-        if video_url:
-            dl_req = urllib.request.Request(video_url, headers={"User-Agent": "CentralAI-VideoStudio/1.0"})
+    for attempt, (base_url, data_args) in enumerate(candidates):
+        req_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": f"Mozilla/5.0 CentralAI-VideoStudio/1.{attempt}",
+        }
+        if hf_token:
+            req_headers["Authorization"] = f"Bearer {hf_token}"
+        payload = {"data": data_args}
+        try:
+            req = urllib.request.Request(
+                f"{base_url}/gradio_api/call/text_to_video",
+                data=json.dumps(payload).encode("utf-8"),
+                headers=req_headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                call_data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            event_id = str(call_data.get("event_id") or "").strip()
+            if not event_id:
+                continue
+
+            stream_headers = {
+                "User-Agent": req_headers["User-Agent"],
+            }
+            if hf_token:
+                stream_headers["Authorization"] = f"Bearer {hf_token}"
+            stream_req = urllib.request.Request(
+                f"{base_url}/gradio_api/call/text_to_video/{urllib.parse.quote(event_id)}",
+                headers=stream_headers,
+            )
+            video_url = ""
+            saw_error = False
+            with urllib.request.urlopen(stream_req, timeout=70) as sresp:
+                for raw_line in sresp:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if line.startswith("event: error"):
+                        saw_error = True
+                        break
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if data_str.startswith("["):
+                            try:
+                                arr = json.loads(data_str)
+                                if isinstance(arr, list) and arr and isinstance(arr[0], dict):
+                                    v_info = arr[0].get("video") if isinstance(arr[0].get("video"), dict) else arr[0]
+                                    candidate = str((v_info or {}).get("url") or "").strip()
+                                    if candidate.startswith("http"):
+                                        video_url = candidate
+                                        break
+                            except Exception:
+                                pass
+            if saw_error or not video_url:
+                continue
+            dl_req = urllib.request.Request(video_url, headers=stream_headers)
             with urllib.request.urlopen(dl_req, timeout=35) as dl:
                 v_bytes = dl.read(50_000_000)
                 if len(v_bytes) > 4096:
                     return v_bytes
-    except Exception as exc:
-        print(f"[hermes_video] Free LTX-Video generation failed: {exc}")
+        except Exception as exc:
+            print(f"[hermes_video] Free LTX-Video attempt {attempt + 1} ({base_url}) failed: {exc}")
     return None
 
 
@@ -1004,8 +1067,6 @@ def _extract_last_frame_b64(ffmpeg: str, mp4_path: str) -> str | None:
 
 def generate_video_scene(body: dict) -> dict:
     """Render one 8-10s scene MP4 with visual continuity, optional cloned voiceover, and extracted last frame."""
-    import hermes_artwork
-
     visual_prompt = str(body.get("visual_prompt") or body.get("prompt") or "").strip()
     if len(visual_prompt) < 3:
         raise VideoStudioError("Scene visual prompt is required.", 400)
@@ -1041,23 +1102,22 @@ def generate_video_scene(body: dict) -> dict:
     openrouter_key = _get_env_key("OPENROUTER_API_KEY")
     requested_model = str(body.get("video_model") or "auto").strip()
     fast_fallback = bool(body.get("fast_fallback"))
-    use_first_frame = "/avatar" in visual_prompt.lower() or bool(body.get("animate_first_frame"))
 
     raw_video_bytes: bytes | None = None
     model_used: str | None = None
     scene_cost_usd: float | None = 0.0
 
-    if requested_model == "keyframe-ken-burns":
+    if requested_model in ("free/ltx-video", "keyframe-ken-burns"):
         raw_video_bytes = _try_free_ltx_video_api(visual_prompt, duration_sec, aspect_ratio)
         if raw_video_bytes:
-            model_used = "keyframe-ken-burns"
+            model_used = "free/ltx-video"
             scene_cost_usd = 0.0
     else:
         raw_video_bytes, model_used, scene_cost_usd = _try_openrouter_video_api(
             visual_prompt,
             duration_sec,
             aspect_ratio,
-            (all_refs[0] if all_refs else None) if use_first_frame else None,
+            all_refs[0] if all_refs else None,
             openrouter_key,
             requested_model,
             fast_fallback=fast_fallback,
@@ -1072,12 +1132,12 @@ def generate_video_scene(body: dict) -> dict:
             ltx_bytes = _try_free_ltx_video_api(visual_prompt, duration_sec, aspect_ratio)
             if ltx_bytes:
                 raw_video_bytes = ltx_bytes
-                model_used = "keyframe-ken-burns"
+                model_used = "free/ltx-video"
                 scene_cost_usd = 0.0
 
-    if not raw_video_bytes and requested_model != "keyframe-ken-burns":
+    if not raw_video_bytes:
         raise VideoStudioError(
-            f"OpenRouter video generation failed ({requested_model}): {_LAST_OPENROUTER_VIDEO_ERROR or 'No video returned by provider.'}",
+            f"Video generation failed ({requested_model}): {_LAST_OPENROUTER_VIDEO_ERROR or 'Video model queue busy. Please click Regenerate to retry.'}",
             502,
         )
 
@@ -1104,172 +1164,56 @@ def generate_video_scene(body: dict) -> dict:
         if voice_mp3_bytes:
             Path(audio_path).write_bytes(voice_mp3_bytes)
 
-        if raw_video_bytes:
-            in_mp4 = os.path.join(tmpdir, "raw.mp4")
-            Path(in_mp4).write_bytes(raw_video_bytes)
-            audio_inputs = ["-i", audio_path] if voice_mp3_bytes else ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-            cmd = [
-                ffmpeg,
-                "-y",
-                "-stream_loop",
-                "-1",
-                "-i",
-                in_mp4,
-                *audio_inputs,
-                "-t",
-                str(duration_sec),
-                "-vf",
-                f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},fps=24,setsar=1",
-                "-af",
-                audio_pad_filter,
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "24",
-                "-maxrate",
-                "2500k",
-                "-bufsize",
-                "5000k",
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-ar",
-                "44100",
-                "-ac",
-                "2",
-                "-b:a",
-                "128k",
-                "-movflags",
-                "+faststart",
-                out_mp4,
-            ]
-            try:
-                subprocess.run(cmd, check=True, timeout=60, capture_output=True)
-            except Exception as exc:
-                raise VideoStudioError(f"Scene video encoding failed: {exc}", 502) from None
-            provider_used = model_used or "openrouter-video"
-        else:
-            # Emergency fallback only if both OpenRouter and LTX-Video are unreachable
-            img_b64: str | None = None
-            try:
-                art = hermes_artwork.generate_social_image({
-                    "prompt": visual_prompt[:1350],
-                    "aspect_ratio": aspect_ratio,
-                    "references": all_refs[:6],
-                })
-                img_b64 = art["data"][0]["b64_json"]
-            except Exception:
-                try:
-                    art = hermes_artwork.generate_marketing_image({"prompt": visual_prompt[:1350]})
-                    img_b64 = art["data"][0]["b64_json"]
-                except Exception:
-                    img_b64 = None
-
-            fps = 24
-            total_frames = duration_sec * fps
-            audio_inputs = ["-i", audio_path] if voice_mp3_bytes else ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-
-            if img_b64:
-                frame_path = os.path.join(tmpdir, "frame_in")
-                Path(frame_path).write_bytes(base64.b64decode(img_b64))
-                vf_filter = (
-                    f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
-                    f"crop={width * 2}:{height * 2},"
-                    f"zoompan=z='min(zoom+0.0022,1.35)':"
-                    f"x='iw/2-(iw/zoom/2)+sin(on/18)*45':"
-                    f"y='ih/2-(ih/zoom/2)+cos(on/24)*30':"
-                    f"d={total_frames}:s={width}x{height}:fps={fps},setsar=1"
-                )
-                cmd = [
-                    ffmpeg,
-                    "-y",
-                    "-i",
-                    frame_path,
-                    *audio_inputs,
-                    "-t",
-                    str(duration_sec),
-                    "-vf",
-                    vf_filter,
-                    "-af",
-                    audio_pad_filter,
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "1:a:0",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "fast",
-                    "-crf",
-                    "24",
-                    "-maxrate",
-                    "2500k",
-                    "-bufsize",
-                    "5000k",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:a",
-                    "aac",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "2",
-                    "-b:a",
-                    "128k",
-                    "-movflags",
-                    "+faststart",
-                    out_mp4,
-                ]
-            else:
-                cmd = [
-                    ffmpeg,
-                    "-y",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    f"color=c=0x161a1b:s={width}x{height}:r={fps}:d={duration_sec}",
-                    *audio_inputs,
-                    "-t",
-                    str(duration_sec),
-                    "-af",
-                    audio_pad_filter,
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "1:a:0",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "fast",
-                    "-crf",
-                    "24",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:a",
-                    "aac",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "2",
-                    "-b:a",
-                    "128k",
-                    "-movflags",
-                    "+faststart",
-                    out_mp4,
-                ]
-            try:
-                subprocess.run(cmd, check=True, timeout=60, capture_output=True)
-            except Exception as exc:
-                raise VideoStudioError(f"Scene fallback render failed: {exc}", 502) from None
-            provider_used = "keyframe-ken-burns"
-            scene_cost_usd = 0.0
+        in_mp4 = os.path.join(tmpdir, "raw.mp4")
+        Path(in_mp4).write_bytes(raw_video_bytes)
+        audio_inputs = ["-i", audio_path] if voice_mp3_bytes else ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-stream_loop",
+            "-1",
+            "-i",
+            in_mp4,
+            *audio_inputs,
+            "-t",
+            str(duration_sec),
+            "-vf",
+            f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},fps=24,setsar=1",
+            "-af",
+            audio_pad_filter,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "24",
+            "-maxrate",
+            "2500k",
+            "-bufsize",
+            "5000k",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            out_mp4,
+        ]
+        try:
+            subprocess.run(cmd, check=True, timeout=60, capture_output=True)
+        except Exception as exc:
+            raise VideoStudioError(f"Scene video encoding failed: {exc}", 502) from None
+        provider_used = model_used or "openrouter-video"
 
         final_bytes = Path(out_mp4).read_bytes()
         last_frame_uri = _extract_last_frame_b64(ffmpeg, out_mp4)
