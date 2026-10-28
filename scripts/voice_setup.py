@@ -50,7 +50,7 @@ def configure(settings, value):
     from coolify_voice import configured, save
     if configured(): return save(settings, value, provider.config)
     saved = load_settings(settings)
-    changes = {**saved, 'CENTRAL_AI_CALL_SPEECH': 'piper' if value['provider'] == 'native' else 'fish'}
+    changes = {**saved, 'CENTRAL_AI_CALL_SPEECH': 'fish'}
     if value['provider'] == 'fish':
         key = value.get('api_key') or provider.config.get('FISH_API_KEY', '')
         voice_id = value.get('voice_id') or provider.config.get('FISH_VOICE_ID', '')
@@ -58,8 +58,9 @@ def configure(settings, value):
             raise ValueError('Fish API key is not configured in backend')
         if not voice_id:
             raise ValueError('Fish Voice ID is not configured in backend')
+        voice_name = os.environ.get('FISH_VOICE_NAME') or ('Michael' if voice_id == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis')
         changes.update(FISH_API_KEY=key, FISH_VOICE_ID=voice_id,
-                       FISH_VOICE_NAME='Michael', FISH_OS_CALL_ENGINE='stream', FISH_ASR_ENABLED='false')
+                       FISH_VOICE_NAME=voice_name, FISH_OS_CALL_ENGINE='stream', FISH_ASR_ENABLED='false')
     provider.config.update(changes)
     if not provider.status().get('realtime'):
         raise ValueError('This voice provider is not ready. Check its settings or choose Set up later.')

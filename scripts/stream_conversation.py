@@ -251,12 +251,11 @@ def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
             pass
     voice_id = (config.get('FISH_VOICE_ID') or '').strip()
     if voice_id in {
-        '612b878b113047d9a770c069c8b4fdfe',
         '31d3dd937d2944a1b06da3db533d27f9',
         '711cf3ed00ab441a8f54a45058047b7a',
         'bf342d9e9e5b44e0ade1ccfd1abb4815',
     }:
-        voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
+        voice_id = os.environ.get('FISH_VOICE_ID', '').strip() or '612b878b113047d9a770c069c8b4fdfe'
     if not voice_id or not text or not text.strip():
         return b''
     cleaned_text = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', text, flags=re.I).strip()

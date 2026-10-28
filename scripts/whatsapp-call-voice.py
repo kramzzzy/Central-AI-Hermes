@@ -110,11 +110,11 @@ if os.environ.get('FISH_API_KEY'):
 if os.environ.get('FISH_VOICE_ID'):
     config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
 else:
-    config.setdefault('FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13')
+    config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
 if os.environ.get('FISH_VOICE_NAME'):
     config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
 else:
-    config.setdefault('FISH_VOICE_NAME', 'Michael')
+    config.setdefault('FISH_VOICE_NAME', 'Michael' if config.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis')
 try:
     from voice_setup import load_settings
     saved_voice = load_settings({'HERMES_PROFILE_ROOT': '/opt/data'})
@@ -124,19 +124,19 @@ try:
                 config[k] = v
 except Exception as exc:
     print(f"[voice] Private voice settings load skipped: {exc}", flush=True)
+if os.environ.get('FISH_VOICE_ID'):
+    config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
 config['FISH_API_KEY'] = valid_fish_key(config.get('FISH_API_KEY'))
 if not config.get('FISH_VOICE_ID') or str(config.get('FISH_VOICE_ID') or '').strip() in {
     '',
-    '612b878b113047d9a770c069c8b4fdfe',
     '31d3dd937d2944a1b06da3db533d27f9',
     '711cf3ed00ab441a8f54a45058047b7a',
     'bf342d9e9e5b44e0ade1ccfd1abb4815',
 }:
-    config['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-    config['FISH_VOICE_NAME'] = 'Michael'
+    config['FISH_VOICE_ID'] = os.environ.get('FISH_VOICE_ID', '').strip() or '612b878b113047d9a770c069c8b4fdfe'
+    config['FISH_VOICE_NAME'] = 'Michael' if config['FISH_VOICE_ID'] == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
 if not os.environ.get('CUSTOMER_FISH_VOICE_ID') or os.environ.get('CUSTOMER_FISH_VOICE_ID', '').strip() in {
     '',
-    '612b878b113047d9a770c069c8b4fdfe',
     '31d3dd937d2944a1b06da3db533d27f9',
     '711cf3ed00ab441a8f54a45058047b7a',
     'bf342d9e9e5b44e0ade1ccfd1abb4815',
@@ -153,8 +153,8 @@ else:
             if _rt_path.parent.is_dir():
                 _rt_path.write_text(json.dumps({
                     'FISH_API_KEY': config['FISH_API_KEY'],
-                    'FISH_VOICE_ID': config.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13',
-                    'FISH_VOICE_NAME': 'Michael',
+                    'FISH_VOICE_ID': config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe',
+                    'FISH_VOICE_NAME': config.get('FISH_VOICE_NAME') or ('Michael' if config.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'),
                     'FISH_TTS_MODEL': config.get('FISH_TTS_MODEL') or 's1',
                 }), encoding='utf-8')
                 os.chmod(_rt_path, 0o644)

@@ -429,6 +429,8 @@ def _parse_video_price_per_sec(skus: dict | None) -> float | None:
 
 
 def _format_price_badge(price_per_sec: float) -> str:
+    if price_per_sec <= 0:
+        return "Free · $0.00/10s"
     per_10s = price_per_sec * 10.0
     if price_per_sec < 0.01:
         return f"${price_per_sec:.4f}/s · ${per_10s:.3f}/10s"
@@ -436,7 +438,7 @@ def _format_price_badge(price_per_sec: float) -> str:
 
 
 def list_video_models(body: dict | None = None) -> dict:
-    """Auto-sense ONLY video generation models from OpenRouter (/api/v1/videos/models) with live pricing."""
+    """Auto-sense video generation models from OpenRouter (/api/v1/videos/models) with live pricing + Free AI Keyframe Motion."""
     force_refresh = bool((body or {}).get("force_refresh"))
     now = time.monotonic()
     if not force_refresh and _VIDEO_MODELS_CACHE["models"] and (now - _VIDEO_MODELS_CACHE["timestamp"] < _VIDEO_MODELS_TTL):
@@ -457,19 +459,38 @@ def list_video_models(body: dict | None = None) -> dict:
     except Exception as exc:
         print(f"[hermes_video] Live OpenRouter video catalog fetch fallback: {exc}")
 
-    sensed: list[dict] = []
+    free_keyframe_entry = {
+        "id": "keyframe-ken-burns",
+        "name": "Free: AI Keyframe Motion",
+        "vendor": "central-ai",
+        "price_per_sec_usd": 0.0,
+        "price_per_10s_usd": 0.0,
+        "price_display": "Free · $0.00/10s",
+        "supported_durations": [5, 10],
+        "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+        "supported_resolutions": ["720p"],
+        "supports_first_frame": True,
+        "supports_audio": True,
+    }
+
+    sensed: list[dict] = [free_keyframe_entry]
     for item in raw_list:
         if not isinstance(item, dict):
             continue
         model_id = str(item.get("id") or "").strip()
-        durations = item.get("supported_durations")
-        # Strictly filter to true text-to-video / image-to-video generation models (exclude upscale/edit-only models)
-        if not model_id or not isinstance(durations, list) or len(durations) == 0:
+        if not model_id or "video-upscale" in model_id or "video-edit" in model_id:
             continue
-        price_sec = _parse_video_price_per_sec(item.get("pricing_skus"))
+        durations = item.get("supported_durations")
+        if not isinstance(durations, list) or len(durations) == 0:
+            durations = [5, 10]
+        skus = item.get("pricing_skus")
+        is_free = model_id.endswith(":free") or (
+            isinstance(skus, dict) and bool(skus) and all(float(v or 0) == 0.0 for v in skus.values() if str(v).replace(".", "", 1).isdigit())
+        )
+        price_sec = 0.0 if is_free else _parse_video_price_per_sec(skus)
         if price_sec is None:
             price_sec = 0.05
-        name = str(item.get("name") or model_id).strip()
+        name = str(item.get("name") or model_id).strip().replace("SpaceXAI:", "xAI:")
         vendor = model_id.split("/", 1)[0] if "/" in model_id else "openrouter"
         frame_imgs = item.get("supported_frame_images") or []
         sensed.append({
@@ -482,27 +503,41 @@ def list_video_models(body: dict | None = None) -> dict:
             "supported_durations": sorted([int(d) for d in durations if isinstance(d, (int, float))]),
             "supported_aspect_ratios": item.get("supported_aspect_ratios") or ["16:9", "9:16", "1:1"],
             "supported_resolutions": item.get("supported_resolutions") or ["720p"],
-            "supports_first_frame": "first_frame" in frame_imgs,
+            "supports_first_frame": "first_frame" in frame_imgs if frame_imgs else True,
             "supports_audio": bool(item.get("generate_audio")),
         })
 
-    if not sensed:
+    if len(sensed) <= 1:
         # Fallback video catalog with verified OpenRouter video pricing if offline
         fallback_specs = [
             ("bytedance/seedance-1-5-pro", "ByteDance: Seedance 1.5 Pro", 0.0115, [5, 10], True),
-            ("x-ai/grok-imagine-video-1.5-lite", "SpaceXAI: Grok Imagine Video 1.5 Lite", 0.02, [5, 10], True),
+            ("x-ai/grok-imagine-video-1.5-lite", "xAI: Grok Imagine Video 1.5 Lite", 0.02, [5, 10], True),
+            ("heygen/heygen-video-1", "HeyGen: HeyGen Video", 0.02, [5, 10, 15], True),
             ("google/veo-3.1-lite", "Google: Veo 3.1 Lite", 0.03, [4, 6, 8], True),
+            ("bytedance/seedance-2.0-mini", "ByteDance: Seedance 2.0 Mini", 0.0336, [5, 10], True),
+            ("bytedance/seedance-2.0", "ByteDance: Seedance 2.0", 0.0384, [5, 10], True),
             ("alibaba/wan-2.6", "Alibaba: Wan 2.6", 0.04, [5, 10], True),
             ("bytedance/seedance-2.0-fast", "ByteDance: Seedance 2.0 Fast", 0.0404, [5, 10], True),
             ("alibaba/wan-3.0", "Alibaba: Wan 3.0", 0.05, [5, 10], True),
-            ("minimax/hailuo-3-max", "MiniMax: Hailuo 3 Max", 0.05, [5, 10], True),
+            ("heygen/avatar-iv", "HeyGen: Avatar IV", 0.05, [5, 10], True),
+            ("minimax/hailuo-3-max", "MiniMax: H3 Max", 0.05, [5, 10], True),
+            ("x-ai/grok-imagine-video", "xAI: Grok Imagine Video", 0.05, [5, 10], True),
             ("alibaba/wan-3.0-prime", "Alibaba: Wan 3.0 Prime", 0.068, [5, 10], True),
             ("google/veo-3.1-fast", "Google: Veo 3.1 Fast", 0.08, [4, 6, 8], True),
+            ("x-ai/grok-imagine-video-1.5", "xAI: Grok Imagine Video 1.5", 0.08, [5, 10], True),
             ("minimax/hailuo-2.3", "MiniMax: Hailuo 2.3", 0.0817, [6, 10], True),
             ("kwaivgi/kling-v3.0-std", "Kling: Video v3.0 Standard", 0.084, [5, 10], True),
+            ("alibaba/happyhorse-1.0", "Alibaba: HappyHorse 1.0", 0.0988, [5, 10], True),
+            ("alibaba/happyhorse-1.1", "Alibaba: HappyHorse 1.1", 0.0988, [5, 10], True),
+            ("alibaba/wan-2.7", "Alibaba: Wan 2.7", 0.10, [5, 10], True),
+            ("bytedance/seedance-2.5", "ByteDance: Seedance 2.5", 0.1028, [5, 10], True),
             ("kwaivgi/kling-v3.0-pro", "Kling: Video v3.0 Pro", 0.112, [5, 10], True),
+            ("kwaivgi/kling-video-o1", "Kling: Video O1", 0.112, [5, 10], True),
             ("runway/gen-4.5", "Runway: Gen-4.5", 0.12, [5, 10], True),
+            ("minimax/hailuo-3", "MiniMax: H3", 0.13, [5, 10], True),
+            ("black-forest-labs/flux-3-video", "Black Forest Labs: FLUX 3 Video", 0.17, [5, 10], True),
             ("google/veo-3.1", "Google: Veo 3.1", 0.20, [4, 6, 8], True),
+            ("runway/aleph-2", "Runway: Aleph 2.0", 0.28, [5, 10], True),
         ]
         for mid, mname, psec, durs, fframe in fallback_specs:
             sensed.append({
@@ -961,7 +996,7 @@ def generate_video_scene(body: dict) -> dict:
             except Exception as exc:
                 raise VideoStudioError(f"Scene fallback render failed: {exc}", 502) from None
             provider_used = "keyframe-ken-burns"
-            scene_cost_usd = 0.003
+            scene_cost_usd = 0.0 if requested_model == "keyframe-ken-burns" else 0.003
 
         final_bytes = Path(out_mp4).read_bytes()
         last_frame_uri = _extract_last_frame_b64(ffmpeg, out_mp4)

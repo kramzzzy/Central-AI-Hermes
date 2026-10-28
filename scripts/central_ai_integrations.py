@@ -96,13 +96,12 @@ def discover_fish_credentials(root='/opt/data'):
             except Exception:
                 pass
     if result.get('FISH_VOICE_ID') in {
-        '612b878b113047d9a770c069c8b4fdfe',
         '31d3dd937d2944a1b06da3db533d27f9',
         '711cf3ed00ab441a8f54a45058047b7a',
         'bf342d9e9e5b44e0ade1ccfd1abb4815',
     }:
-        result['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-        result['FISH_VOICE_NAME'] = 'Michael'
+        result['FISH_VOICE_ID'] = os.environ.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe'
+        result['FISH_VOICE_NAME'] = os.environ.get('FISH_VOICE_NAME') or 'Jarvis'
     if result.get('CENTRAL_AI_CALL_SPEECH') == 'piper':
         result['CENTRAL_AI_CALL_SPEECH'] = 'fish'
     return result

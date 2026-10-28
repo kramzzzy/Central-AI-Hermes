@@ -142,11 +142,14 @@ class VoiceProvider:
         if os.environ.get('FISH_VOICE_ID'):
             self.config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
         else:
-            self.config.setdefault('FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13')
+            self.config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
         if os.environ.get('FISH_VOICE_NAME'):
             self.config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
         else:
-            self.config.setdefault('FISH_VOICE_NAME', 'Michael')
+            self.config.setdefault(
+                'FISH_VOICE_NAME',
+                'Michael' if self.config.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis',
+            )
         self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
         for env_key in ('OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
                         'FISH_OS_CALL_ENGINE', 'FISH_ASR_ENABLED', 'FISH_TTS_MODEL', 'FISH_LLM_MODEL',
@@ -159,20 +162,21 @@ class VoiceProvider:
         self.config['FISH_API_KEY'] = valid_fish_key(self.config.get('FISH_API_KEY'))
         if self.config.get('FISH_VOICE_ID') in {
             '',
-            '612b878b113047d9a770c069c8b4fdfe',
             '31d3dd937d2944a1b06da3db533d27f9',
             '711cf3ed00ab441a8f54a45058047b7a',
             'bf342d9e9e5b44e0ade1ccfd1abb4815',
         }:
-            self.config['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-            self.config['FISH_VOICE_NAME'] = 'Michael'
+            self.config['FISH_VOICE_ID'] = os.environ.get('FISH_VOICE_ID', '').strip() or '612b878b113047d9a770c069c8b4fdfe'
+            self.config['FISH_VOICE_NAME'] = (
+                'Michael' if self.config['FISH_VOICE_ID'] == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
+            )
         self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
         if self.config.get('FISH_API_KEY'):
             try:
                 atomic_write(Path(profile_root) / '.runtime-fish-voice.json', json.dumps({
                     'FISH_API_KEY': self.config['FISH_API_KEY'],
-                    'FISH_VOICE_ID': self.config.get('FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13'),
-                    'FISH_VOICE_NAME': self.config.get('FISH_VOICE_NAME', 'Michael'),
+                    'FISH_VOICE_ID': self.config.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe'),
+                    'FISH_VOICE_NAME': self.config.get('FISH_VOICE_NAME', 'Jarvis'),
                     'CENTRAL_AI_CALL_SPEECH': 'fish',
                 }) + '\n')
             except OSError:
@@ -190,19 +194,29 @@ class VoiceProvider:
             fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
             if fish_key:
                 self.config['FISH_API_KEY'] = fish_key
-        self.config['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-        self.config['FISH_VOICE_NAME'] = 'Michael'
+        env_voice_id = (os.environ.get('FISH_VOICE_ID') or '').strip()
+        if env_voice_id:
+            self.config['FISH_VOICE_ID'] = env_voice_id
+        elif not self.config.get('FISH_VOICE_ID'):
+            self.config['FISH_VOICE_ID'] = '612b878b113047d9a770c069c8b4fdfe'
+        env_voice_name = (os.environ.get('FISH_VOICE_NAME') or '').strip()
+        if env_voice_name:
+            self.config['FISH_VOICE_NAME'] = env_voice_name
+        else:
+            self.config['FISH_VOICE_NAME'] = (
+                'Michael' if self.config.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
+            )
         self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
         return self.config
 
     def status(self):
         c = self.refresh_credentials()
         has_fish_or_relay = bool(c.get('FISH_API_KEY') or Path('/data/voice-key').is_file())
-        setup = {'fish_key_configured': bool(c.get('FISH_API_KEY')), 'fish_voice_id': c.get('FISH_VOICE_ID', 'a30d099a643d4173836cfee1d8ae6c13')}
+        setup = {'fish_key_configured': bool(c.get('FISH_API_KEY')), 'fish_voice_id': c.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')}
         from coolify_voice import deployment_status
         setup['deployment'] = deployment_status(self.settings, c) if hasattr(self, 'settings') else {'managed':False}
         return {**setup, 'configured': has_fish_or_relay,
-                'voice': 'Michael',
+                'voice': c.get('FISH_VOICE_NAME') or ('Michael' if c.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'),
                 'transcription': 'fish' if (c.get('FISH_ASR_ENABLED') == 'true' or os.environ.get('FISH_ASR_ENABLED') == 'true') else 'browser',
                 'realtime': has_fish_or_relay,
                 # stream is the audio transport protocol, not a separate LLM.
@@ -238,9 +252,10 @@ class VoiceProvider:
                 try:
                     body = json.loads(data)
                     text = body.get('text', '')
+                    req_voice = str(body.get('voice_id') or self.config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe').strip()
                     sample_rate = body.get('sample_rate') if body.get('sample_rate') in (16000, 24000) else 24000
                     from stream_conversation import _voice_service_proxy_tts
-                    audio = _voice_service_proxy_tts(text, 'a30d099a643d4173836cfee1d8ae6c13', sample_rate)
+                    audio = _voice_service_proxy_tts(text, req_voice, sample_rate)
                     if audio:
                         handler.send_response(200)
                         handler.send_header('Content-Type', 'application/octet-stream')
@@ -258,7 +273,7 @@ class VoiceProvider:
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or not self.status()['configured']:
                 return handler.reply(400, {'error': 'Invalid speech request'})
             cleaned_text = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', text, flags=re.I).strip() or text.strip()
-            tts_voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
+            tts_voice_id = str(body.get('voice_id') or self.config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe').strip()
             sample_rate = body.get('sample_rate') if body.get('sample_rate') in (16000, 24000) else 24000
             data = json.dumps({'text': cleaned_text, 'reference_id': tts_voice_id, 'format': 'pcm', 'sample_rate': sample_rate, 'latency': 'balanced'}).encode()
             target = '/v1/tts'
@@ -282,7 +297,7 @@ class VoiceProvider:
                 # the authenticated user's display name, never a browser prompt.
                 greeting = call_greeting(body.pop('display_name', ''))
                 overrides = dict(body.get('overrides') or {})
-                session_voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
+                session_voice_id = str(overrides.get('voice_id') or self.config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe').strip()
                 overrides['voice_id'] = session_voice_id
                 overrides['voice'] = {'voice_id': session_voice_id, 'speaking_language': 'en', 'expressive': False}
                 overrides['language'] = 'en'

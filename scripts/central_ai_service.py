@@ -122,16 +122,15 @@ def get_standalone_config():
     discovered_fish = discover_fish_credentials('/opt/data')
     fish_key = valid_fish_key(os.environ.get('FISH_API_KEY', '')) or discovered_fish.get('FISH_API_KEY', '')
     call_speech = os.environ.get('CENTRAL_AI_CALL_SPEECH') or os.environ.get('HERMES_CALL_SPEECH') or ('fish' if fish_key else 'piper')
-    voice_name = os.environ.get('FISH_VOICE_NAME') or discovered_fish.get('FISH_VOICE_NAME') or 'Michael'
-    voice_id = os.environ.get('FISH_VOICE_ID') or discovered_fish.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13'
+    voice_name = os.environ.get('FISH_VOICE_NAME') or discovered_fish.get('FISH_VOICE_NAME') or 'Jarvis'
+    voice_id = os.environ.get('FISH_VOICE_ID') or discovered_fish.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe'
     if voice_id in {
-        '612b878b113047d9a770c069c8b4fdfe',
         '31d3dd937d2944a1b06da3db533d27f9',
         '711cf3ed00ab441a8f54a45058047b7a',
         'bf342d9e9e5b44e0ade1ccfd1abb4815',
     }:
-        voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
-        voice_name = 'Michael'
+        voice_id = '612b878b113047d9a770c069c8b4fdfe'
+        voice_name = 'Jarvis'
     return {
         'version': 1,
         'integrations': {

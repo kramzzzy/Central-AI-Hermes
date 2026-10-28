@@ -54,6 +54,12 @@ Central AI integrates with Hindsight (`:8888`) as Box 1's long-term memory engin
    - **Voice-Initiated Outbound Calling**: The assistant places WhatsApp calls on command via `call_whatsapp_contact` / `central_ai_call_whatsapp_contact`.
    - **Dynamic Linked Line Detection**: The assistant detects its own linked WhatsApp number dynamically via `socket.Store.ID.User` -> Meowcaller `/status` (`linked_number`). This displays the real connected number in App OS and prevents self-calling errors.
 
+4. **Dynamic Agent Profile & Knowledge Base Bridge (Zero Hardcoded Agent Instructions)**:
+   - **Pure Bridge Architecture**: Website Chat (`lib/website-widget.ts`) and the WhatsApp Customer Inquiry Line (`lib/contacts.ts`, `scripts/local-bridge.py`, `hermes_plugins/central_ai_whatsapp/adapter.py`) act as a pure bridge to the assigned Agent Profile in Box 2 (`agent_profiles`) and its Knowledge Base (`knowledge`).
+   - **Zero Hardcoded Persona / Guardrail Prompts**: Never hardcode agent persona rules, canned refusal sentences (e.g., `"I'm only here to help with..."`), or static product scripts inside `lib/website-widget.ts` or Box 1 scripts.
+   - **Dynamic Agent Switching**: Whenever any existing or newly created AI agent in **App OS → Agents** is assigned to Website Chat (`website_widgets.agent_id` / `booking_agent_id`) or the WhatsApp Customer Line (`organizations.whatsapp_customer_agent`), `publicAgent()` and `syncContactsToRuntime()` automatically load that agent's live `name`, `role`, `description`, `instructions`, `skills`, `knowledge_ids`, and `model` from PostgreSQL.
+   - **Live Synchronization**: Creating or updating an Agent Profile (`/api/agents`) or Knowledge Base card (`/api/knowledge`) or Website Widget (`/api/website-widgets`) immediately triggers `syncContactsToRuntime()` and `syncBox3SnapshotToHermes(true)` so Box 1 and Box 3 stay 100% synchronized without code changes or restarts.
+
 ## Mandatory Box 1 Dual-Push Synchronization (`Central-AI-Hermes`)
 
 - **Dedicated Box 1 Repository**:
@@ -92,6 +98,15 @@ Central AI integrates with Hindsight (`:8888`) as Box 1's long-term memory engin
 - Wrap auth helper functions in subqueries: `(SELECT auth.uid())` instead of `auth.uid()`.
 ## Strict Global Design Pattern & UI/UX Policy
 
+### Clean, Straightforward Layouts — Mandatory
+
+- Keep each screen focused on the user's task. Do not add unnecessary boxes, cards, banners, introductory panels, or repeated explanatory text.
+- Reuse the existing page structure. Add a container only when it groups distinct, useful content; never wrap every control or sentence in its own panel.
+- Place page-level controls in the existing header or tabs row, aligned to the right. Keep filters together immediately below it, with consistent heights, baselines, and spacing.
+- Avoid oversized top margins, empty bands, nested borders, and decorative sections. Use typography, spacing, and subtle dividers for hierarchy.
+- Preserve the existing design tokens and component patterns. Excellent design means clear hierarchy, readable content, precise alignment, and an obvious next action.
+- Before shipping UI changes, inspect the rendered layout at desktop and narrow widths for alignment, overflow, unnecessary containers, and wasted space. Report any verification limits.
+
 All agents modifying or creating UI components, pages, widgets, settings, modals, or onboarding flows **MUST ALWAYS** follow our existing design patterns and enforce the global design system without exception:
 
 1. **Mandatory Global Token Usage (`app/globals.css`)**:
@@ -121,7 +136,11 @@ All agents modifying or creating UI components, pages, widgets, settings, modals
      - **Standard Implementation Pattern**:
        - Card/panel container uses `display: flex; flex-direction: column; height: 100%;`
        - Form or card body uses `display: flex; flex-direction: column; flex: 1;`
-       - Action buttons footer/bar uses `margin-top: auto; display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border-subtle);`
+       - Action buttons footer/bar uses `margin-top: auto; display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border-subtle);
+
+5. **No Boxes Inside Boxes (Zero Nested Containers)**:
+   - **Never wrap filter bars in an outer .panel or bordered box**: Filter inputs and selects already have their own borders (1px solid var(--border)). Render filter rows flush on the page canvas (ackground: transparent; border: 0; padding: 0;).
+   - **Never place bordered cards/boxes inside an existing detail pane or .panel**: Inside detail views (e.g., Submissions, Comments, Communications), use typography, spacing, and subtle 1px solid var(--border-subtle) horizontal/vertical dividers instead of nested ackground: var(--surface-raised); border: 1px solid ... boxes around short status lines or messages.`
 
 <!-- BEGIN:nextjs-agent-rules -->
 

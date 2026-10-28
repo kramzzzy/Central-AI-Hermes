@@ -585,10 +585,13 @@ def end_call() -> dict:
 
 
 @server.tool(name='manage_submissions')
-def manage_submissions(action: str, id: str, status: str = '', message: str = '', subject: str = '') -> dict:
-    """Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify'), reply by email using the workspace's branded Mailing template (action='reply', message, subject?), or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions')."""
+def manage_submissions(action: str, id: str, status: str = '', message: str = '', subject: str = '', assigned_name: str = '') -> dict:
+    """Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify'), reply by email using the workspace's branded Mailing template (action='reply', message, subject?, assigned_name?), or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions')."""
     try:
-        raw = _plugin_client.manage_submissions({'action': action, 'id': id, 'status': status, 'message': message, 'subject': subject})
+        payload = {'action': action, 'id': id, 'status': status, 'message': message, 'subject': subject}
+        if assigned_name:
+            payload['assigned_name'] = assigned_name
+        raw = _plugin_client.manage_submissions(payload)
         return json.loads(raw) if isinstance(raw, str) else raw
     except Exception as exc:
         return {'error': f'Submission update failed: {str(exc)}'}
@@ -630,6 +633,7 @@ def manage_mailing(
     body: str = '',
     sync_to_communications: bool | None = None,
     assigned_agent: str = '',
+    assigned_name: str = '',
 ) -> dict:
     """Inspect, configure, verify, send outbound emails, or sync inbound customer emails using the workspace's active Mailing Setup (SMTP/IMAP Business Mail, Gmail OAuth, Resend, SendGrid, or Postmark) and mirror conversations into Communications."""
     payload = {
@@ -645,6 +649,7 @@ def manage_mailing(
             'body': body,
             'sync_to_communications': sync_to_communications,
             'assigned_agent': assigned_agent,
+            'assigned_name': assigned_name,
         }.items() if v not in ('', None)
     }
     try:
