@@ -1,5 +1,6 @@
 """Private, persistent App OS call settings; never returns provider credentials."""
 import json
+import os
 import re
 from pathlib import Path
 from central_ai_integrations import atomic_write

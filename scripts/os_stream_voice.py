@@ -1,6 +1,7 @@
 """Private OS call transport bound to the existing authenticated task context."""
 import base64
 import json
+import os
 import threading
 import time
 from uuid import UUID
@@ -15,7 +16,7 @@ class OSStreamVoice:
         self.calls, self.voice, self.team_voice = calls, voice, team_voice
         self.guard = threading.RLock()
         self.contexts = {}
-        self.slots = threading.BoundedSemaphore(2)
+        self.slots = threading.BoundedSemaphore(4)
 
     def handle(self, handler, body):
         if not isinstance(body, dict) or set(body) - {'action', 'call_id', 'scope', 'prompt', 'display_name', 'turn_id', 'text', 'voice', 'voice_id', 'voice_context'}:
@@ -47,7 +48,11 @@ class OSStreamVoice:
             if not isinstance(prompt, str) or not 0 < len(prompt) <= 28000: raise ValueError('Invalid voice identity')
             with self.guard:
                 if call in self.contexts: raise ValueError('Call already started')
-                if len(self.contexts) >= 4: raise RuntimeError('Voice calls are busy')
+                for prev_key in [k for k, v in self.contexts.items() if v['identity'] == identity]:
+                    prev = self.contexts.pop(prev_key)
+                    if prev['control']: prev['control'].cancel()
+                    threading.Thread(target=prev['conversation'].close, daemon=True).start()
+                if len(self.contexts) >= 16: raise RuntimeError('Voice calls are busy')
                 provider = self.team_voice if scope.get('assistant') else self.voice
                 if hasattr(provider, 'refresh_credentials'):
                     provider.refresh_credentials()

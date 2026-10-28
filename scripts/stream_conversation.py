@@ -186,10 +186,11 @@ def _voice_service_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=N
     if not voice_key:
         voice_key = (os.environ.get('HERMES_API_KEY') or 'hermes_standalone_secret_token_32chars').strip().strip('\'"')
     req_rate = rate if rate in (16000, 24000) else 24000
+    eff_voice_id = voice_id or os.environ.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe'
     payload = json.dumps({
         'text': cleaned_text,
-        'voice_id': voice_id or 'a30d099a643d4173836cfee1d8ae6c13',
-        'voice': 'michael',
+        'voice_id': eff_voice_id,
+        'voice': 'michael' if eff_voice_id == 'a30d099a643d4173836cfee1d8ae6c13' else 'jarvis',
         'sample_rate': req_rate,
     }).encode('utf-8')
     headers = {
