@@ -605,6 +605,59 @@ def _normalize_first_frame_uri(ffmpeg: str | None, data_uri: str | None, aspect_
     return data_uri
 
 
+_INFLIGHT_VIDEO_JOBS: dict[str, dict] = {}
+_LAST_OPENROUTER_VIDEO_ERROR: str = ""
+
+
+def _poll_openrouter_video_job(
+    job_id: str,
+    model_slug: str,
+    est_cost: float,
+    openrouter_key: str,
+    deadline: float,
+) -> tuple[bytes | None, float | None, str]:
+    """Poll an OpenRouter video job until deadline. Returns (video_bytes, cost, state)."""
+    global _LAST_OPENROUTER_VIDEO_ERROR
+    while time.time() < deadline:
+        time.sleep(2.5)
+        poll_req = urllib.request.Request(
+            f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}",
+            headers={"Authorization": f"Bearer {openrouter_key}"},
+        )
+        with urllib.request.urlopen(poll_req, timeout=12) as presp:
+            status_data = json.loads(presp.read().decode("utf-8", errors="replace"))
+        st = str(status_data.get("status") or "").lower()
+        if st in ("completed", "succeeded", "done"):
+            actual_cost = float((status_data.get("usage") or {}).get("cost") or est_cost)
+            u_urls = status_data.get("unsigned_urls")
+            v_url = (
+                (u_urls[0] if isinstance(u_urls, list) and u_urls else None)
+                or status_data.get("url")
+                or status_data.get("video_url")
+                or (status_data.get("output") or [None])[0]
+            )
+            if isinstance(v_url, str) and v_url.startswith("https://"):
+                with urllib.request.urlopen(v_url, timeout=30) as dl:
+                    v_bytes = dl.read(50_000_000)
+                    if len(v_bytes) > 4096:
+                        return v_bytes, actual_cost, "completed"
+            content_req = urllib.request.Request(
+                f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}/content",
+                headers={"Authorization": f"Bearer {openrouter_key}"},
+            )
+            with urllib.request.urlopen(content_req, timeout=30) as cdl:
+                v_bytes = cdl.read(50_000_000)
+                if len(v_bytes) > 4096:
+                    return v_bytes, actual_cost, "completed"
+            return None, None, "failed"
+        if st in ("failed", "cancelled", "expired", "error"):
+            err_msg = str(status_data.get("error") or f"Job status {st}")
+            _LAST_OPENROUTER_VIDEO_ERROR = f"{model_slug}: {err_msg}"
+            print(f"[hermes_video] OpenRouter video job {job_id} ({model_slug}) status={st}: {err_msg}")
+            return None, None, "failed"
+    return None, None, "processing"
+
+
 def _try_openrouter_video_api(
     visual_prompt: str,
     duration_sec: int,
@@ -614,33 +667,28 @@ def _try_openrouter_video_api(
     requested_model: str = "auto",
     fast_fallback: bool = False,
 ) -> tuple[bytes | None, str | None, float | None]:
-    """Attempt native video generation via OpenRouter /api/v1/videos with async job polling."""
+    """Attempt native video generation via OpenRouter /api/v1/videos with resumable async job polling."""
+    global _LAST_OPENROUTER_VIDEO_ERROR
     if not openrouter_key or openrouter_key.startswith("sk-or-v1-standalone-default"):
+        _LAST_OPENROUTER_VIDEO_ERROR = "OPENROUTER_API_KEY is not configured in Box 1."
         return None, None, None
     req_model = (requested_model or "auto").strip()
     if req_model == "keyframe-ken-burns":
         return None, None, None
 
-    overall_deadline = time.time() + (55.0 if fast_fallback else 82.0)
+    overall_deadline = time.time() + 76.0
     catalog = list_video_models().get("models") or []
     model_map = {m["id"]: m for m in catalog if isinstance(m, dict) and m.get("id")}
 
     env_model = _get_env_key("OPENROUTER_VIDEO_MODEL", "")
-    if fast_fallback:
-        fallback_chain = [
-            "bytedance/seedance-1-5-pro",
-            "x-ai/grok-imagine-video-1.5-lite",
-            "alibaba/wan-2.6",
-        ]
-    else:
-        fallback_chain = [
-            req_model if (req_model and req_model != "auto") else "",
-            env_model,
-            "bytedance/seedance-1-5-pro",
-            "x-ai/grok-imagine-video-1.5-lite",
-            "google/veo-3.1-lite",
-            "alibaba/wan-2.6",
-        ]
+    fallback_chain = [
+        req_model if (req_model and req_model != "auto") else "",
+        env_model,
+        "bytedance/seedance-1-5-pro",
+        "x-ai/grok-imagine-video-1.5-lite",
+        "google/veo-3.1-lite",
+        "alibaba/wan-2.6",
+    ]
     models_to_try = list(dict.fromkeys([m for m in fallback_chain if m]))[:3]
     normalized_frame = (
         None
@@ -648,15 +696,45 @@ def _try_openrouter_video_api(
         else _normalize_first_frame_uri(_ffmpeg_bin(), first_frame_data_uri, aspect_ratio)
     )
 
+    now_ts = time.time()
+    for stale_k in [k for k, v in _INFLIGHT_VIDEO_JOBS.items() if now_ts - float(v.get("ts") or 0) > 360]:
+        _INFLIGHT_VIDEO_JOBS.pop(stale_k, None)
+
     for model_slug in models_to_try:
         if time.time() >= overall_deadline:
             break
         spec = model_map.get(model_slug) or {}
         supp_durs = spec.get("supported_durations") or [5, 10]
-        target_dur = 5 if fast_fallback else duration_sec
+        target_dur = duration_sec
         chosen_dur = min(supp_durs, key=lambda d: abs(int(d) - target_dur)) if supp_durs else max(5, min(10, target_dur))
         supp_ratios = spec.get("supported_aspect_ratios") or ["16:9", "9:16", "1:1"]
         chosen_ratio = aspect_ratio if aspect_ratio in supp_ratios else ("9:16" if "9:16" in supp_ratios else supp_ratios[0])
+        supp_res = spec.get("supported_resolutions") or ["720p"]
+        chosen_res = "720p" if "720p" in supp_res else ("480p" if "480p" in supp_res else supp_res[0])
+
+        job_key = hashlib.sha256(
+            f"{model_slug}|{visual_prompt[:300]}|{chosen_ratio}|{int(chosen_dur)}".encode("utf-8")
+        ).hexdigest()[:24]
+
+        existing = _INFLIGHT_VIDEO_JOBS.get(job_key)
+        if existing and existing.get("job_id"):
+            try:
+                v_bytes, actual_cost, state = _poll_openrouter_video_job(
+                    str(existing["job_id"]),
+                    model_slug,
+                    float(existing.get("est_cost") or 0.12),
+                    openrouter_key,
+                    overall_deadline,
+                )
+                if state == "completed" and v_bytes:
+                    _INFLIGHT_VIDEO_JOBS.pop(job_key, None)
+                    return v_bytes, model_slug, actual_cost
+                if state == "processing":
+                    return None, model_slug, -1.0
+                _INFLIGHT_VIDEO_JOBS.pop(job_key, None)
+            except Exception as exc:
+                print(f"[hermes_video] In-flight poll error for {model_slug}: {exc}")
+                _INFLIGHT_VIDEO_JOBS.pop(job_key, None)
 
         frame_variants = (
             [normalized_frame, None]
@@ -672,6 +750,7 @@ def _try_openrouter_video_api(
                 "prompt": visual_prompt[:1200],
                 "duration": int(chosen_dur),
                 "aspect_ratio": chosen_ratio,
+                "resolution": chosen_res,
             }
             if frame_uri:
                 payload["frame_images"] = [
@@ -682,89 +761,75 @@ def _try_openrouter_video_api(
                     }
                 ]
 
-            req = urllib.request.Request(
-                "https://openrouter.ai/api/v1/videos",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Authorization": f"Bearer {openrouter_key}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    job = json.loads(resp.read().decode("utf-8", errors="replace"))
-                job_id = str(job.get("id") or "").strip()
-                est_cost = round(float(spec.get("price_per_sec_usd") or 0.04) * int(chosen_dur), 4)
-                unsigned = job.get("unsigned_urls")
-                direct_url = str(
-                    (unsigned[0] if isinstance(unsigned, list) and unsigned else None)
-                    or job.get("url")
-                    or job.get("video_url")
-                    or ""
-                ).strip()
-                if direct_url.startswith("https://"):
-                    with urllib.request.urlopen(direct_url, timeout=25) as vresp:
-                        data = vresp.read(50_000_000)
-                        if len(data) > 4096:
-                            actual_cost = float((job.get("usage") or {}).get("cost") or est_cost)
-                            return data, model_slug, actual_cost
-                if not job_id:
-                    continue
-                deadline = min(overall_deadline, time.time() + (45.0 if fast_fallback else 68.0))
-                while time.time() < deadline:
-                    time.sleep(2.5)
-                    poll_req = urllib.request.Request(
-                        f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}",
-                        headers={"Authorization": f"Bearer {openrouter_key}"},
-                    )
-                    with urllib.request.urlopen(poll_req, timeout=12) as presp:
-                        status_data = json.loads(presp.read().decode("utf-8", errors="replace"))
-                    st = str(status_data.get("status") or "").lower()
-                    if st in ("completed", "succeeded", "done"):
-                        actual_cost = float((status_data.get("usage") or {}).get("cost") or est_cost)
-                        u_urls = status_data.get("unsigned_urls")
-                        v_url = (
-                            (u_urls[0] if isinstance(u_urls, list) and u_urls else None)
-                            or status_data.get("url")
-                            or status_data.get("video_url")
-                            or (status_data.get("output") or [None])[0]
-                        )
-                        if isinstance(v_url, str) and v_url.startswith("https://"):
-                            with urllib.request.urlopen(v_url, timeout=25) as dl:
-                                v_bytes = dl.read(50_000_000)
-                                if len(v_bytes) > 4096:
-                                    return v_bytes, model_slug, actual_cost
-                        content_req = urllib.request.Request(
-                            f"https://openrouter.ai/api/v1/videos/{urllib.parse.quote(job_id)}/content",
-                            headers={"Authorization": f"Bearer {openrouter_key}"},
-                        )
-                        with urllib.request.urlopen(content_req, timeout=25) as cdl:
-                            v_bytes = cdl.read(50_000_000)
-                            if len(v_bytes) > 4096:
-                                return v_bytes, model_slug, actual_cost
-                        break
-                    if st in ("failed", "cancelled", "expired", "error"):
-                        print(f"[hermes_video] OpenRouter video job {job_id} ({model_slug}, frame={bool(frame_uri)}) status={st}: {status_data.get('error')}")
-                        break
-                # If frame_uri attempt failed, continue loop to retry with frame_uri=None
-                if frame_uri:
-                    continue
-                break
-            except urllib.error.HTTPError as he:
-                err_detail = ""
+            for attempt_payload in (
+                payload,
+                {"model": model_slug, "prompt": visual_prompt[:1200], "aspect_ratio": chosen_ratio},
+            ):
+                req = urllib.request.Request(
+                    "https://openrouter.ai/api/v1/videos",
+                    data=json.dumps(attempt_payload).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {openrouter_key}",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
                 try:
-                    err_detail = he.read().decode("utf-8", errors="replace")[:300]
-                except Exception:
-                    pass
-                print(f"[hermes_video] OpenRouter video model {model_slug} (frame={bool(frame_uri)}) HTTP {he.code}: {err_detail}")
-                if frame_uri:
-                    continue
-                break
-            except Exception as exc:
-                print(f"[hermes_video] OpenRouter video model {model_slug} (frame={bool(frame_uri)}) failed: {exc}")
-                if frame_uri:
-                    continue
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        job = json.loads(resp.read().decode("utf-8", errors="replace"))
+                    job_id = str(job.get("id") or "").strip()
+                    est_cost = round(float(spec.get("price_per_sec_usd") or 0.04) * int(chosen_dur), 4)
+                    unsigned = job.get("unsigned_urls")
+                    direct_url = str(
+                        (unsigned[0] if isinstance(unsigned, list) and unsigned else None)
+                        or job.get("url")
+                        or job.get("video_url")
+                        or ""
+                    ).strip()
+                    if direct_url.startswith("https://"):
+                        with urllib.request.urlopen(direct_url, timeout=30) as vresp:
+                            data = vresp.read(50_000_000)
+                            if len(data) > 4096:
+                                actual_cost = float((job.get("usage") or {}).get("cost") or est_cost)
+                                return data, model_slug, actual_cost
+                    if not job_id:
+                        break
+                    _INFLIGHT_VIDEO_JOBS[job_key] = {
+                        "job_id": job_id,
+                        "model": model_slug,
+                        "est_cost": est_cost,
+                        "ts": time.time(),
+                    }
+                    v_bytes, actual_cost, state = _poll_openrouter_video_job(
+                        job_id,
+                        model_slug,
+                        est_cost,
+                        openrouter_key,
+                        overall_deadline,
+                    )
+                    if state == "completed" and v_bytes:
+                        _INFLIGHT_VIDEO_JOBS.pop(job_key, None)
+                        return v_bytes, model_slug, actual_cost
+                    if state == "processing":
+                        return None, model_slug, -1.0
+                    _INFLIGHT_VIDEO_JOBS.pop(job_key, None)
+                    break
+                except urllib.error.HTTPError as he:
+                    err_detail = ""
+                    try:
+                        err_detail = he.read().decode("utf-8", errors="replace")[:300]
+                    except Exception:
+                        pass
+                    _LAST_OPENROUTER_VIDEO_ERROR = f"{model_slug} HTTP {he.code}: {err_detail}"
+                    print(f"[hermes_video] OpenRouter video model {model_slug} (frame={bool(frame_uri)}) HTTP {he.code}: {err_detail}")
+                    if he.code in (400, 422) and "resolution" in attempt_payload:
+                        continue
+                    break
+                except Exception as exc:
+                    _LAST_OPENROUTER_VIDEO_ERROR = f"{model_slug}: {exc}"
+                    print(f"[hermes_video] OpenRouter video model {model_slug} (frame={bool(frame_uri)}) failed: {exc}")
+                    break
+            if not frame_uri:
                 break
     return None, None, None
 
@@ -824,21 +889,7 @@ def generate_video_scene(body: dict) -> dict:
     if not ffmpeg:
         raise VideoStudioError("FFmpeg is not installed on Box 1.", 503)
 
-    # 1. Synthesize voiceover audio if voice_text is provided
-    voice_mp3_bytes: bytes | None = None
-    if voice_text:
-        try:
-            tts_res = generate_voice_tts({
-                "text": voice_text,
-                "fish_voice_id": fish_voice_id,
-                "reference_audio_b64": reference_audio_b64,
-            })
-            if tts_res.get("audio_b64"):
-                voice_mp3_bytes = base64.b64decode(tts_res["audio_b64"])
-        except Exception as exc:
-            print(f"[hermes_video] Scene voiceover skipped: {exc}")
-
-    # 2. Prepare reference / continuity frame
+    # 1. Prepare reference / continuity frame
     all_refs: list[str] = []
     if first_frame_b64:
         if not first_frame_b64.startswith("data:image/"):
@@ -852,8 +903,6 @@ def generate_video_scene(body: dict) -> dict:
     openrouter_key = _get_env_key("OPENROUTER_API_KEY")
     requested_model = str(body.get("video_model") or "auto").strip()
     fast_fallback = bool(body.get("fast_fallback"))
-    # Only lock first_frame for explicit /avatar or animate_first_frame requests;
-    # otherwise generate full-motion AI video from the scene prompt so static posters never freeze the video.
     use_first_frame = "/avatar" in visual_prompt.lower() or bool(body.get("animate_first_frame"))
     raw_video_bytes, model_used, scene_cost_usd = _try_openrouter_video_api(
         visual_prompt,
@@ -864,6 +913,33 @@ def generate_video_scene(body: dict) -> dict:
         requested_model,
         fast_fallback=fast_fallback,
     )
+
+    if scene_cost_usd == -1.0:
+        return {
+            "ok": True,
+            "in_progress": True,
+            "model_used": model_used or requested_model,
+        }
+
+    if not raw_video_bytes and requested_model != "keyframe-ken-burns":
+        raise VideoStudioError(
+            f"OpenRouter video generation failed ({requested_model}): {_LAST_OPENROUTER_VIDEO_ERROR or 'No video returned by provider.'}",
+            502,
+        )
+
+    # 2. Synthesize voiceover audio if voice_text is provided
+    voice_mp3_bytes: bytes | None = None
+    if voice_text:
+        try:
+            tts_res = generate_voice_tts({
+                "text": voice_text,
+                "fish_voice_id": fish_voice_id,
+                "reference_audio_b64": reference_audio_b64,
+            })
+            if tts_res.get("audio_b64"):
+                voice_mp3_bytes = base64.b64decode(tts_res["audio_b64"])
+        except Exception as exc:
+            print(f"[hermes_video] Scene voiceover skipped: {exc}")
 
     width, height = (720, 1280) if aspect_ratio == "9:16" else ((1280, 720) if aspect_ratio == "16:9" else (720, 720))
 
@@ -896,13 +972,21 @@ def generate_video_scene(body: dict) -> dict:
                 "-c:v",
                 "libx264",
                 "-preset",
-                "ultrafast",
+                "fast",
+                "-crf",
+                "24",
+                "-maxrate",
+                "2500k",
+                "-bufsize",
+                "5000k",
                 "-pix_fmt",
                 "yuv420p",
                 "-c:a",
                 "aac",
                 "-b:a",
                 "128k",
+                "-movflags",
+                "+faststart",
                 "-shortest",
                 out_mp4,
             ]
@@ -912,8 +996,7 @@ def generate_video_scene(body: dict) -> dict:
                 raise VideoStudioError(f"Scene video encoding failed: {exc}", 502) from None
             provider_used = model_used or "openrouter-video"
         else:
-            # Emergency fallback only if all OpenRouter video models are unreachable:
-            # generate a fresh cinematic scene frame (never reuse a static poster directly) + strong dynamic camera pan/zoom
+            # Explicit Free: AI Keyframe Motion (keyframe-ken-burns) mode only
             img_b64: str | None = None
             try:
                 art = hermes_artwork.generate_social_image({
@@ -957,13 +1040,21 @@ def generate_video_scene(body: dict) -> dict:
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "ultrafast",
+                    "fast",
+                    "-crf",
+                    "24",
+                    "-maxrate",
+                    "2500k",
+                    "-bufsize",
+                    "5000k",
                     "-pix_fmt",
                     "yuv420p",
                     "-c:a",
                     "aac",
                     "-b:a",
                     "128k",
+                    "-movflags",
+                    "+faststart",
                     "-shortest",
                     out_mp4,
                 ]
@@ -981,13 +1072,17 @@ def generate_video_scene(body: dict) -> dict:
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "ultrafast",
+                    "fast",
+                    "-crf",
+                    "24",
                     "-pix_fmt",
                     "yuv420p",
                     "-c:a",
                     "aac",
                     "-b:a",
                     "128k",
+                    "-movflags",
+                    "+faststart",
                     "-shortest",
                     out_mp4,
                 ]
@@ -996,7 +1091,7 @@ def generate_video_scene(body: dict) -> dict:
             except Exception as exc:
                 raise VideoStudioError(f"Scene fallback render failed: {exc}", 502) from None
             provider_used = "keyframe-ken-burns"
-            scene_cost_usd = 0.0 if requested_model == "keyframe-ken-burns" else 0.003
+            scene_cost_usd = 0.0
 
         final_bytes = Path(out_mp4).read_bytes()
         last_frame_uri = _extract_last_frame_b64(ffmpeg, out_mp4)
@@ -1009,7 +1104,7 @@ def generate_video_scene(body: dict) -> dict:
         "last_frame_b64": last_frame_uri,
         "provider": provider_used,
         "model_used": provider_used,
-        "cost_usd": round(float(scene_cost_usd or 0.003), 4),
+        "cost_usd": round(float(scene_cost_usd or 0.0), 4),
     }
 
 
@@ -1061,7 +1156,13 @@ def stitch_video_scenes(body: dict) -> dict:
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast",
+            "fast",
+            "-crf",
+            "24",
+            "-maxrate",
+            "2500k",
+            "-bufsize",
+            "5000k",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
