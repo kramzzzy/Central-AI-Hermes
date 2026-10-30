@@ -50,6 +50,17 @@ class SocialTests(unittest.TestCase):
         self.assertIn("config_id=cfg-9", url)
         self.assertNotIn("scope=", url)
 
+    def test_business_pages_found_via_granular_scopes(self):
+        def provider(url, **kw):
+            if "/me/accounts" in url: return {"data": []}
+            if "/debug_token" in url: return {"data": {"granular_scopes": [{"scope": "pages_show_list", "target_ids": ["777"]}, {"scope": "pages_manage_posts", "target_ids": ["777"]}]}}
+            if "/777?" in url: return {"id": "777", "name": "Client Page", "access_token": "page-777", "category": "Solar"}
+            return {}
+        self.social.transport = provider
+        pages, selected, _ = self.social._discover_facebook_pages("user-token")
+        self.assertEqual([p["id"] for p in pages], ["777"])
+        self.assertEqual(selected["access_token"], "page-777")
+
     def test_signature_required(self):
         with self.assertRaises(SocialError): self.social.handle({"action":"webhook_ingest","raw":"e30=","signature":"sha256=bad"})
 

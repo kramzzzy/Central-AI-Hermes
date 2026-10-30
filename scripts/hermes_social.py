@@ -525,6 +525,39 @@ class SocialWorkspace:
                 continue
 
         if not pages:
+            # Business-portfolio Pages are often missing from /me/accounts; the Pages the user ticked are in granular_scopes.
+            cfg = self.get_config("facebook") or {}
+            ids = []
+            try:
+                dbg = self.transport(f"{GRAPH_BASE}/debug_token?" + urllib.parse.urlencode({
+                    "input_token": token,
+                    "access_token": f"{cfg.get('client_id')}|{cfg.get('client_secret')}",
+                }))
+                for scope in (dbg.get("data") or {}).get("granular_scopes") or []:
+                    if str(scope.get("scope", "")).startswith("pages_"):
+                        ids += [str(i) for i in scope.get("target_ids") or [] if str(i) not in ids]
+            except Exception:
+                ids = []
+            for page_id in ids[:50]:
+                try:
+                    item = self.transport(f"{GRAPH_BASE}/{page_id}?" + urllib.parse.urlencode({
+                        "fields": "id,name,access_token,category,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
+                        "access_token": token,
+                    }))
+                except Exception:
+                    continue
+                if isinstance(item, dict) and item.get("id") and item.get("access_token"):
+                    pages.append({
+                        "id": str(item["id"]),
+                        "name": str(item.get("name") or "Facebook Page"),
+                        "access_token": str(item["access_token"]),
+                        "category": item.get("category") or "Business Page",
+                        "followers_count": None,
+                        "picture_url": ((item.get("picture") or {}).get("data") or {}).get("url"),
+                        "instagram_business_account": item.get("instagram_business_account"),
+                    })
+
+        if not pages:
             me = None
             for me_fields in [
                 "id,name,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
