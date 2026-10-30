@@ -149,6 +149,24 @@ class CustomerLineCallTests(unittest.TestCase):
         ])
         self.assertEqual('No existing solar', lead['existing_solar'], 'James must not ask about existing solar again')
 
+    def test_james_builds_rapport_before_asking_details_and_location_last(self):
+        sys.path.insert(0, str(Path(__file__).parents[2]))
+        from hermes_plugins.central_ai_whatsapp.adapter import _extract_and_analyze_customer_lead
+        # A known WhatsApp number and profile name are not a reason to start asking for details.
+        first = _extract_and_analyze_customer_lead([{'role': 'user', 'content': 'Hi, how do solar panels work?'}], 'Mark Ebio', '61400111222')
+        self.assertIn('Do NOT ask for their address', first['next_single_question'])
+        chat = [
+            {'role': 'user', 'content': 'Hi, thinking about solar'},
+            {'role': 'assistant', 'content': 'Great! Do you already have solar, or would this be a new setup?'},
+            {'role': 'user', 'content': 'New setup, our bill is about $600 a quarter'},
+        ]
+        self.assertIn('ask permission once', _extract_and_analyze_customer_lead(chat)['next_single_question'])
+        chat += [{'role': 'assistant', 'content': 'Would it be okay if I grab a few details so our team can put a proper quote together?'},
+                 {'role': 'user', 'content': 'Yes sure'}]
+        after_yes = _extract_and_analyze_customer_lead(chat)['next_single_question']
+        self.assertNotIn('Do NOT ask for their address', after_yes)
+        self.assertNotIn('address', after_yes, 'the property address is asked last')
+
     def test_spoken_caller_name_from_this_is_but_not_from_ordinary_sentences(self):
         extract = whatsapp_stream._extract_spoken_caller_name
         self.assertEqual('Mark', extract('Hey James, this is Mark. I would like to inquire about solar.'))

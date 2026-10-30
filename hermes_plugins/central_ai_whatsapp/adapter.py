@@ -852,24 +852,35 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
             and re.search(r'\b(tomorrow|monday|tuesday|wednesday|thursday|friday|morning|afternoon|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b', last_user_txt, re.I)
         )
     )
+    # Rapport first: contact and location questions wait until the prospect is ready (mirrors lib/website-widget.ts).
+    _user_texts = [str(m.get('content') or '') for m in (turns or []) if isinstance(m, dict) and m.get('role') == 'user']
+    _last_asst = next((str(m.get('content') or '') for m in reversed(turns or []) if isinstance(m, dict) and m.get('role') == 'assistant'), '')
+    _permission_re = re.compile(r'\b(?:ok(?:ay)?|alright|mind|happy|all right)\b[^.?!]{0,60}\b(?:grab|take|get|ask (?:you )?for|jot down|note down)\b[^.?!]{0,40}\b(?:details?|info(?:rmation)?|few things)\b', re.I)
+    asked_permission = any(isinstance(m, dict) and m.get('role') == 'assistant' and _permission_re.search(str(m.get('content') or '')) for m in (turns or []))
+    granted_permission = bool(_permission_re.search(_last_asst) and re.match(r'^(?:yes|yeah|yep|yup|sure|ok|okay|of course|go ahead|sounds good|please|no problem|absolutely|definitely|why not)\b', last_user_txt, re.I))
+    asked_to_proceed = any(re.search(r'\b(quote|quotation|how (?:do|can|would) (?:we|i) (?:connect|get started|start|proceed|go ahead|move forward|sign up)|next steps?|get in touch|contact me|reach me|call me|interested|sign me up|go ahead|ready to|site visit|inspection|come out|price for (?:my|our)|cost for (?:my|our)|how much (?:for|would it cost) (?:my|our|me|us))\b', t, re.I) for t in _user_texts)
+    # Phone and name come from the WhatsApp profile, so only details they typed signal readiness.
+    shared_details = has_street_address or _is_valid_confirmed_email(email) or bool(suburb)
+    ready_for_details = bool(wants_booking_now or granted_permission or asked_to_proceed or shared_details)
+    warmed_up = has_existing_solar or has_power_bill or len(_user_texts) >= 3
 
     missing_natural = []
     if not has_existing_solar and not wants_booking_now:
         missing_natural.append('whether you have solar already (and if yes, how old and what size in kW)')
     if not has_power_bill and not wants_booking_now:
         missing_natural.append('how much your last power bill was ($$)')
-    if not has_street_address:
-        missing_natural.append(
-            f"the full street address of your property in {suburb}"
-            if suburb
-            else "your property's full street address"
-        )
     if not has_full_name:
         missing_natural.append('your last name (so we have your full name)' if name else 'your full name (first and last)')
     if not has_phone:
         missing_natural.append('your best contact phone number')
     if not has_email:
         missing_natural.append('your email address')
+    if not has_street_address:
+        missing_natural.append(
+            f"the full street address of your property in {suburb}"
+            if suburb
+            else "your property's full street address"
+        )
     if all_four_collected and not customer_confirmed:
         missing_natural.append('your confirmation that all 4 details (Full Name, Phone, Email, and Property Street Address) are correct')
 
@@ -887,16 +898,24 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         )
     )
 
-    if not has_existing_solar and not wants_booking_now:
-        next_single_question = "First answer any question they asked warmly and naturally, then ask ONLY this 1 relaxed question: whether they already have solar on the property or if this is for a brand-new setup (do NOT ask about their power bill or address yet)."
-    elif not has_power_bill and not wants_booking_now:
-        next_single_question = "React naturally like a warm human to what they shared (and answer any question they asked), then ask ONLY this 1 simple question: roughly how much their last power bill was so you can work out the right solar size and savings for them."
-    elif not has_street_address:
-        next_single_question = (
-            f"Warmly acknowledge what they said (including any requested call/visit time), then ask naturally for the street number and street name of their property in {suburb} so our team can check the roof layout."
-            if suburb
-            else "Warmly acknowledge what they said (including any requested call/visit time), then ask naturally for the property's street address (street number, street name, and suburb) so our team can check the roof layout."
-        )
+    no_details = "Do NOT ask for their address, suburb, name, phone or email, and do NOT suggest booking a call or visit or ask what day/time suits, unless they bring it up."
+    if not ready_for_details and not (all_four_collected or already_lodged):
+        if not warmed_up:
+            next_single_question = (
+                "Be a friendly, genuinely helpful person getting to know them. Answer what they asked fully and simply first. "
+                f"If it fits naturally, you may ask ONE light question about them (what got them thinking about solar, {'their power bill' if has_existing_solar else 'whether they already have solar or this would be a new setup'}); "
+                f"a question is optional, so skip it if it would feel pushy. {no_details}"
+            )
+        elif not asked_permission:
+            next_single_question = (
+                "Answer what they said warmly and helpfully first. Then, only if the chat is going well, ask permission once, casually, before taking any details, "
+                "e.g. 'Would it be okay if I grab a few details so our team can put a proper quote together for you?'. Do not ask for any detail in the same message. " + no_details
+            )
+        else:
+            next_single_question = (
+                "You already asked if it's okay to take their details and they haven't said yes. Do not ask again. Just keep helping: answer their question, and if useful share one helpful idea"
+                + ('' if has_power_bill else ' or ask roughly what their power bill is so you can estimate savings') + ". " + no_details
+            )
     elif not has_full_name:
         next_single_question = (
             f"Warmly acknowledge their details, then ask naturally for their last name so we have their full name ({name} ...) for their quote."
@@ -907,6 +926,13 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
         next_single_question = "Warmly acknowledge what they shared, then ask naturally for the best phone number for our solar specialist to reach them on."
     elif not has_email:
         next_single_question = "Warmly acknowledge their phone number, then ask naturally for the best email address to pop their solar details through to."
+    elif not has_street_address:
+        # Location is the last thing asked, once they're already sharing details.
+        next_single_question = (
+            f"Warmly acknowledge what they shared, then ask naturally for the street number and street name of their property in {suburb} so our team can check the roof layout for their quote."
+            if suburb
+            else "Warmly acknowledge what they shared, then ask naturally for the property's address (street number, street name and suburb) so our team can check the roof layout for their quote."
+        )
     elif not customer_confirmed:
         next_single_question = (
             f"All 4 details are collected, and now we just need a relaxed, natural human read-back confirmation. "
@@ -921,12 +947,13 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
 
     checklist_lines = [
         'LIVE QUALIFICATION & CRM PROGRESS (ONE QUESTION AT A TIME — DO NOT STACK QUESTIONS):',
-        f"- 1. Existing Solar: {'COLLECTED (' + existing_solar + ')' if has_existing_solar else 'Not asked yet'}",
-        f"- 2. Last Power Bill ($$): {'COLLECTED (' + power_bill + ')' if has_power_bill else 'Not asked yet'}",
-        f"- 3. Property Street Address: {'COLLECTED (' + address + ')' if has_street_address else ('Partial (' + suburb + ' — need street number & street name)' if suburb else 'Not asked yet')}",
-        f"- 4. Full Name (First & Last): {'COLLECTED (' + name + ')' if has_full_name else ('Partial (First name: ' + name + ' — need last name)' if name else 'Not asked yet')}",
-        f"- 5. Phone Number: {'COLLECTED (' + phone + ')' if has_phone else 'Not asked yet'}",
-        f"- 6. Email Address: {'COLLECTED (' + email + ')' if has_email else 'Not asked yet'}",
+        f"- Stage: {'READY FOR DETAILS (they want to proceed or agreed to share details)' if ready_for_details else 'GETTING TO KNOW THEM (no contact or location questions yet)'}",
+        f"- 1. Existing Solar: {'COLLECTED (' + existing_solar + ')' if has_existing_solar else 'Not shared yet'}",
+        f"- 2. Last Power Bill ($$): {'COLLECTED (' + power_bill + ')' if has_power_bill else 'Not shared yet'}",
+        f"- 3. Full Name (First & Last): {'COLLECTED (' + name + ')' if has_full_name else ('Partial (First name: ' + name + ' — need last name)' if name else 'Not asked yet')}",
+        f"- 4. Phone Number: {'COLLECTED (' + phone + ')' if has_phone else 'Not asked yet'}",
+        f"- 5. Email Address: {'COLLECTED (' + email + ')' if has_email else 'Not asked yet'}",
+        f"- 6. Property Street Address (asked last): {'COLLECTED (' + address + ')' if has_street_address else ('Partial (' + suburb + ' — need street number & street name)' if suburb else 'Not asked yet')}",
         f"- 7. Customer Confirmation of All 4 Details: {'CONFIRMED BY CUSTOMER' if customer_confirmed else ('AWAITING READ-BACK & CUSTOMER CONFIRMATION' if all_four_collected else 'Pending collection of items 3-6')}",
         f"NEXT SINGLE STEP FOR THIS TURN: {next_single_question}",
     ]
