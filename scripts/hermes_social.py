@@ -872,6 +872,10 @@ class SocialWorkspace:
                 "response_type": "code",
                 "scope": ",".join(FACEBOOK_SCOPES + (["instagram_manage_engagement"] if os.environ.get("META_INSTAGRAM_COMMENT_LIKES") == "1" else [])),
             }
+            # Facebook Login for Business apps take their permissions from a dashboard configuration, not `scope`.
+            if os.environ.get("META_LOGIN_CONFIG_ID"):
+                query["config_id"] = os.environ["META_LOGIN_CONFIG_ID"]
+                del query["scope"]
             return {
                 "url": f"https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth?"
                 + urllib.parse.urlencode(query)

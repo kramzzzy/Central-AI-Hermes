@@ -42,6 +42,14 @@ class SocialTests(unittest.TestCase):
     def send(self, **extra):
         return self.social.handle({"org":ORG,"action":"send_message","platform":"facebook","account_id":"101","recipient_id":"999","message":"Hello back","delivery_id":"reply-1",**extra})
 
+    def test_login_for_business_config_id_replaces_scope(self):
+        body={"platform":"facebook","binding":"b","redirect_uri":"https://app.test/cb"}
+        self.assertIn("scope=", self.social.start_oauth(ORG,"u",body)["url"])
+        with patch.dict(os.environ, {"META_LOGIN_CONFIG_ID": "cfg-9"}):
+            url=self.social.start_oauth(ORG,"u",body)["url"]
+        self.assertIn("config_id=cfg-9", url)
+        self.assertNotIn("scope=", url)
+
     def test_signature_required(self):
         with self.assertRaises(SocialError): self.social.handle({"action":"webhook_ingest","raw":"e30=","signature":"sha256=bad"})
 
