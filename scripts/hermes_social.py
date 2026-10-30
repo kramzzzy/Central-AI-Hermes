@@ -546,7 +546,7 @@ class SocialWorkspace:
                 except Exception:
                     continue
             if not isinstance(me, dict) or not me.get("id") or not me.get("category"):
-                raise SocialError("Facebook did not return a valid Page or account for this token.", 401)
+                raise SocialError("No Facebook Page was shared. Sign in again with a Page admin account and tick the Page in Facebook's page selection step.", 401)
             pic = (
                 ((me.get("picture") or {}).get("data") or {}).get("url")
                 if isinstance(me.get("picture"), dict)
