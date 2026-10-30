@@ -11,7 +11,7 @@ from .client import (
     open_widget, close_widget, control_widget,
     navigate_browser, get_live_weather, calculate_solar,
     google_workspace, social_media, end_call,
-    manage_whatsapp_customer_line, manage_mailing, manage_submissions, manage_files, manage_video
+    manage_whatsapp_customer_line, manage_mailing, manage_submissions, manage_social, manage_files, manage_video
 )
 
 TOOLS = {
@@ -520,6 +520,9 @@ for tool_name, handler, description, properties, required in [
     ("manage_submissions", manage_submissions,
      "Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify'), reply by email using the workspace's branded Mailing template (action='reply', message, subject?, assigned_name?), or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions').",
      {"action": {"type": "string", "enum": ["qualify", "status", "reply"]}, "id": {"type": "string"}, "status": {"type": "string", "enum": ["new", "processing", "contacted", "spam"]}, "message": {"type": "string", "maxLength": 4000}, "subject": {"type": "string", "maxLength": 200}, "assigned_name": {"type": "string", "maxLength": 140}}, ["action", "id"]),
+    ("manage_social", manage_social,
+     "Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one.",
+     {"action": {"type": "string", "enum": ["create_invite"]}}, ["action"]),
     ("manage_whatsapp_customer_line", manage_whatsapp_customer_line,
      "Inspect or update the Customer WhatsApp Line settings (enable/disable customer voice call answering, enable/disable public solar inquiry text auto-reply, or change the assigned customer inquiry agent).",
      {"action": {"type": "string", "enum": ["status", "update"]}, "auto_reply": {"type": "boolean"}, "calls_enabled": {"type": "boolean"}, "assigned_agent": {"type": "string"}}, []),

@@ -23,6 +23,9 @@ class WorkspaceToolsTests(unittest.TestCase):
             self.assertIsNone(client._inspect_from_snapshot({'section': section}, {}))
         submissions_tool = TOOLS['mcp__michael_os__manage_submissions']['schema']['parameters']
         self.assertEqual(['action', 'id'], submissions_tool['required'])
+        social_tool = TOOLS['mcp__michael_os__manage_social']['schema']['parameters']
+        self.assertEqual(['action'], social_tool['required'])
+        self.assertEqual(['create_invite'], social_tool['properties']['action']['enum'])
 
     def test_owner_tools_shared_and_restricted_context_denied(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -36,7 +39,7 @@ class WorkspaceToolsTests(unittest.TestCase):
                 for config in ['phone_business_context: true', 'os_specialist: {id: fixture}']:
                     (home/'config.yaml').write_text(config)
                     call.reset_mock()
-                    for tool in (client.generate_image, client.manage_video, client.manage_communications, client.manage_tasks):
+                    for tool in (client.generate_image, client.manage_video, client.manage_communications, client.manage_tasks, client.manage_social):
                         self.assertIn('error', json.loads(tool({})))
                     self.assertIn('error', json.loads(client.inspect_workspace({'section':'communications'})))
                     call.assert_not_called()

@@ -68,6 +68,15 @@ MANAGE_CRM_TOOL = {
     'expects_response': True, 'timeout_seconds': 15,
 }
 
+MANAGE_SOCIAL_TOOL = {
+    'tool_type': 'client', 'name': 'manage_social',
+    'description': "Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page; tell the owner the link was created and offer to text it. Only create an invite when the owner asks.",
+    'arguments': [
+        {'name': 'action', 'description': 'create_invite.'}
+    ],
+    'expects_response': True, 'timeout_seconds': 15,
+}
+
 MANAGE_SUBMISSIONS_TOOL = {
     'tool_type': 'client', 'name': 'manage_submissions',
     'description': "Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify') or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions').",
@@ -162,6 +171,7 @@ TASK_TOOLS = [
     INSPECT_WORKSPACE_TOOL,
     MANAGE_CRM_TOOL,
     MANAGE_SUBMISSIONS_TOOL,
+    MANAGE_SOCIAL_TOOL,
     MANAGE_FILES_TOOL,
     MANAGE_TASKS_TOOL,
     ADD_KNOWLEDGE_TOOL,
@@ -505,6 +515,11 @@ class NativeTaskBridge:
 
         if name == 'manage_submissions':
             mcp_res = call_app_os_mcp('central_ai_manage_submissions', {k: v for k, v in params.items() if v not in ('', None)}, timeout=15)
+            return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
+                    'result': mcp_res}
+
+        if name == 'manage_social':
+            mcp_res = call_app_os_mcp('central_ai_manage_social', {k: v for k, v in params.items() if v not in ('', None)}, timeout=15)
             return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
                     'result': mcp_res}
 

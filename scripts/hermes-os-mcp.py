@@ -597,6 +597,16 @@ def manage_submissions(action: str, id: str, status: str = '', message: str = ''
         return {'error': f'Submission update failed: {str(exc)}'}
 
 
+@server.tool(name='manage_social')
+def manage_social(action: str) -> dict:
+    """Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one."""
+    try:
+        raw = _plugin_client.manage_social({'action': action})
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        return {'error': f'Social connection request failed: {str(exc)}'}
+
+
 @server.tool(name='manage_whatsapp_customer_line')
 def manage_whatsapp_customer_line(
     action: str = 'status',
