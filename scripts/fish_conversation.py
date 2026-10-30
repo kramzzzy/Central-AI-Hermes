@@ -519,7 +519,12 @@ class NativeTaskBridge:
                     'result': mcp_res}
 
         if name == 'manage_social':
-            mcp_res = call_app_os_mcp('central_ai_manage_social', {k: v for k, v in params.items() if v not in ('', None)}, timeout=15)
+            # Invite links act as the workspace owner: same owner-context gate as the plugin tool, on a live call only.
+            if self.closed or not self.allowed(self.call):
+                return {'type': 'client_tool.result', 'callId': call_id, 'isError': True,
+                        'result': {'status': 'inactive_call'}}
+            from hermes_plugins.central_ai_app_os.client import manage_social as _manage_social
+            mcp_res = json.loads(_manage_social({'action': str(params.get('action') or '').strip()}))
             return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
                     'result': mcp_res}
 
