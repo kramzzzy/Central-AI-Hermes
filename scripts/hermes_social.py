@@ -1261,7 +1261,7 @@ class SocialWorkspace:
                     "platform": "facebook",
                     "page_id": page_id,
                     "page_name": conn.get("account_name"),
-                    "post_id": res.get("id") or res.get("post_id"),
+                    "post_id": res.get("post_id") or res.get("id"),
                 }
 
             raise SocialError("Reconnect this account before publishing.", 409)
@@ -1322,6 +1322,8 @@ class SocialWorkspace:
                 return {"accounts": self.accounts(org)}
             if action == "post_feed":
                 return self.post_feed(org, body)
+            if action == "delete_status":
+                return self.delete_post(org, body, status_only=True)
             if action == "delete_post":
                 return self.delete_post(org, body)
             if action == "publish_approved" and body.get("video_url"):
@@ -1391,17 +1393,22 @@ class SocialWorkspace:
             raise SocialError("Reconnect this account.", 409)
         return page
 
-    def delete_post(self, org, body):
+    def delete_post(self, org, body, status_only=False):
         platform = body.get("platform")
         account = str(body.get("account_id") or "")
         post_id = str(body.get("post_id") or "")
-        if body.get("confirmed") is not True:
+        if not status_only and body.get("confirmed") is not True:
             raise SocialError("Confirm deletion from App OS and the social platform first.", 400, rejected=True)
         if platform not in ("facebook", "instagram") or not re.fullmatch(r"\d{1,100}", account) or not re.fullmatch(r"[0-9_]{1,150}", post_id):
             raise SocialError("Invalid post identity.", 400, rejected=True)
-        page = self.account_page(org, platform, account)
         identity = {"platform": platform, "account_id": account, "post_id": post_id,
                     "delivery_id": "delete-post:" + hashlib.sha256(f"{platform}:{account}:{post_id}".encode()).hexdigest()}
+        if status_only:
+            with self.database() as db:
+                receipt = db.execute("SELECT encrypted FROM social_deliveries WHERE org=? AND id=?", (org, identity["delivery_id"])).fetchone()
+            result = self.decrypt(receipt["encrypted"]) if receipt and receipt["encrypted"] else {}
+            return {"deleted": result.get("deleted") is True and all(result.get(k) == identity[k] for k in ("platform", "account_id", "post_id"))}
+        page = self.account_page(org, platform, account)
         def remove():
             field = "from" if platform == "facebook" else "owner"
             try:

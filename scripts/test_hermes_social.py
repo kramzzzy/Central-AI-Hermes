@@ -342,6 +342,11 @@ class SocialTests(unittest.TestCase):
         self.now += 7*86400
         with self.assertRaises(SocialError): self.social.handle({**body,"comment_id":"101_600"})
 
+    def test_photo_publish_keeps_feed_post_id(self):
+        self.social.transport=lambda *a,**kw:{"id":"555","post_id":"101_777"}
+        result=self.social.handle({"org":ORG,"action":"publish_post","platform":"facebook","account_id":"101","message":"Test","image_url":"https://example.test/photo.jpg"})
+        self.assertEqual("101_777",result["post_id"])
+
     def test_delete_post_requires_confirmation_owner_and_provider_success(self):
         self.calls.clear()
         body = {"action":"delete_post","org":ORG,"platform":"facebook","account_id":"101","post_id":"101_555","confirmed":True}
@@ -356,6 +361,10 @@ class SocialTests(unittest.TestCase):
         self.assertTrue(self.social.handle(body)['deleted'])
         self.assertTrue(self.social.handle(body)['deleted'])
         self.assertEqual(1, sum(kw.get('method')=='DELETE' for _,kw in calls))
+        self.assertTrue(self.social.handle({**body,"action":"delete_status","confirmed":False})['deleted'])
+        self.assertFalse(self.social.handle({**body,"action":"delete_status","org":OTHER})['deleted'])
+        self.assertFalse(self.social.handle({**body,"action":"delete_status","post_id":"101_999"})['deleted'])
+        self.assertEqual(2, len(calls), "Receipt lookup must not contact the provider")
         self.social.transport=lambda *a,**kw:{"from":{"id":"202"}}
         with self.assertRaises(SocialError): self.social.handle({**body,"post_id":"202_777"})
 
@@ -364,5 +373,6 @@ class SocialTests(unittest.TestCase):
         self.social.transport=lambda url,**kw: {"owner":{"id":"303"}} if kw.get('method')!='DELETE' else {"success":False}
         with self.assertRaises(SocialError): self.social.handle(body)
         with self.assertRaisesRegex(SocialError,'outcome unknown'): self.social.handle(body)
+        self.assertFalse(self.social.handle({**body,"action":"delete_status"})['deleted'])
 
 if __name__ == '__main__': unittest.main()
