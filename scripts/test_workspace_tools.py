@@ -23,6 +23,7 @@ class WorkspaceToolsTests(unittest.TestCase):
             self.assertIsNone(client._inspect_from_snapshot({'section': section}, {}))
         submissions_tool = TOOLS['mcp__michael_os__manage_submissions']['schema']['parameters']
         self.assertEqual(['action', 'id'], submissions_tool['required'])
+        self.assertIn('delete', submissions_tool['properties']['action']['enum'])
         social_tool = TOOLS['mcp__michael_os__manage_social']['schema']['parameters']
         self.assertEqual(['action'], social_tool['required'])
         self.assertEqual(['create_invite'], social_tool['properties']['action']['enum'])

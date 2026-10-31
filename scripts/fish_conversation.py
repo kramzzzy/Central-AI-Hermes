@@ -79,9 +79,9 @@ MANAGE_SOCIAL_TOOL = {
 
 MANAGE_SUBMISSIONS_TOOL = {
     'tool_type': 'client', 'name': 'manage_submissions',
-    'description': "Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify') or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions').",
+    'description': "Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify') or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Delete an enquiry only when explicitly requested with action='delete'; existing CRM records and sent emails remain. Read submissions first with inspect_workspace(section='submissions').",
     'arguments': [
-        {'name': 'action', 'description': 'qualify (add to CRM as a lead) or status.'},
+        {'name': 'action', 'description': 'qualify (add to CRM as a lead), status, or delete (only when explicitly requested).'},
         {'name': 'id', 'description': 'Submission ID from inspect_workspace section submissions.'},
         {'name': 'status', 'description': 'For action status: new, processing, contacted, or spam (pass empty string otherwise).'}
     ],

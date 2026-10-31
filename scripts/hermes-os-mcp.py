@@ -587,7 +587,7 @@ def end_call() -> dict:
 
 @server.tool(name='manage_submissions')
 def manage_submissions(action: str, id: str, status: str = '', message: str = '', subject: str = '', assigned_name: str = '') -> dict:
-    """Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify'), reply by email using the workspace's branded Mailing template (action='reply', message, subject?, assigned_name?), or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Read submissions first with inspect_workspace(section='submissions')."""
+    """Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify'), reply by email using the workspace's branded Mailing template (action='reply', message, subject?, assigned_name?), or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Delete an enquiry only when explicitly requested with action='delete'; existing CRM records and sent emails remain. Read submissions first with inspect_workspace(section='submissions')."""
     try:
         payload = {'action': action, 'id': id, 'status': status, 'message': message, 'subject': subject}
         if assigned_name:
