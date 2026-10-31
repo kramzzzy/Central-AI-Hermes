@@ -72,10 +72,10 @@ MANAGE_SOCIAL_TOOL = {
     'tool_type': 'client', 'name': 'manage_social',
     'description': "Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page; tell the owner the link was created and offer to text it. Only create an invite when the owner asks.",
     'arguments': [
-        {'name': 'action', 'description': 'create_invite, list_outside_posts, include_post, or delete_post. Delete only after the owner explicitly confirms permanent removal from both App OS and the platform.'},
+        {'name': 'action', 'description': 'create_invite, list_outside_posts, include_post, remove_post, or delete_post. Delete only after the owner explicitly confirms permanent removal from both App OS and the platform.'},
         {'name': 'platform', 'description': 'facebook or instagram for include_post; all for listing.'},
         {'name': 'account', 'description': 'Connected account ID; empty for listing all accounts.'},
-        {'name': 'post', 'description': 'Exact post ID for include_post or delete_post; empty for listing.'},
+        {'name': 'post', 'description': 'Exact post ID for include_post, remove_post or delete_post; empty for listing.'},
         {'name': 'confirmed', 'description': 'true only after explicit confirmation to delete from both App OS and the platform; false otherwise.'}
     ],
     'expects_response': True, 'timeout_seconds': 15,
