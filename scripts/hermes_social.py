@@ -1322,6 +1322,8 @@ class SocialWorkspace:
                 return {"accounts": self.accounts(org)}
             if action == "post_feed":
                 return self.post_feed(org, body)
+            if action == "available_posts":
+                return self.available_posts(org, body)
             if action == "delete_status":
                 return self.delete_post(org, body, status_only=True)
             if action == "delete_post":
@@ -1422,6 +1424,31 @@ class SocialWorkspace:
                 raise SocialError("Platform did not confirm deletion. Check the post on the platform.", 502)
             return {"deleted": True, "platform": platform, "account_id": account, "post_id": post_id}
         return self.deliver_once(org, identity, remove)
+
+    def available_posts(self, org, body):
+        platform, account = body.get("platform"), str(body.get("account_id") or "")
+        ids = body.get("post_ids")
+        if platform not in ("facebook", "instagram") or not isinstance(ids, list) or not 1 <= len(ids) <= 25 or any(not isinstance(i, str) or not re.fullmatch(r"[0-9_]{1,150}", i) for i in ids):
+            raise SocialError("Invalid post identities.")
+        page = self.account_page(org, platform, account)
+        owner = "from" if platform == "facebook" else "owner"
+        result = self.transport(GRAPH_BASE, method="POST", form=True, data={
+            "access_token": page["access_token"],
+            "batch": json.dumps([{"method": "GET", "relative_url": f"{i}?fields=id,{owner}"} for i in ids]),
+        })
+        if not isinstance(result, list) or len(result) != len(ids):
+            raise SocialError("Unable to verify posts with the social platform. Refresh accounts and try again.", 502)
+        available = []
+        for post_id, response in zip(ids, result):
+            try:
+                data = json.loads(response["body"])
+                if not isinstance(data, dict):
+                    raise ValueError("Invalid post response")
+                if response["code"] == 200 and str(data.get("id")) == post_id and str((data.get(owner) or {}).get("id")) == account:
+                    available.append(post_id)
+            except (KeyError, TypeError, ValueError):
+                raise SocialError("Invalid post verification response from the social platform.", 502) from None
+        return {"post_ids": available}
 
     def post_feed(self, org, body):
         platform = body.get("platform")

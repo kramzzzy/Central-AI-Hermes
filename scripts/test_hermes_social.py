@@ -342,6 +342,21 @@ class SocialTests(unittest.TestCase):
         self.now += 7*86400
         with self.assertRaises(SocialError): self.social.handle({**body,"comment_id":"101_600"})
 
+    def test_available_posts_checks_live_identity_and_account(self):
+        def provider(url, **kw):
+            batch=json.loads(kw["data"]["batch"])
+            self.assertEqual(["GET"]*3,[request["method"] for request in batch])
+            return [{"code":200,"body":json.dumps({"id":"101_1","from":{"id":"101"}})},
+                    {"code":400,"body":json.dumps({"error":{"code":100}})},
+                    {"code":200,"body":json.dumps({"id":"101_3","from":{"id":"202"}})}]
+        self.social.transport=provider
+        body={"org":ORG,"action":"available_posts","platform":"facebook","account_id":"101","post_ids":["101_1","101_2","101_3"]}
+        self.assertEqual(["101_1"],self.social.handle(body)["post_ids"])
+        with self.assertRaises(SocialError):self.social.handle({**body,"org":OTHER})
+        with self.assertRaises(SocialError):self.social.handle({**body,"post_ids":["../bad"]})
+        self.social.transport=lambda *a,**kw:[]
+        with self.assertRaises(SocialError):self.social.handle(body)
+
     def test_photo_publish_keeps_feed_post_id(self):
         self.social.transport=lambda *a,**kw:{"id":"555","post_id":"101_777"}
         result=self.social.handle({"org":ORG,"action":"publish_post","platform":"facebook","account_id":"101","message":"Test","image_url":"https://example.test/photo.jpg"})
