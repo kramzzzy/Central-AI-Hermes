@@ -72,10 +72,11 @@ MANAGE_SOCIAL_TOOL = {
     'tool_type': 'client', 'name': 'manage_social',
     'description': "Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page; tell the owner the link was created and offer to text it. Only create an invite when the owner asks.",
     'arguments': [
-        {'name': 'action', 'description': 'create_invite, list_outside_posts, or include_post. Include only the exact outside post requested by the owner; this does not publish.'},
+        {'name': 'action', 'description': 'create_invite, list_outside_posts, include_post, or delete_post. Delete only after the owner explicitly confirms permanent removal from both App OS and the platform.'},
         {'name': 'platform', 'description': 'facebook or instagram for include_post; all for listing.'},
         {'name': 'account', 'description': 'Connected account ID; empty for listing all accounts.'},
-        {'name': 'post', 'description': 'Exact post ID for include_post; empty for listing.'}
+        {'name': 'post', 'description': 'Exact post ID for include_post or delete_post; empty for listing.'},
+        {'name': 'confirmed', 'description': 'true only after explicit confirmation to delete from both App OS and the platform; false otherwise.'}
     ],
     'expects_response': True, 'timeout_seconds': 15,
 }
@@ -527,7 +528,10 @@ class NativeTaskBridge:
                 return {'type': 'client_tool.result', 'callId': call_id, 'isError': True,
                         'result': {'status': 'inactive_call'}}
             from hermes_plugins.central_ai_app_os.client import manage_social as _manage_social
-            mcp_res = json.loads(_manage_social({'action': str(params.get('action') or '').strip()}))
+            payload = {k: params[k] for k in ('action', 'platform', 'account', 'post') if params.get(k) not in ('', None)}
+            if payload.get('action') == 'delete_post':
+                payload['confirmed'] = params.get('confirmed') is True or params.get('confirmed') == 'true'
+            mcp_res = json.loads(_manage_social(payload))
             return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
                     'result': mcp_res}
 

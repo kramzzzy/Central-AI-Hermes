@@ -1322,6 +1322,8 @@ class SocialWorkspace:
                 return {"accounts": self.accounts(org)}
             if action == "post_feed":
                 return self.post_feed(org, body)
+            if action == "delete_post":
+                return self.delete_post(org, body)
             if action == "publish_approved" and body.get("video_url"):
                 return self.publish_reel(org, body)
             if action == "publish_approved":
@@ -1388,6 +1390,31 @@ class SocialWorkspace:
         if page.get("access_token") in (None, "", "box1_managed_session"):
             raise SocialError("Reconnect this account.", 409)
         return page
+
+    def delete_post(self, org, body):
+        platform = body.get("platform")
+        account = str(body.get("account_id") or "")
+        post_id = str(body.get("post_id") or "")
+        if body.get("confirmed") is not True:
+            raise SocialError("Confirm deletion from App OS and the social platform first.", 400, rejected=True)
+        if platform not in ("facebook", "instagram") or not re.fullmatch(r"\d{1,100}", account) or not re.fullmatch(r"[0-9_]{1,150}", post_id):
+            raise SocialError("Invalid post identity.", 400, rejected=True)
+        page = self.account_page(org, platform, account)
+        identity = {"platform": platform, "account_id": account, "post_id": post_id,
+                    "delivery_id": "delete-post:" + hashlib.sha256(f"{platform}:{account}:{post_id}".encode()).hexdigest()}
+        def remove():
+            field = "from" if platform == "facebook" else "owner"
+            try:
+                remote = self.transport(f"{GRAPH_BASE}/{post_id}?fields=id,{field}", token=page["access_token"])
+            except SocialError as exc:
+                raise SocialError(str(exc), exc.status, rejected=True) from None
+            if str((remote.get(field) or {}).get("id") or "") != account:
+                raise SocialError("Post does not belong to the selected connected account.", 403, rejected=True)
+            result = self.transport(f"{GRAPH_BASE}/{post_id}", method="DELETE", token=page["access_token"])
+            if result is not True and not (isinstance(result, dict) and result.get("success") is True):
+                raise SocialError("Platform did not confirm deletion. Check the post on the platform.", 502)
+            return {"deleted": True, "platform": platform, "account_id": account, "post_id": post_id}
+        return self.deliver_once(org, identity, remove)
 
     def post_feed(self, org, body):
         platform = body.get("platform")

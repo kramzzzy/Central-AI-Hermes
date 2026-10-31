@@ -342,4 +342,27 @@ class SocialTests(unittest.TestCase):
         self.now += 7*86400
         with self.assertRaises(SocialError): self.social.handle({**body,"comment_id":"101_600"})
 
+    def test_delete_post_requires_confirmation_owner_and_provider_success(self):
+        self.calls.clear()
+        body = {"action":"delete_post","org":ORG,"platform":"facebook","account_id":"101","post_id":"101_555","confirmed":True}
+        with self.assertRaises(SocialError): self.social.handle({**body,"confirmed":False})
+        with self.assertRaises(SocialError): self.social.handle({**body,"org":OTHER})
+        self.assertEqual([], self.calls)
+        calls=[]
+        def provider(url, **kw):
+            calls.append((url,kw))
+            return {"from":{"id":"101"}} if kw.get('method') != 'DELETE' else {"success":True}
+        self.social.transport=provider
+        self.assertTrue(self.social.handle(body)['deleted'])
+        self.assertTrue(self.social.handle(body)['deleted'])
+        self.assertEqual(1, sum(kw.get('method')=='DELETE' for _,kw in calls))
+        self.social.transport=lambda *a,**kw:{"from":{"id":"202"}}
+        with self.assertRaises(SocialError): self.social.handle({**body,"post_id":"202_777"})
+
+    def test_delete_post_failure_never_reports_success(self):
+        body={"action":"delete_post","org":ORG,"platform":"instagram","account_id":"303","post_id":"555","confirmed":True}
+        self.social.transport=lambda url,**kw: {"owner":{"id":"303"}} if kw.get('method')!='DELETE' else {"success":False}
+        with self.assertRaises(SocialError): self.social.handle(body)
+        with self.assertRaisesRegex(SocialError,'outcome unknown'): self.social.handle(body)
+
 if __name__ == '__main__': unittest.main()
