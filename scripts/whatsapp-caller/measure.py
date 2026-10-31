@@ -13,14 +13,11 @@ call = str(uuid4())
 fixture = Path('/tmp/voice-speed-fixture.pcm')
 if not fixture.exists():
     c = dotenv_values('/opt/data/profiles/leo/.env')
-    body = json.dumps({'text': 'Briefly explain how you can help me plan my work tomorrow.',
-        'reference_id': c['FISH_VOICE_ID'], 'format': 'pcm', 'sample_rate': 16000,
-        'latency': 'balanced'}).encode()
-    req = urllib.request.Request('https://api.fish.audio/v1/tts', data=body,
-        headers={'Authorization': 'Bearer ' + c['FISH_API_KEY'],
-        'Content-Type': 'application/json', 'model': c.get('FISH_TTS_MODEL') or 's2.1-pro-free'})
-    with urllib.request.urlopen(req, timeout=40) as response:
-        fixture.write_bytes(response.read())
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from openrouter_speech import synthesize
+    fixture.write_bytes(synthesize('Briefly explain how you can help me plan my work tomorrow.', c, rate=16000))
+
 
 def request(path, data=b''):
     req = urllib.request.Request(base+path, data=data, headers={

@@ -82,7 +82,7 @@ def pending(settings):
 
 
 def fingerprint(value):
-    return hashlib.sha256(json.dumps([value.get('CENTRAL_AI_CALL_SPEECH',''),value.get('FISH_API_KEY',''),value.get('FISH_VOICE_ID','')]).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([value.get('CENTRAL_AI_CALL_SPEECH',''),value.get('OPENROUTER_TTS_MODEL',''),value.get('OPENROUTER_TTS_VOICE','')]).encode()).hexdigest()
 
 
 def wait_for_contacts(settings):
@@ -118,33 +118,7 @@ def deployment_status(settings, current):
 
 @serialized
 def save(settings, value, current):
-    wait_for_contacts(settings)
-    from voice_setup import validate
-    validate(value)
-    state=deployment_status(settings,current)
-    if state.get('state') in {'deploying','unknown'}:
-        raise VoiceDeploymentError('Wait for the current voice deployment to finish before changing settings.')
-    app=config()['application']
-    # Read back the canonical settings so blank inputs retain the current Coolify key.
-    records=request('GET','/applications/'+app+'/envs')
-    saved={item['key']:item.get('value') or '' for item in records if not item.get('is_preview')}
-    changes={'HERMES_CALL_SPEECH':'piper' if value['provider']=='native' else 'fish'}
-    key=saved.get('FISH_API_KEY','')
-    voice_id=saved.get('FISH_VOICE_ID') or current.get('FISH_VOICE_ID','')
-    if value['provider']=='fish':
-        key=value.get('api_key') or key
-        if not key or key=='********': raise VoiceDeploymentError('Enter your Fish API key.')
-        voice_id=value['voice_id']
-        changes.update(FISH_API_KEY=key,FISH_VOICE_ID=voice_id)
-    data=[{'key':key,'value':value,'is_preview':False,'is_literal':True,'is_buildtime':False,'is_runtime':True} for key,value in changes.items()]
-    request('PATCH','/applications/'+app+'/envs/bulk',{'data':data})
-    after=request('GET','/applications/'+app+'/envs')
-    checked={item['key']:item.get('value') or '' for item in after if not item.get('is_preview')}
-    if any(checked.get(k)!=v for k,v in changes.items()):
-        raise VoiceDeploymentError('Coolify did not confirm the saved voice settings. Retry saving them.')
-    desired={'CENTRAL_AI_CALL_SPEECH':changes['HERMES_CALL_SPEECH'],'FISH_API_KEY':key,'FISH_VOICE_ID':voice_id}
-    atomic_write(pending_path(settings),json.dumps({'fingerprint':fingerprint(desired),'uuid':None}))
-    return {'voice_saved':True,'voice_deployment_required':True}
+    raise VoiceDeploymentError('Manage OpenRouter speech settings in the Hermes stack environment.')
 
 
 @serialized

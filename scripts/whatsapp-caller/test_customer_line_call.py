@@ -18,7 +18,7 @@ ROUTING = {'owner': '61400000001', 'contacts': [], 'company_name': 'Test Solar',
 
 
 class FakeService:
-    config = {'FISH_VOICE_ID': 'owner-voice', 'FISH_ENGLISH_FALLBACK_VOICE_ID': 'owner-voice'}
+    config = {'OPENROUTER_TTS_VOICE': 'owner-voice', 'OPENROUTER_API_KEY': 'test-key'}
     vad = None
     metrics = {}
 
@@ -31,7 +31,7 @@ class CustomerLineCallTests(unittest.TestCase):
         patcher = patch.object(whatsapp_stream, 'routing', lambda: ROUTING)
         patcher.start()
         self.addCleanup(patcher.stop)
-        env = patch.dict(os.environ, {'CUSTOMER_FISH_VOICE_ID': 'james-voice'})
+        env = patch.dict(os.environ, {'CUSTOMER_OPENROUTER_TTS_VOICE': 'Orus', 'OPENROUTER_API_KEY': 'test-key'})
         env.start()
         self.addCleanup(env.stop)
 
@@ -40,9 +40,8 @@ class CustomerLineCallTests(unittest.TestCase):
 
     def test_customer_call_uses_customer_agent_voice_and_no_tools(self):
         call = self.call(line='customer', role='customer')
-        self.assertEqual('james-voice', call.speech_config['FISH_VOICE_ID'])
-        self.assertEqual('james-voice', call.speech_config['FISH_ENGLISH_FALLBACK_VOICE_ID'])
-        self.assertEqual('owner-voice', FakeService.config['FISH_VOICE_ID'], 'shared config must not change')
+        self.assertEqual('Orus', call.speech_config['OPENROUTER_TTS_VOICE'])
+        self.assertEqual('owner-voice', FakeService.config['OPENROUTER_TTS_VOICE'], 'shared config must not change')
         conv = call._get_fallback_conversation()
         self.assertEqual(set(), conv.names)
         self.assertIn('You are James, Customer Service for Test Solar', conv.prompt)
@@ -56,27 +55,19 @@ class CustomerLineCallTests(unittest.TestCase):
 
     def test_owner_line_call_is_unchanged(self):
         call = self.call(name='Owner', role='owner', profile='leo')
-        self.assertIs(FakeService.config, call.speech_config)
+        self.assertEqual('owner-voice', call.speech_config['OPENROUTER_TTS_VOICE'])
         self.assertIn('send_whatsapp_message', call._get_fallback_conversation().names)
 
     def test_customer_without_voice_setting_keeps_default_voice(self):
-        with patch.dict(os.environ, {'CUSTOMER_FISH_VOICE_ID': ''}):
+        with patch.dict(os.environ, {'CUSTOMER_OPENROUTER_TTS_VOICE': ''}):
             cfg = self.call(line='customer').speech_config
-            self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', cfg['FISH_VOICE_ID'])
-            self.assertEqual('fish', cfg['CENTRAL_AI_CALL_SPEECH'])
+            self.assertEqual('Orus', cfg['OPENROUTER_TTS_VOICE'])
+            self.assertEqual('openrouter', cfg['CENTRAL_AI_CALL_SPEECH'])
 
-    def test_customer_legacy_or_unset_voice_uses_michael_voice(self):
-        for legacy_id in (
-            '711cf3ed00ab441a8f54a45058047b7a',
-            'bf342d9e9e5b44e0ade1ccfd1abb4815',
-            '612b878b113047d9a770c069c8b4fdfe',
-            '31d3dd937d2944a1b06da3db533d27f9',
-        ):
-            with patch.dict(os.environ, {'CUSTOMER_FISH_VOICE_ID': legacy_id}):
-                self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', self.call(line='customer').speech_config['FISH_VOICE_ID'])
+    def test_customer_unset_voice_uses_orus(self):
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop('CUSTOMER_FISH_VOICE_ID', None)
-            self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', self.call(line='customer').speech_config['FISH_VOICE_ID'])
+            os.environ.pop('CUSTOMER_OPENROUTER_TTS_VOICE', None)
+            self.assertEqual('Orus', self.call(line='customer').speech_config['OPENROUTER_TTS_VOICE'])
 
     def test_customer_call_injects_proactive_solar_calculation_on_bill_turn(self):
         call = self.call(line='customer', role='customer')
@@ -92,7 +83,7 @@ class CustomerLineCallTests(unittest.TestCase):
             call = self.call(line='customer', role='customer')
             call.prepare_speech()
             control, speech, _framer, _output = call.prepared_speech
-            self.assertEqual('a30d099a643d4173836cfee1d8ae6c13', speech.config['FISH_VOICE_ID'])
+            self.assertEqual('Orus', speech.config['OPENROUTER_TTS_VOICE'])
             control.cancel()
             rest_control = stream_conversation.TurnControl()
             rest_speech = stream_conversation.FishRestSpeech(
@@ -109,8 +100,8 @@ class CustomerLineCallTests(unittest.TestCase):
                 audio(b'\x01\x02' * 480)
             return b''
 
-        with patch.dict(os.environ, {'HERMES_PHONE_CONVERSATION': 'true', 'CUSTOMER_FISH_VOICE_ID': ''}), \
-             patch.object(stream_conversation, '_hermes_proxy_tts', side_effect=_fake_proxy_tts) as mock_proxy:
+        with patch.dict(os.environ, {'HERMES_PHONE_CONVERSATION': 'true', 'CUSTOMER_OPENROUTER_TTS_VOICE': ''}), \
+             patch.object(stream_conversation, 'fish_rest_tts', side_effect=_fake_proxy_tts) as mock_proxy:
             asyncio.run(_check())
             self.assertTrue(mock_proxy.called)
             self.assertTrue(any(chunk == b'\x01\x02' * 480 for chunk, _ in emitted))
@@ -205,7 +196,7 @@ class CustomerLineCallTests(unittest.TestCase):
             audio(text.encode())
 
         with patch.object(stream_conversation, 'fish_rest_tts', side_effect=fake_tts):
-            speech = stream_conversation.FishRestSpeech({'FISH_API_KEY': 'k', 'FISH_VOICE_ID': 'v'},
+            speech = stream_conversation.FishRestSpeech({'OPENROUTER_API_KEY': 'k', 'OPENROUTER_TTS_VOICE': 'v'},
                                                         emitted.append, stream_conversation.TurnControl(), rate=16000)
             speech.text('Right, gotcha. A six kilowatt system would suit a bill that size nicely. ')
             speech.finish()
@@ -223,7 +214,7 @@ class CustomerLineCallTests(unittest.TestCase):
                 return pcm
             audio(pcm)
 
-        config = {'FISH_API_KEY': 'k', 'FISH_VOICE_ID': 'cache-test-voice'}
+        config = {'OPENROUTER_API_KEY': 'k', 'OPENROUTER_TTS_VOICE': 'cache-test-voice'}
         with patch.object(stream_conversation, 'fish_rest_tts', side_effect=fake_tts), \
              patch.dict(stream_conversation._opener_audio, clear=True):
             for _ in range(2):
@@ -280,7 +271,7 @@ class CustomerLineCallTests(unittest.TestCase):
              patch.dict(stream_conversation._opener_audio, clear=True), \
              patch('native_call_speech.piper_available', return_value=True), \
              patch('native_call_speech.pcm', side_effect=lambda *a, **k: offline.append(a[0]) or [b'PIPER']):
-            speech = stream_conversation.FishRestSpeech({'FISH_API_KEY': 'k', 'FISH_VOICE_ID': 'michael-voice'},
+            speech = stream_conversation.FishRestSpeech({'OPENROUTER_API_KEY': 'k', 'OPENROUTER_TTS_VOICE': 'michael-voice'},
                                                         emitted.append, stream_conversation.TurnControl(), rate=16000)
             speech.lanes = __import__('threading').BoundedSemaphore(1)  # deterministic order for the test
             speech.text('First clause is spoken by Fish here. Second clause fails at Fish twice. ')
@@ -288,41 +279,6 @@ class CustomerLineCallTests(unittest.TestCase):
         self.assertEqual([b'FISH'], emitted, 'no offline voice once Michael has spoken in the reply')
         self.assertEqual([], offline)
         self.assertEqual(1, speech.skipped_clauses)
-
-    def test_fish_400_for_one_text_does_not_switch_the_process_model(self):
-        import stream_conversation
-
-        class Resp:
-            def __init__(self, code):
-                self.status_code = code
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-            def raise_for_status(self):
-                pass
-
-            def iter_bytes(self, chunk_size=1920):
-                return iter([b'\x01\x02'])
-
-        models = []
-
-        class Client:
-            def stream(self, method, url, content, headers, timeout):
-                models.append(headers['model'])
-                return Resp(422 if headers['model'] == 's1' and len(models) == 1 else 200)
-
-        with patch('voice_http.client', return_value=Client()), \
-             patch.object(stream_conversation, '_fish_failed_models', set()), \
-             patch.object(stream_conversation, '_fish_working_model', None):
-            for _ in range(2):
-                stream_conversation.fish_rest_tts('Hello there.', {'FISH_API_KEY': 'k', 'FISH_VOICE_ID': 'v'},
-                                                  16000, lambda pcm: None)
-            self.assertNotIn('s1', stream_conversation._fish_failed_models)
-        self.assertEqual(['s1', 's2.1-pro-free', 's1'], models, 'the next clause goes back to the configured model')
 
     def test_discarded_cloud_recognition_frees_its_slot(self):
         import threading

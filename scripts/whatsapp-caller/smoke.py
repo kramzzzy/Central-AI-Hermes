@@ -35,13 +35,10 @@ try:
     greeting = request('/greeting')
     assert len(greeting) > 32000
     config = dotenv_values('/opt/data/profiles/leo/.env')
-    payload = json.dumps({'text': "What's six plus seven?", 'reference_id': config['FISH_VOICE_ID'],
-        'format': 'pcm', 'sample_rate': 16000, 'latency': 'balanced'}).encode()
-    req = urllib.request.Request('https://api.fish.audio/v1/tts', data=payload,
-        headers={'Authorization': 'Bearer ' + config['FISH_API_KEY'], 'Content-Type': 'application/json',
-                 'model': config.get('FISH_TTS_MODEL') or 's2.1-pro-free'})
-    with urllib.request.urlopen(req, timeout=40) as response:
-        question = response.read()
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from openrouter_speech import synthesize
+    question = synthesize("What's six plus seven?", config, rate=16000)
     reply = request('/turn', question)
     assert len(reply) > 16000
     with urllib.request.urlopen(base+'/health') as response:

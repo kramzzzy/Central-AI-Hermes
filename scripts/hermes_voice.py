@@ -124,101 +124,37 @@ class VoiceProvider:
                     continue
                 key, value = line.split('=', 1)
                 self.config[key.strip()] = value.strip().strip('"').strip("'")
-        from central_ai_integrations import atomic_write, discover_fish_credentials, integration_config, valid_fish_key
-        from voice_setup import load_settings
-        saved = load_settings(settings)
-        for k, v in saved.items():
-            if v:
-                self.config[k] = v
-        self.config['FISH_API_KEY'] = valid_fish_key(self.config.get('FISH_API_KEY'))
-        # The deployment credential overrides copied profile credentials.
-        env_fish_key = valid_fish_key(os.environ.get('FISH_API_KEY'))
-        if env_fish_key:
-            self.config['FISH_API_KEY'] = env_fish_key
-        if not self.config.get('FISH_API_KEY'):
-            for k, v in discover_fish_credentials(profile_root).items():
-                if v and not self.config.get(k):
-                    self.config[k] = v
-        if os.environ.get('FISH_VOICE_ID'):
-            self.config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
-        else:
-            self.config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
-        if os.environ.get('FISH_VOICE_NAME'):
-            self.config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
-        else:
-            self.config.setdefault(
-                'FISH_VOICE_NAME',
-                'Michael' if self.config.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis',
-            )
-        self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+        from central_ai_integrations import integration_config
+        from openrouter_speech import settings as speech_settings
         for env_key in ('OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
-                        'FISH_OS_CALL_ENGINE', 'FISH_ASR_ENABLED', 'FISH_TTS_MODEL', 'FISH_LLM_MODEL',
-                        'HERMES_VOICE_MODEL'):
+                        'HERMES_VOICE_MODEL', 'OPENROUTER_TTS_MODEL', 'OPENROUTER_TTS_VOICE',
+                        'OPENROUTER_TTS_INSTRUCTIONS'):
             if os.environ.get(env_key):
                 self.config[env_key] = os.environ[env_key].strip()
-        self.config.setdefault('FISH_OS_CALL_ENGINE', 'stream')
-        self.config.setdefault('FISH_ASR_ENABLED', 'false')
         self.config = integration_config(self.config)
-        self.config['FISH_API_KEY'] = valid_fish_key(self.config.get('FISH_API_KEY'))
-        if self.config.get('FISH_VOICE_ID') in {
-            '',
-            '31d3dd937d2944a1b06da3db533d27f9',
-            '711cf3ed00ab441a8f54a45058047b7a',
-            'bf342d9e9e5b44e0ade1ccfd1abb4815',
-        }:
-            self.config['FISH_VOICE_ID'] = os.environ.get('FISH_VOICE_ID', '').strip() or '612b878b113047d9a770c069c8b4fdfe'
-            self.config['FISH_VOICE_NAME'] = (
-                'Michael' if self.config['FISH_VOICE_ID'] == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
-            )
-        self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
-        if self.config.get('FISH_API_KEY'):
-            try:
-                atomic_write(Path(profile_root) / '.runtime-fish-voice.json', json.dumps({
-                    'FISH_API_KEY': self.config['FISH_API_KEY'],
-                    'FISH_VOICE_ID': self.config.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe'),
-                    'FISH_VOICE_NAME': self.config.get('FISH_VOICE_NAME', 'Jarvis'),
-                    'CENTRAL_AI_CALL_SPEECH': 'fish',
-                }) + '\n')
-            except OSError:
-                pass
+        self.config.update(speech_settings(self.config))
+        self.config['CENTRAL_AI_CALL_SPEECH'] = 'openrouter'
         self.bridge_key = settings['HERMES_API_KEY']
         self.slots = threading.BoundedSemaphore(4)
 
     def refresh_credentials(self):
-        from central_ai_integrations import discover_fish_credentials, valid_fish_key
-        env_key = valid_fish_key(os.environ.get('FISH_API_KEY'))
-        if env_key:
-            self.config['FISH_API_KEY'] = env_key
-        if not valid_fish_key(self.config.get('FISH_API_KEY')):
-            discovered = discover_fish_credentials(getattr(self, 'profile_root', '/opt/data'))
-            fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
-            if fish_key:
-                self.config['FISH_API_KEY'] = fish_key
-        env_voice_id = (os.environ.get('FISH_VOICE_ID') or '').strip()
-        if env_voice_id:
-            self.config['FISH_VOICE_ID'] = env_voice_id
-        elif not self.config.get('FISH_VOICE_ID'):
-            self.config['FISH_VOICE_ID'] = '612b878b113047d9a770c069c8b4fdfe'
-        env_voice_name = (os.environ.get('FISH_VOICE_NAME') or '').strip()
-        if env_voice_name:
-            self.config['FISH_VOICE_NAME'] = env_voice_name
-        else:
-            self.config['FISH_VOICE_NAME'] = (
-                'Michael' if self.config.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
-            )
-        self.config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+        from openrouter_speech import settings
+        self.config.update(settings(self.config))
+        self.config['CENTRAL_AI_CALL_SPEECH'] = 'openrouter'
         return self.config
 
     def status(self):
         c = self.refresh_credentials()
-        has_fish_or_relay = bool(c.get('FISH_API_KEY') or Path('/data/voice-key').is_file())
-        setup = {'fish_key_configured': bool(c.get('FISH_API_KEY')), 'fish_voice_id': c.get('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')}
+        from openrouter_speech import settings
+        speech = settings(c)
+        speech_configured = bool(speech['OPENROUTER_API_KEY'])
+        setup = {'key_configured': speech_configured, 'voice_id': speech['OPENROUTER_TTS_VOICE']}
         from coolify_voice import deployment_status
         setup['deployment'] = deployment_status(self.settings, c) if hasattr(self, 'settings') else {'managed':False}
-        return {**setup, 'configured': has_fish_or_relay,
-                'voice': c.get('FISH_VOICE_NAME') or ('Michael' if c.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'),
-                'transcription': 'fish' if (c.get('FISH_ASR_ENABLED') == 'true' or os.environ.get('FISH_ASR_ENABLED') == 'true') else 'browser',
-                'realtime': has_fish_or_relay,
+        return {**setup, 'configured': speech_configured,
+                'voice': speech['OPENROUTER_TTS_VOICE'], 'provider': 'openrouter',
+                'transcription': 'browser',
+                'realtime': speech_configured,
                 # stream is the audio transport protocol, not a separate LLM.
                 'conversation': 'stream', 'conversation_owner': 'hermes'}
 
@@ -237,7 +173,7 @@ class VoiceProvider:
             token = json.loads(data).get('authorization', '')
             expected = self.config.get('FISH_AGENT_BRIDGE_SECRET')
             return handler.reply(200, {'allowed': bool(expected and isinstance(token, str) and hmac.compare_digest(token, 'Bearer ' + expected))})
-        if path == '/voice/asr' and not self.config.get('FISH_API_KEY'):
+        if path == '/voice/asr':
             if handler.headers.get('Content-Type', '').split(';')[0] != 'audio/wav':
                 return handler.reply(415, {'error': 'Send WAV audio'})
             from local_call_asr import transcribe
@@ -247,159 +183,25 @@ class VoiceProvider:
                 return handler.reply(400, {'error': 'Invalid microphone audio'})
             except Exception:
                 return handler.reply(503, {'error': 'Local recognition is temporarily unavailable'})
-        if not self.config.get('FISH_API_KEY'):
-            if path == '/voice/tts':
-                try:
-                    body = json.loads(data)
-                    text = body.get('text', '')
-                    req_voice = str(body.get('voice_id') or self.config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe').strip()
-                    sample_rate = body.get('sample_rate') if body.get('sample_rate') in (16000, 24000) else 24000
-                    from stream_conversation import _voice_service_proxy_tts
-                    audio = _voice_service_proxy_tts(text, req_voice, sample_rate)
-                    if audio:
-                        handler.send_response(200)
-                        handler.send_header('Content-Type', 'application/octet-stream')
-                        handler.send_header('Content-Length', str(len(audio)))
-                        handler.send_header('Cache-Control', 'no-store')
-                        handler.end_headers()
-                        return handler.wfile.write(audio)
-                except Exception:
-                    pass
-            return handler.reply(503, {'error': 'Configure the voice provider in Hermes.'})
-        headers = {'Authorization': 'Bearer ' + self.config['FISH_API_KEY']}
         if path == '/voice/tts':
-            body = json.loads(data)
-            text = body.get('text')
-            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or not self.status()['configured']:
-                return handler.reply(400, {'error': 'Invalid speech request'})
-            cleaned_text = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', text, flags=re.I).strip() or text.strip()
-            tts_voice_id = str(body.get('voice_id') or self.config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe').strip()
-            sample_rate = body.get('sample_rate') if body.get('sample_rate') in (16000, 24000) else 24000
-            data = json.dumps({'text': cleaned_text, 'reference_id': tts_voice_id, 'format': 'pcm', 'sample_rate': sample_rate, 'latency': 'balanced'}).encode()
-            target = '/v1/tts'
-            headers.update({'Content-Type': 'application/json', 'model': self.config.get('FISH_TTS_MODEL') or 's1'})
-        elif path == '/voice/asr':
-            if self.config.get('FISH_ASR_ENABLED') != 'true':
-                return handler.reply(503, {'error': 'Fish transcription is not enabled in Hermes.'})
-            content_type = handler.headers.get('Content-Type', '')
-            if not content_type.startswith('multipart/form-data;'):
-                return handler.reply(415, {'error': 'Expected an audio form'})
-            target = '/v1/asr'
-            headers.update({'Content-Type': content_type, 'model': 'transcribe-1'})
-        elif path == '/voice/agent/sessions' or re.fullmatch(r'/voice/agent/sessions/[\w-]{1,160}/end', path):
-            if not self.status()['realtime']:
-                return handler.reply(503, {'error': 'Live calls are not enabled in Hermes.'})
-            if path.endswith('/sessions'):
+            try:
                 body = json.loads(data)
-                fast = self.status()['conversation'] == 'fish'
-                body['agent_id'] = self.config['FISH_OS_LIVE_AGENT_ID'] if fast else self.config['FISH_AGENT_ID']
-                # Greeting belongs to Hermes's voice transport. The OS supplies only
-                # the authenticated user's display name, never a browser prompt.
-                greeting = call_greeting(body.pop('display_name', ''))
-                overrides = dict(body.get('overrides') or {})
-                session_voice_id = str(overrides.get('voice_id') or self.config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe').strip()
-                overrides['voice_id'] = session_voice_id
-                overrides['voice'] = {'voice_id': session_voice_id, 'speaking_language': 'en', 'expressive': False}
-                overrides['language'] = 'en'
-                overrides.pop('first_message_prompt', None)
-                if isinstance(overrides.get('system_prompt'), str):
-                    overrides['system_prompt'] = central_ai_identity(overrides['system_prompt'])
-                overrides['first_message_mode'] = 'fixed'
-                overrides['first_message'] = greeting
-                prompt_dict = dict(overrides.get('prompt') or {})
-                prompt_dict['first_message'] = greeting
-                prompt_dict['first_message_mode'] = 'fixed'
-                overrides['prompt'] = prompt_dict
-                body['overrides'] = overrides
-                data = json.dumps(body).encode()
-            target = '/v1/agent/' + path.removeprefix('/voice/agent/')
-            headers['Content-Type'] = 'application/json'
-        else:
-            return handler.reply(404, {'error': 'Unsupported voice operation'})
-        request = urllib.request.Request('https://api.fish.audio' + target, data=data or None, headers=headers, method='POST')
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                handler.send_response(response.status)
-                handler.send_header('Content-Type', response.headers.get('Content-Type', 'application/octet-stream'))
-                handler.send_header('Cache-Control', 'no-store')
-                handler.send_header('Connection', 'close')
-                handler.end_headers()
-                handler.close_connection = True
-                while chunk := response.read1(16384):
-                    handler.wfile.write(chunk)
-                    handler.wfile.flush()
-        except urllib.error.HTTPError as exc:
-            if path == '/voice/tts' and headers.get('model') != 's2.1-pro-free':
-                try:
-                    retry_headers = {**headers, 'model': 's2.1-pro-free'}
-                    retry_req = urllib.request.Request('https://api.fish.audio' + target, data=data or None, headers=retry_headers, method='POST')
-                    with urllib.request.urlopen(retry_req, timeout=60) as response:
-                        handler.send_response(response.status)
-                        handler.send_header('Content-Type', response.headers.get('Content-Type', 'application/octet-stream'))
-                        handler.send_header('Cache-Control', 'no-store')
-                        handler.send_header('Connection', 'close')
-                        handler.end_headers()
-                        handler.close_connection = True
-                        while chunk := response.read1(16384):
-                            handler.wfile.write(chunk)
-                            handler.wfile.flush()
-                        return
-                except Exception:
-                    pass
-            return handler.reply(exc.code, {'error': 'The Hermes voice provider rejected this request.'})
+                if not isinstance(body, dict):
+                    raise ValueError('Invalid speech request')
+                from openrouter_speech import synthesize
+                audio = synthesize(body.get('text'), self.config, body.get('sample_rate', 24000))
+            except (ValueError, TypeError):
+                return handler.reply(400, {'error': 'Invalid speech request'})
+            except Exception:
+                return handler.reply(503, {'error': 'OpenRouter speech is unavailable'})
+            handler.send_response(200)
+            handler.send_header('Content-Type', 'application/octet-stream')
+            handler.send_header('Content-Length', str(len(audio)))
+            handler.send_header('Cache-Control', 'no-store')
+            handler.end_headers()
+            return handler.wfile.write(audio)
+        return handler.reply(410, {'error': 'Hosted Fish sessions are retired. Use the stream conversation endpoint.'})
 
     def start_websocket(self, bind):
-        if not self.status()['configured']:
-            return
-        from websockets.sync.server import serve
-        from websockets.sync.client import connect
-
-        def authenticate(connection, request):
-            auth = (request.headers.get('Authorization') or '').strip().strip('\'"')
-            if request.path != '/voice/live' or not hmac.compare_digest(auth, 'Bearer ' + self.bridge_key):
-                return connection.respond(401, 'Unauthorized')
-
-        def relay(client):
-            if not self.slots.acquire(blocking=False):
-                client.close(1013, 'Voice provider busy')
-                return
-            upstream = None
-            try:
-                upstream = connect('wss://api.fish.audio/v1/tts/live', additional_headers={
-                    'Authorization': 'Bearer ' + self.config['FISH_API_KEY'],
-                    'model': self.config.get('FISH_TTS_MODEL') or 's1'}, open_timeout=15, close_timeout=3, max_size=4*1024*1024, max_queue=16)
-                client.send(json.dumps({'ready': True, 'reference_id': self.config['FISH_VOICE_ID']}))
-            except Exception:
-                if upstream:
-                    upstream.close()
-                client.close(1011, 'Voice provider unavailable')
-                self.slots.release()
-                return
-            def upload():
-                try:
-                    for frame in client:
-                        if not isinstance(frame, bytes):
-                            client.close(1003, 'Binary voice frames required')
-                            break
-                        upstream.send(frame)
-                except Exception:
-                    pass
-                finally:
-                    upstream.close()
-            thread = threading.Thread(target=upload, daemon=True)
-            thread.start()
-            try:
-                for frame in upstream:
-                    client.send(frame)
-            except Exception:
-                pass
-            finally:
-                client.close()
-                upstream.close()
-                thread.join(timeout=3)
-                self.slots.release()
-
-        def run():
-            with serve(relay, bind, 8644, process_request=authenticate, open_timeout=20, max_size=4*1024*1024, max_queue=16) as server:
-                server.serve_forever()
-        threading.Thread(target=run, daemon=True).start()
+        # App and phone calls now use the owned HTTP stream transport.
+        return

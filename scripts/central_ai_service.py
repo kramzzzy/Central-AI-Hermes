@@ -3,14 +3,14 @@ import json
 import os
 from pathlib import Path
 import sys
-from central_ai_integrations import MANAGED_KEYS, OPTIONAL_KEYS, sync_profile, atomic_write, discover_fish_credentials, valid_fish_key
+from central_ai_integrations import MANAGED_KEYS, OPTIONAL_KEYS, sync_profile, atomic_write
 
 
 def load_config(path):
     value = json.loads(Path(path).read_text(encoding='utf-8'))
     if set(value) != {'version', 'integrations', 'phone_profiles'} or value['version'] != 1:
         raise RuntimeError('Unsupported private backend configuration')
-    settings = value['integrations']
+    settings = value['integrations'] = {k: v for k, v in value['integrations'].items() if not k.startswith(('FISH_', 'CUSTOMER_FISH_'))}
     for key in OPTIONAL_KEYS:
         settings.setdefault(key, '')
     if set(settings) != set(MANAGED_KEYS) or any(not isinstance(v, str) or (not v and k not in OPTIONAL_KEYS) or any(c in v for c in '\n\r\0') for k, v in settings.items()):
@@ -119,18 +119,7 @@ def install_memory(home):
 def get_standalone_config():
     openrouter_key = os.environ.get('OPENROUTER_API_KEY', '') or 'sk-or-v1-standalone-default-key-32chars'
     hermes_key = os.environ.get('HERMES_API_KEY', 'hermes_standalone_secret_token_32chars')
-    discovered_fish = discover_fish_credentials('/opt/data')
-    fish_key = valid_fish_key(os.environ.get('FISH_API_KEY', '')) or discovered_fish.get('FISH_API_KEY', '')
-    call_speech = os.environ.get('CENTRAL_AI_CALL_SPEECH') or os.environ.get('HERMES_CALL_SPEECH') or ('fish' if fish_key else 'piper')
-    voice_name = os.environ.get('FISH_VOICE_NAME') or discovered_fish.get('FISH_VOICE_NAME') or 'Jarvis'
-    voice_id = os.environ.get('FISH_VOICE_ID') or discovered_fish.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe'
-    if voice_id in {
-        '31d3dd937d2944a1b06da3db533d27f9',
-        '711cf3ed00ab441a8f54a45058047b7a',
-        'bf342d9e9e5b44e0ade1ccfd1abb4815',
-    }:
-        voice_id = '612b878b113047d9a770c069c8b4fdfe'
-        voice_name = 'Jarvis'
+    call_speech = 'openrouter'
     return {
         'version': 1,
         'integrations': {
@@ -138,9 +127,6 @@ def get_standalone_config():
             'OPENAI_API_KEY': os.environ.get('OPENAI_API_KEY', ''),
             'ANTHROPIC_API_KEY': os.environ.get('ANTHROPIC_API_KEY', ''),
             'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY', ''),
-            'FISH_API_KEY': fish_key,
-            'FISH_VOICE_ID': voice_id,
-            'FISH_VOICE_NAME': voice_name,
             'HERMES_API_KEY': hermes_key,
             'HERMES_MEMORY_TOKEN': openrouter_key or 'hindsight-default-secret-key-32chars!!',
             'HINDSIGHT_API_KEY': os.environ.get('HINDSIGHT_API_KEY', 'hindsight-default-secret-key-32chars!!'),
@@ -246,8 +232,7 @@ def bootstrap(mode, config):
         return '/opt/os-adapter/scripts/local-bridge.py'
     if mode == 'voice':
         import re
-        if not os.environ.get('FISH_API_KEY') and 'CENTRAL_AI_CALL_SPEECH' not in os.environ:
-            os.environ['CENTRAL_AI_CALL_SPEECH'] = 'piper'
+        os.environ['CENTRAL_AI_CALL_SPEECH'] = 'openrouter'
         try:
             from whatsapp_routing import routing
             for c in routing().get('contacts', []):

@@ -69,15 +69,6 @@ def _get_env_key(name: str, default: str = "") -> str:
                             return cleaned
         except Exception:
             pass
-    if name in ("FISH_API_KEY", "FISH_VOICE_ID", "FISH_TTS_MODEL"):
-        try:
-            from central_ai_integrations import discover_fish_credentials
-            fish_creds = discover_fish_credentials(str(root))
-            found = str(fish_creds.get(name) or "").strip()
-            if found:
-                return found
-        except Exception:
-            pass
     return default
 
 
@@ -96,7 +87,7 @@ def _ffmpeg_bin() -> str | None:
 
 
 def clone_voice_model(body: dict) -> dict:
-    """Create a persistent Fish Audio cloned voice model or zero-shot reference profile."""
+    """Create a saved reference voice profile for OpenRouter narration."""
     name = str(body.get("name") or "").strip()[:80]
     audio_b64 = str(body.get("audio_b64") or "").strip()
     mime = str(body.get("mime") or "audio/mpeg").strip().lower()
@@ -121,68 +112,12 @@ def clone_voice_model(body: dict) -> dict:
     if len(audio_bytes) > 25 * 1024 * 1024:
         raise VideoStudioError("Audio sample must be under 25 MB.", 400)
 
-    fish_key = _get_env_key("FISH_API_KEY")
-    ext = "wav" if "wav" in mime else ("ogg" if "ogg" in mime else "mp3")
-
-    if fish_key:
-        boundary = f"----CentralAIFishBoundary{uuid.uuid4().hex}"
-        parts: list[bytes] = []
-
-        def add_field(field_name: str, value: str):
-            parts.append(
-                f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'
-                f"{value}\r\n".encode("utf-8")
-            )
-
-        add_field("visibility", "private")
-        add_field("type", "tts")
-        add_field("title", name)
-        add_field("train_mode", "fast")
-        add_field("enhance_audio_quality", "true")
-        if transcript:
-            add_field("texts", transcript)
-
-        parts.append(
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="voices"; filename="sample.{ext}"\r\n'
-            f"Content-Type: {mime}\r\n\r\n".encode("utf-8")
-            + audio_bytes
-            + b"\r\n"
-        )
-        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
-        payload = b"".join(parts)
-
-        req = urllib.request.Request(
-            "https://api.fish.audio/model",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {fish_key}",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "User-Agent": "Central-AI-VoiceStudio/1.0",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                raw = json.loads(resp.read().decode("utf-8", errors="replace"))
-                model_id = str(raw.get("_id") or raw.get("id") or "").strip()
-                if model_id:
-                    return {
-                        "ok": True,
-                        "fish_voice_id": model_id,
-                        "mode": "fish_instant_clone",
-                        "name": name,
-                    }
-        except Exception as exc:
-            print(f"[hermes_video] Fish /model instant clone fallback to zero-shot reference: {exc}")
-
     # Zero-shot reference voice ID backed by the saved audio sample in Box 2 library_files
     ref_tag = f"ref:{sample_file_id}" if sample_file_id else f"ref:{hashlib.sha256(audio_bytes).hexdigest()[:24]}"
     return {
         "ok": True,
         "fish_voice_id": ref_tag,
-        "mode": "fish_zero_shot_reference",
+        "mode": "openrouter_reference",
         "name": name,
     }
 
@@ -215,130 +150,32 @@ def _pcm24k_to_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
 
 
 def generate_voice_tts(body: dict) -> dict:
-    """Synthesize speech audio (.mp3/.wav base64) using Fish Audio, Voice Service proxy, Edge TTS, or Piper."""
+    """Synthesize WAV speech through OpenRouter, retaining saved reference voices."""
     text = str(body.get("text") or "").strip()
     if not text:
         raise VideoStudioError("Speech text is required.", 400)
     text = text[:2500]
 
-    fish_voice_id = str(body.get("fish_voice_id") or "").strip()
-    reference_audio_b64 = str(body.get("reference_audio_b64") or "").strip()
-    reference_text = str(body.get("reference_text") or "").strip()
-
-    fish_key = _get_env_key("FISH_API_KEY")
-    default_voice_id = _get_env_key("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe") or "612b878b113047d9a770c069c8b4fdfe"
-    fish_tts_model = _get_env_key("FISH_TTS_MODEL", "s1") or "s1"
-
-    if fish_key:
-        voice_candidates = []
-        if not reference_audio_b64:
-            if fish_voice_id and not fish_voice_id.startswith("ref:"):
-                voice_candidates.append(fish_voice_id)
-            if default_voice_id and default_voice_id not in voice_candidates:
-                voice_candidates.append(default_voice_id)
-            if "a30d099a643d4173836cfee1d8ae6c13" not in voice_candidates:
-                voice_candidates.append("a30d099a643d4173836cfee1d8ae6c13")
-        else:
-            voice_candidates = [""]
-
-        for cand_voice in voice_candidates:
-            for model_name in list(dict.fromkeys([fish_tts_model, "s1", "s2.1-pro-free"])):
-                tts_payload: dict = {
-                    "text": text,
-                    "format": "mp3",
-                    "mp3_bitrate": 128,
-                    "normalize": True,
-                    "latency": "normal",
-                }
-                if reference_audio_b64:
-                    clean_b64 = reference_audio_b64.split(",", 1)[1].strip() if "," in reference_audio_b64 else reference_audio_b64
-                    tts_payload["references"] = [
-                        {
-                            "audio": clean_b64,
-                            "text": reference_text or "Hello, this is my natural speaking voice for video narration.",
-                        }
-                    ]
-                elif cand_voice:
-                    tts_payload["reference_id"] = cand_voice
-
-                req = urllib.request.Request(
-                    "https://api.fish.audio/v1/tts",
-                    data=json.dumps(tts_payload).encode("utf-8"),
-                    headers={
-                        "Authorization": f"Bearer {fish_key}",
-                        "Content-Type": "application/json",
-                        "model": model_name,
-                        "User-Agent": "Central-AI-VoiceStudio/1.0",
-                    },
-                    method="POST",
-                )
-                try:
-                    with urllib.request.urlopen(req, timeout=35) as resp:
-                        audio_data = resp.read(15_000_000)
-                        if len(audio_data) > 512:
-                            return {
-                                "ok": True,
-                                "audio_b64": base64.b64encode(audio_data).decode("ascii"),
-                                "mime": "audio/mpeg",
-                                "provider": "fish-audio",
-                            }
-                except Exception as exc:
-                    print(f"[hermes_video] Fish Audio TTS ({model_name}, {cand_voice}) failed: {exc}")
-
-    # Layer 2: Box 1 stream_conversation / voice:8081 proxy TTS
-    try:
-        from stream_conversation import fish_rest_tts
-        pcm_data = fish_rest_tts(
-            text,
-            {
-                "FISH_API_KEY": fish_key,
-                "FISH_VOICE_ID": fish_voice_id if (fish_voice_id and not fish_voice_id.startswith("ref:")) else default_voice_id,
-            },
-            rate=24000,
-        )
-        if pcm_data and len(pcm_data) > 1024:
-            wav_bytes = _pcm24k_to_wav(pcm_data, 24000)
-            return {
-                "ok": True,
-                "audio_b64": base64.b64encode(wav_bytes).decode("ascii"),
-                "mime": "audio/wav",
-                "provider": "fish-voice-proxy",
-            }
-    except Exception as exc:
-        print(f"[hermes_video] Voice proxy TTS fallback: {exc}")
-
-    # Layer 3: Guaranteed fallback via edge-tts (pre-installed in Box 1)
-    for py_bin in ("/opt/hermes/.venv/bin/python", "python3", "python"):
+    from openrouter_speech import synthesize
+    reference_audio = str(body.get('reference_audio_b64') or '').strip()
+    references = None
+    if reference_audio:
         try:
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                tmp_path = tmp.name
-            try:
-                cmd = [
-                    py_bin,
-                    "-m",
-                    "edge_tts",
-                    "--voice",
-                    "en-AU-WilliamNeural",
-                    "--text",
-                    text,
-                    "--write-media",
-                    tmp_path,
-                ]
-                subprocess.run(cmd, check=True, timeout=30, capture_output=True)
-                audio_bytes = Path(tmp_path).read_bytes()
-                if len(audio_bytes) > 256:
-                    return {
-                        "ok": True,
-                        "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
-                        "mime": "audio/mpeg",
-                        "provider": "edge-tts-au",
-                    }
-            finally:
-                with_ignore_unlink(tmp_path)
-        except Exception as exc:
-            print(f"[hermes_video] Edge TTS ({py_bin}) fallback error: {exc}")
-
-    raise VideoStudioError("Voice synthesis failed. Check FISH_API_KEY in Box 1.", 502)
+            clean = reference_audio.split(',', 1)[-1]
+            sample = base64.b64decode(clean, validate=True)
+            if not 1024 <= len(sample) <= 25 * 1024 * 1024:
+                raise ValueError()
+        except Exception:
+            raise VideoStudioError('Invalid narration reference audio.', 400) from None
+        references = [{'type': 'input_audio', 'input_audio': {'data': clean}}]
+    elif body.get('fish_voice_id'):
+        raise VideoStudioError('Reattach the saved voice sample to use it with OpenRouter.', 400)
+    try:
+        pcm_data = synthesize(text, {'OPENROUTER_API_KEY': _get_env_key('OPENROUTER_API_KEY')}, references=references)
+        return {'ok': True, 'audio_b64': base64.b64encode(_pcm24k_to_wav(pcm_data)).decode('ascii'),
+                'mime': 'audio/wav', 'provider': 'openrouter'}
+    except Exception:
+        raise VideoStudioError('Voice synthesis failed. Check OpenRouter credit and speech settings in Box 1.', 502) from None
 
 
 def with_ignore_unlink(path: str | Path):

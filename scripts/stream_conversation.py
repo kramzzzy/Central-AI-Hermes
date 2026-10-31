@@ -1,4 +1,4 @@
-"""Owned low-latency conversation and free Fish speech, without hosted agents.
+"""Owned low-latency conversation and OpenRouter speech, without hosted agents.
 
 Provider credentials remain private. Only completed caller turns may delegate
 jobs; runtime notices cannot call tools. Interrupting speech never cancels work.
@@ -96,7 +96,8 @@ _OPENER_MAX_CHARS = 40
 
 
 def _opener_key(config, rate, text):
-    return ((config or {}).get('FISH_VOICE_ID') or '', rate, re.sub(r'[\s.!?,;:]+$', '', text.strip()).casefold())
+    from openrouter_speech import voice_cache_key
+    return (voice_cache_key(config), rate, re.sub(r'[\s.!?,;:]+$', '', text.strip()).casefold())
 
 
 def _resolve_fish_tts_model(config):
@@ -238,116 +239,9 @@ def _voice_service_proxy_tts(cleaned_text, voice_id, rate, audio=None, control=N
 
 
 def fish_rest_tts(text, config, rate=24000, audio=None, control=None):
-    global _fish_working_model
-    from voice_http import client as http_client
-    key = (config.get('FISH_API_KEY') or '').strip()
-    if not key:
-        try:
-            from central_ai_integrations import discover_fish_credentials, valid_fish_key
-            discovered = discover_fish_credentials('/opt/data')
-            key = valid_fish_key(discovered.get('FISH_API_KEY'))
-            if key and isinstance(config, dict):
-                config['FISH_API_KEY'] = key
-        except Exception:
-            pass
-    voice_id = (config.get('FISH_VOICE_ID') or '').strip()
-    if voice_id in {
-        '31d3dd937d2944a1b06da3db533d27f9',
-        '711cf3ed00ab441a8f54a45058047b7a',
-        'bf342d9e9e5b44e0ade1ccfd1abb4815',
-    }:
-        voice_id = os.environ.get('FISH_VOICE_ID', '').strip() or '612b878b113047d9a770c069c8b4fdfe'
-    if not voice_id or not text or not text.strip():
-        return b''
-    cleaned_text = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', text, flags=re.I).strip()
-    if not cleaned_text:
-        return b''
-    if not key:
-        if os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
-            return _hermes_proxy_tts(cleaned_text, voice_id, rate, audio, control)
-        if Path('/data/voice-key').is_file():
-            return _voice_service_proxy_tts(cleaned_text, voice_id, rate, audio, control)
-        return b''
-    payload = json.dumps({
-        'text': cleaned_text,
-        'reference_id': voice_id,
-        'format': 'pcm',
-        'sample_rate': rate,
-        'latency': 'balanced'
-    }).encode('utf-8')
-    configured_model = _resolve_fish_tts_model(config)
-    if _fish_working_model and configured_model in _fish_failed_models:
-        models_to_try = [_fish_working_model]
-    else:
-        models_to_try = list(dict.fromkeys([configured_model, 's1', 's2.1-pro-free']))
-    last_exc = None
-    emitted_any = False
-    for idx, model in enumerate(models_to_try):
-        headers = {
-            'Authorization': 'Bearer ' + key,
-            'Content-Type': 'application/json',
-            'model': model
-        }
-        try:
-            with http_client().stream('POST', 'https://api.fish.audio/v1/tts',
-                    content=payload, headers=headers, timeout=8.0) as resp:
-                if resp.status_code in {400, 404, 422}:
-                    # Only a missing model (404) switches the whole process: a 400/422 is about this
-                    # text, and a sticky switch left Box 3 and WhatsApp on different Fish models.
-                    if resp.status_code == 404:
-                        _fish_failed_models.add(model)
-                    if idx + 1 < len(models_to_try):
-                        continue
-                resp.raise_for_status()
-                _fish_working_model = model
-                if audio is None:
-                    return resp.read()
-                if control:
-                    control.track(resp)
-                carry, size, deadline = b'', 0, time.monotonic() + 180
-                for chunk in resp.iter_bytes(chunk_size=1920):
-                    if control:
-                        control.check()
-                    if time.monotonic() > deadline:
-                        raise RuntimeError('Speech deadline exceeded')
-                    if not chunk:
-                        continue
-                    size += len(chunk)
-                    if size > rate * 2 * 180:
-                        raise RuntimeError('Speech size exceeded')
-                    data = carry + chunk
-                    cut = len(data) - len(data) % 2
-                    carry = data[cut:]
-                    if cut:
-                        if control:
-                            control.check()
-                        emitted_any = True
-                        audio(data[:cut])
-                if carry:
-                    raise RuntimeError('Incomplete speech sample')
-                return b''
-        except Exception as exc:
-            last_exc = exc
-            if emitted_any or (control and control.cancelled.is_set()) or isinstance(exc, TurnCancelled):
-                raise
-            status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
-            if status_code in {400, 404, 422}:
-                if status_code == 404:
-                    _fish_failed_models.add(model)
-                if idx + 1 < len(models_to_try):
-                    continue
-            break
-    if not emitted_any:
-        if os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
-            return _hermes_proxy_tts(cleaned_text, voice_id, rate, audio, control)
-        if Path('/data/voice-key').is_file():
-            try:
-                return _voice_service_proxy_tts(cleaned_text, voice_id, rate, audio, control)
-            except Exception:
-                pass
-    if last_exc:
-        raise last_exc
-    return b''
+    # Keep the internal call signature for existing app/phone adapters.
+    from openrouter_speech import synthesize
+    return synthesize(text, config, rate, audio, control)
 
 
 class FishRestSpeech:
@@ -362,7 +256,7 @@ class FishRestSpeech:
         self.bytes = 0
         self.error = None
         self.queue = queue.Queue(maxsize=32)
-        # Synthesize the next clause while the current one is still arriving, but cap concurrent Fish calls.
+        # Synthesize the next clause while the current one is still arriving, but cap concurrent speech requests.
         self.lanes = threading.BoundedSemaphore(2)
         self.done = threading.Event()
         self._native_fallback = None
@@ -393,25 +287,12 @@ class FishRestSpeech:
         if cached:
             out(cached)
             return
-        fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
-        if not fish_key:
-            try:
-                from central_ai_integrations import discover_fish_credentials, valid_fish_key
-                discovered = discover_fish_credentials('/opt/data')
-                fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
-                if fish_key and isinstance(self.config, dict):
-                    self.config['FISH_API_KEY'] = fish_key
-            except Exception:
-                pass
-        can_try_fish = bool(
-            fish_key
-            or os.environ.get('HERMES_PHONE_CONVERSATION') == 'true'
-            or Path('/data/voice-key').is_file()
-        )
+        from openrouter_speech import settings
+        can_try_fish = bool(settings(self.config)['OPENROUTER_API_KEY'])
         if not can_try_fish:
-            self.provider_error = 'Fish API key is not configured'
+            self.provider_error = 'OpenRouter API key is not configured'
         elif time.monotonic() < _fish_http_cooldown_until:
-            self.provider_error = _fish_last_error or 'Fish TTS cooling down'
+            self.provider_error = _fish_last_error or 'OpenRouter speech cooling down'
         if self._native_fallback is None and can_try_fish and time.monotonic() >= _fish_http_cooldown_until:
             for attempt in range(2):
                 if attempt:
@@ -425,7 +306,7 @@ class FishRestSpeech:
                         if captured and len(_opener_audio) < 128:
                             _opener_audio[opener] = b''.join(captured)
                         return
-                    self.provider_error = 'Fish TTS returned no audio'
+                    self.provider_error = 'OpenRouter speech returned no audio'
                 except TurnCancelled:
                     raise
                 except Exception as exc:
@@ -434,16 +315,16 @@ class FishRestSpeech:
                         raise  # Never replay a partly spoken clause through another TTS.
                     status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
                     self.provider_error = _fish_last_error = (
-                        f'Fish TTS HTTP {status_code}' if status_code else f'Fish TTS {type(exc).__name__}')
+                        f'OpenRouter speech HTTP {status_code}' if status_code else f'OpenRouter speech {type(exc).__name__}')
                     import sys
                     print(f"[FishRestSpeech] HTTP TTS failed ({type(exc).__name__}: {exc})", file=sys.stderr)
-                    # Only credential/credit failures pause Fish; a transient error must
+                    # Only credential/credit failures pause speech; a transient error must
                     # not silently skip the next clauses.
                     if status_code in {401, 402, 403} or any(code in str(exc) for code in ('401', '402', '403')):
                         _fish_http_cooldown_until = time.monotonic() + 120.0
                         break
                     if status_code in {400, 404, 422}:
-                        break  # Fish refused this text; the same request will not succeed.
+                        break  # The provider refused this text; the same request will not succeed.
         self.skipped_clauses += 1
         return
 
@@ -536,306 +417,12 @@ class FishRestSpeech:
         self.control.check()
 
 
-class FreeSpeech:
-    """One free synthesis socket per reply; start it while the model is thinking."""
-    def __new__(cls, config=None, audio=None, control=None, rate=16000):
-        return super().__new__(cls)
-
-    def __init__(self, config, audio, control, rate=16000):
-        self.config, self.audio, self.control, self.rate = config, audio, control, rate
-        self.ready, self.done = threading.Event(), threading.Event()
-        self.socket, self.error = None, None
-        self.complete = False
-        self.pending, self.unflushed = '', ''
-        self.first_audio, self.first_flush = None, None
-        self.started = None
-        self.bytes = 0
-        self.fallback = None
-        self.fallback_sent = 0
-        self.transcript = ''
-        self.transport_guard = threading.RLock()
-        self.abandoned = False
-        self.connect_deadline = time.monotonic() + 4.0
-        fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
-        if not fish_key:
-            try:
-                from central_ai_integrations import discover_fish_credentials, valid_fish_key
-                discovered = discover_fish_credentials('/opt/data')
-                fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
-                if fish_key and isinstance(self.config, dict):
-                    self.config['FISH_API_KEY'] = fish_key
-            except Exception:
-                pass
-        can_use_hermes_ws = os.environ.get('HERMES_PHONE_CONVERSATION') == 'true'
-        prefer_http_tts = os.environ.get('FISH_TTS_TRANSPORT', 'http').strip().lower() == 'http'
-        if prefer_http_tts or (not fish_key and not can_use_hermes_ws) or time.monotonic() < _fish_ws_cooldown_until:
-            self.abandoned = True
-            self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-            self.ready.set()
-            self.done.set()
-        else:
-            threading.Thread(target=self.receive, daemon=True).start()
-
-    def receive(self):
-        global _fish_ws_cooldown_until
-        model = _resolve_fish_tts_model(self.config)
-        fish_key = str((self.config or {}).get('FISH_API_KEY') or '').strip()
-        bridge_key = (
-            os.environ.get('HERMES_API_KEY')
-            or str((self.config or {}).get('HERMES_API_KEY') or '')
-            or 'hermes_standalone_secret_token_32chars'
-        ).strip().strip('\'"')
-        targets = []
-        if fish_key:
-            targets.append(('wss://api.fish.audio/v1/tts/live', {
-                'Authorization': 'Bearer ' + fish_key,
-                'model': model,
-            }))
-        if os.environ.get('HERMES_PHONE_CONVERSATION') == 'true':
-            targets.append(('ws://hermes:8644/voice/live', {'Authorization': 'Bearer ' + bridge_key}))
-            targets.append(('ws://127.0.0.1:8644/voice/live', {'Authorization': 'Bearer ' + bridge_key}))
-        try:
-            import msgpack
-            from websockets.sync.client import connect
-            last_exc = None
-            for ws_url, ws_headers in targets:
-                try:
-                    with connect(ws_url, additional_headers=ws_headers, open_timeout=3.5, close_timeout=1,
-                            max_size=4*1024*1024, max_queue=8) as socket:
-                        if ws_url.endswith('/voice/live'):
-                            handshake = socket.recv(timeout=3.5)
-                            if not isinstance(handshake, str) or not json.loads(handshake).get('ready'):
-                                raise RuntimeError('Hermes live voice relay not ready')
-                        with self.transport_guard:
-                            if self.abandoned:
-                                return
-                            self.socket = self.control.track(socket)
-                        # Never hold the transport guard across a provider write: a
-                        # stalled start must not block the bounded HTTP handover.
-                        socket.send(msgpack.packb({'event': 'start', 'request': {'text': '',
-                            'reference_id': self.config.get('FISH_VOICE_ID') or '', 'format': 'pcm',
-                            'sample_rate': self.rate, 'latency': 'balanced', 'chunk_length': 100,
-                            'condition_on_previous_chunks': True}}, use_bin_type=True))
-                        self.ready.set()
-                        opened = time.monotonic()
-                        while time.monotonic() < (self.started+180 if self.started else opened+180):
-                            self.control.check()
-                            if self.abandoned:
-                                return
-                            if self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.8:
-                                raise RuntimeError('Speech first audio deadline exceeded')
-                            try: raw = socket.recv(timeout=.15)
-                            except TimeoutError: continue
-                            if isinstance(raw, str):
-                                continue
-                            if not isinstance(raw, bytes): raise RuntimeError('Invalid speech frame')
-                            event = msgpack.unpackb(raw, raw=False)
-                            if event.get('event') == 'audio' and event.get('audio'):
-                                data = event['audio']
-                                with self.transport_guard:
-                                    if self.abandoned:
-                                        return
-                                    if self.bytes + len(data) > self.rate*2*180 or len(data) % 2:
-                                        raise RuntimeError('Invalid speech size')
-                                    self.control.check()
-                                    self.bytes += len(data)
-                                    self.first_audio = self.first_audio or time.monotonic()
-                                    self.audio(data)
-                            elif event.get('event') == 'finish':
-                                self.complete = event.get('reason') in {'stop', 'ended', 'normal', 'finished', 'complete', None, ''}
-                                if not self.complete and not self.bytes: raise RuntimeError('Speech rejected')
-                                self.complete = True
-                                return
-                        raise RuntimeError('Speech deadline exceeded')
-                except Exception as exc:
-                    last_exc = exc
-                    if self.bytes or self.ready.is_set() or self.abandoned or self.control.cancelled.is_set():
-                        raise
-                    continue
-            if last_exc:
-                raise last_exc
-        except Exception as exc:
-            if not self.control.cancelled.is_set() and not self.abandoned:
-                if not self.bytes:
-                    status_code = getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'code', None)
-                    if status_code in {401, 402, 403} or any(code in str(exc) for code in ('401', '402', '403')):
-                        _fish_ws_cooldown_until = time.monotonic() + 120.0
-                    elif self.started:
-                        _fish_ws_cooldown_until = time.monotonic() + 3.0
-                import sys
-                print(f"[FreeSpeech] Cloud WS TTS unavailable ({type(exc).__name__})", file=sys.stderr)
-                self.error = type(exc).__name__
-        finally:
-            self.ready.set()
-            self.done.set()
-
-    @property
-    def provider_error(self):
-        return getattr(self.fallback, 'provider_error', '') or (self.error or '')
-
-    def _sync_fallback(self):
-        if not self.fallback:
-            return
-        if len(self.transcript) > self.fallback_sent:
-            unsent = self.transcript[self.fallback_sent:]
-            self.fallback_sent = len(self.transcript)
-            self.fallback.text(unsent)
-        self.first_audio = self.first_audio or self.fallback.first_audio
-        self.first_flush = self.first_flush or self.fallback.first_flush
-        self.bytes = self.fallback.bytes
-
-    def use_fallback(self):
-        global _fish_ws_cooldown_until
-        self.control.check()
-        with self.transport_guard:
-            if self.bytes:
-                # Audio already streamed to caller; mark complete so turn finishes cleanly without replaying.
-                self.abandoned = True
-                self.complete = True
-                self.pending = self.unflushed = ''
-                return
-            _fish_ws_cooldown_until = max(_fish_ws_cooldown_until, time.monotonic() + 1800.0)
-            self.abandoned = True  # A late socket must never compete with HTTP.
-            if not self.fallback:
-                self.fallback = FishRestSpeech(self.config, self.audio, self.control, self.rate)
-            self.pending = self.unflushed = ''
-        if self.socket:
-            def close():
-                try: self.socket.close()
-                except Exception: pass
-            threading.Thread(target=close, daemon=True).start()
-        self._sync_fallback()
-
-    def send(self, event):
-        import msgpack
-        self.control.check()
-        if self.fallback:
-            self._sync_fallback()
-            return
-        while not self.ready.wait(.03):
-            self.control.check()
-            if time.monotonic() >= self.connect_deadline:
-                self.use_fallback()
-                return
-        if not self.socket or self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.2):
-            self.use_fallback()
-            return
-        sent, failed = threading.Event(), threading.Event()
-        socket, packet = self.socket, msgpack.packb(event, use_bin_type=True)
-        def write():
-            try:
-                self.control.check()
-                if not self.abandoned:
-                    socket.send(packet)
-            except Exception:
-                failed.set()
-            finally:
-                sent.set()
-        # A connected socket can stall on writes too, not just on first audio.
-        threading.Thread(target=write, daemon=True).start()
-        deadline = time.monotonic() + 1.2
-        while not sent.wait(.03):
-            self.control.check()
-            if time.monotonic() >= deadline:
-                self.use_fallback()
-                return
-        self.control.check()
-        if failed.is_set():
-            self.use_fallback()
-
-    def text(self, value):
-        # Strip markdown markers and any bracketed stage cues to protect voice prosody
-        cleaned = value.replace('**', '').replace('`', '').replace('*', '')
-        cleaned = re.sub(r'\[(?:happy|laughing|curious|empathetic|calm|sigh|laugh|chuckle|pause)\]\s*', '', cleaned, flags=re.I)
-        if not cleaned:
-            return
-        self.transcript += cleaned
-        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.8)) and not self.bytes and not self.fallback:
-            self.use_fallback()
-        if self.fallback:
-            self._sync_fallback()
-            return
-        self.pending += cleaned
-        self.unflushed += cleaned
-
-        # Stream words as soon as boundaries are reached
-        boundaries = list(re.finditer(r'\s+|[!?;:,]$|\.(?<!\d\.)$', self.pending))
-        if not boundaries:
-            return
-        cut = boundaries[-1].end()
-        phrase, self.pending = self.pending[:cut], self.pending[cut:]
-        self.started = self.started or time.monotonic()
-        self.send({'event': 'text', 'text': phrase})
-        if not self.fallback:
-            # Flush the first usable phrase (short micro-opener or 2+ words) immediately while subsequent tokens stream.
-            first_phrase = (self.first_flush is None and (
-                            (len(self.unflushed.strip()) >= 8 and len(self.unflushed.split()) >= 2) or
-                            (len(self.unflushed.strip()) >= 4 and bool(re.search(r'[,!?;:.—–-]\s*$', self.unflushed)))))
-            punct_boundary = bool(re.search(r'[.!?;:]\s*$', self.unflushed)) or (len(self.unflushed.strip()) >= 18 and bool(re.search(r',\s*$', self.unflushed)))
-            overflow = len(self.unflushed) >= 60
-
-            if punct_boundary or first_phrase or overflow:
-                self.send({'event': 'flush'})
-                self.first_flush = self.first_flush or time.monotonic()
-                self.unflushed = ''
-
-    def sentence(self, text):
-        self.transcript += text.strip() + ' '
-        if (self.error or (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.2)) and not self.bytes and not self.fallback:
-            self.use_fallback()
-        if self.fallback:
-            self._sync_fallback()
-            return
-        self.started = self.started or time.monotonic()
-        self.send({'event': 'text', 'text': text.strip() + ' '})
-        if not self.fallback:
-            self.send({'event': 'flush'})
-            self.first_flush = self.first_flush or time.monotonic()
-            self.unflushed = ''
-
-    def finish_fallback(self):
-        # Retain every committed word if the socket failed before any audio.
-        # Transport retries synthesize text only; they never resubmit to Hermes.
-        self._sync_fallback()
-        self.fallback.finish()
-        self.first_audio = self.fallback.first_audio
-        self.first_flush = self.fallback.first_flush
-        self.complete = self.fallback.complete
-        self.bytes = self.fallback.bytes
-        if not self.complete or not self.bytes:
-            raise RuntimeError('Speech did not finish')
-
+class FreeSpeech(FishRestSpeech):
+    """Owned streaming speech; transport names stay compatible with existing callers."""
     def finish(self):
-        if not self.transcript.strip():
-            self.control.check()
-            self.complete = True
-            return
-        if self.fallback:
-            return self.finish_fallback()
-        if self.pending:
-            self.send({'event': 'text', 'text': self.pending})
-            self.pending = ''
-        if self.unflushed:
-            self.send({'event': 'flush'})
-            self.first_flush = self.first_flush or time.monotonic()
-            self.unflushed = ''
-        self.send({'event': 'stop'})
-        if self.fallback:
-            return self.finish_fallback()
-        deadline = time.monotonic() + 45
-        while not self.done.wait(.05):
-            self.control.check()
-            if (self.first_flush and not self.first_audio and time.monotonic() - self.first_flush > 2.2) and not self.bytes:
-                self.use_fallback()
-                return self.finish_fallback()
-            if time.monotonic() > deadline: raise RuntimeError('Speech did not finish')
-        self.control.check()
-        if self.bytes > 0:
-            self.complete = True
-            return
-        if self.error or not self.complete or not self.bytes:
-            self.use_fallback()
-            return self.finish_fallback()
+        super().finish()
+        if not self.complete or self.error or self.provider_error:
+            raise RuntimeError(self.provider_error or 'Speech did not finish')
 
 
 def _is_valid_openrouter_voice_model(model_id):

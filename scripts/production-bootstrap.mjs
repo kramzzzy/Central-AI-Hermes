@@ -89,7 +89,6 @@ export function installationSettings(env) {
       "SUPABASE_BOOTSTRAP_DATABASE_URL",
       "SERVICE_PASSWORD_SETUP",
       "OPENROUTER_API_KEY",
-      "FISH_API_KEY",
     ].map((k) => [k, env[k]]),
   );
   // Deployment preferences, never credentials in the app or persona template.
@@ -104,20 +103,7 @@ export function installationSettings(env) {
   const selectedKey = providerKeys[settings.chatProvider];
   if (selectedKey && !settings[selectedKey]?.trim()) throw new Error('Set '+selectedKey+' for the selected assistant provider.');
   settings.voiceModel = env.HERMES_VOICE_MODEL || "openai/gpt-4.1-mini";
-  const speechDefault = env.FISH_API_KEY?.trim() ? "fish" : "piper";
-  settings.speechProvider = env.HERMES_CALL_SPEECH || env.CENTRAL_AI_CALL_SPEECH || speechDefault;
-  if (!["piper", "fish"].includes(settings.speechProvider))
-    throw new Error("HERMES_CALL_SPEECH must be piper or fish.");
-  settings.FISH_API_KEY = env.FISH_API_KEY || "";
-  settings.fishVoiceId =
-    env.FISH_VOICE_ID || "612b878b113047d9a770c069c8b4fdfe";
-  if (!/^[a-fA-F0-9]{32}$/.test(settings.fishVoiceId))
-    throw new Error("Set a valid Fish Voice ID.");
-  if (
-    /[\r\n\0]/.test(settings.FISH_API_KEY) ||
-    (settings.speechProvider === "fish" && !settings.FISH_API_KEY.trim())
-  )
-    throw new Error("Set FISH_API_KEY when selecting Fish speech.");
+  settings.speechProvider = 'openrouter';
   for (const value of [settings.chatModel, settings.voiceModel])
     if (!/^[a-zA-Z0-9_./:-]{1,160}$/.test(value))
       throw new Error("Use a provider model identifier.");
@@ -209,7 +195,6 @@ export async function installationState(root) {
           "laya",
           "pairing",
           "voice",
-          "fishBridge",
         ]
           .sort()
           .join(",") ||
@@ -236,7 +221,6 @@ export async function installationState(root) {
         "laya",
         "pairing",
         "voice",
-        "fishBridge",
       ].map((k) => [k, secret()]),
     ),
   };
@@ -425,7 +409,6 @@ export async function provisionFiles(root, settings, state) {
     OPENAI_API_KEY: settings.OPENAI_API_KEY || '',
     ANTHROPIC_API_KEY: settings.ANTHROPIC_API_KEY || '',
     GEMINI_API_KEY: settings.GEMINI_API_KEY || '',
-    FISH_API_KEY: settings.FISH_API_KEY,
     LAYA_API_KEY: state.keys.laya,
     HINDSIGHT_API_KEY: state.keys.hindsight,
     LAYA_URL: "http://laya:8000",
@@ -482,13 +465,9 @@ export async function provisionFiles(root, settings, state) {
   );
   const voice = {
     CENTRAL_AI_CALL_SPEECH: settings.speechProvider,
-    FISH_VOICE_ID: settings.fishVoiceId,
-    FISH_VOICE_NAME: "Jarvis",
-    FISH_TTS_MODEL: "s2.1-pro-free",
-    FISH_OS_CALL_ENGINE: "stream",
-    FISH_ASR_ENABLED: "false",
-    FISH_LLM_MODEL: settings.voiceModel,
-    FISH_AGENT_BRIDGE_SECRET: state.keys.fishBridge,
+    OPENROUTER_TTS_MODEL: 'google/gemini-3.8-flash-lite-tts',
+    OPENROUTER_TTS_VOICE: 'Charon',
+    HERMES_VOICE_MODEL: settings.voiceModel,
   };
   for (const [volume, profiles] of [
     ["os-profiles", state.agents.map((a) => a.native_profile)],

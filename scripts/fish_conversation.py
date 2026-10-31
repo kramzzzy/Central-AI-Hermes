@@ -685,12 +685,7 @@ class NativeTaskBridge:
         return response
 
 def fish_api(config, path, body=None, method=None):
-    request = urllib.request.Request('https://api.fish.audio/v1/agent/' + path,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={'Authorization': 'Bearer ' + config['FISH_API_KEY'], 'Content-Type': 'application/json'},
-        method=method)
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.load(response) if response.status != 204 else None
+    raise RuntimeError('Hosted Fish Audio sessions have been removed; use owned OpenRouter speech')
 
 def conversation_llm(config):
     """Explicit low-cost voice routing; reject arbitrary models and expensive fallbacks."""

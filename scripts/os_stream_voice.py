@@ -57,38 +57,9 @@ class OSStreamVoice:
                 if hasattr(provider, 'refresh_credentials'):
                     provider.refresh_credentials()
                 config = dict(provider.config)
-                if not config.get('FISH_API_KEY'):
-                    try:
-                        from central_ai_integrations import discover_fish_credentials, valid_fish_key
-                        discovered = discover_fish_credentials('/opt/data')
-                        fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
-                        if fish_key:
-                            config['FISH_API_KEY'] = fish_key
-                    except Exception:
-                        pass
-                env_voice = (os.environ.get('FISH_VOICE_ID') or config.get('FISH_VOICE_ID') or '').strip()
-                jarvis_voice_id = (
-                    env_voice
-                    if env_voice and env_voice != 'a30d099a643d4173836cfee1d8ae6c13'
-                    else '612b878b113047d9a770c069c8b4fdfe'
-                )
-                req_persona = str(body.get('voice') or '').strip().lower()
-                req_voice_id = str(body.get('voice_id') or '').strip()
-                if req_persona == 'michael':
-                    voice_id = 'a30d099a643d4173836cfee1d8ae6c13'
-                    voice_name = 'Michael'
-                elif req_persona == 'jarvis':
-                    voice_id = jarvis_voice_id
-                    voice_name = 'Jarvis'
-                elif req_voice_id:
-                    voice_id = req_voice_id
-                    voice_name = 'Michael' if voice_id == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
-                else:
-                    voice_id = env_voice or jarvis_voice_id
-                    voice_name = 'Michael' if voice_id == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
-                config['FISH_VOICE_ID'] = voice_id
-                config['FISH_VOICE_NAME'] = voice_name
-                config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+                config['CENTRAL_AI_CALL_SPEECH'] = 'openrouter'
+                if body.get('voice') in {'jarvis', 'michael'}:
+                    config['OPENROUTER_TTS_VOICE'] = (os.environ.get('CUSTOMER_OPENROUTER_TTS_VOICE') or 'Orus') if body['voice'] == 'michael' else (os.environ.get('OPENROUTER_TTS_VOICE') or 'Charon')
                 self.contexts[call] = {'identity': identity, 'scope': dict(scope), 'config': config,
                     'conversation': self.calls.conversation(call, scope), 'control': None, 'turn': None,
                     'until': time.monotonic()+180, 'greeting': call_greeting(body.get('display_name', '')),
@@ -103,36 +74,8 @@ class OSStreamVoice:
                 if item['turn'] == body.get('turn_id') and item['control']: item['control'].cancel()
                 return handler.reply(200, {'stopped': True})
             if action not in {'turn', 'greeting', 'notice'}: raise ValueError('Unsupported voice action')
-            if not item['config'].get('FISH_API_KEY'):
-                try:
-                    from central_ai_integrations import discover_fish_credentials, valid_fish_key
-                    discovered = discover_fish_credentials('/opt/data')
-                    fish_key = valid_fish_key(discovered.get('FISH_API_KEY'))
-                    if fish_key:
-                        item['config']['FISH_API_KEY'] = fish_key
-                except Exception:
-                    pass
-            env_voice = (os.environ.get('FISH_VOICE_ID') or '').strip()
-            jarvis_voice_id = (
-                env_voice
-                if env_voice and env_voice != 'a30d099a643d4173836cfee1d8ae6c13'
-                else '612b878b113047d9a770c069c8b4fdfe'
-            )
-            turn_persona = str(body.get('voice') or '').strip().lower()
-            turn_voice_id = str(body.get('voice_id') or '').strip()
-            if turn_persona == 'michael':
-                item['config']['FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-                item['config']['FISH_VOICE_NAME'] = 'Michael'
-            elif turn_persona == 'jarvis':
-                item['config']['FISH_VOICE_ID'] = jarvis_voice_id
-                item['config']['FISH_VOICE_NAME'] = 'Jarvis'
-            elif turn_voice_id:
-                item['config']['FISH_VOICE_ID'] = turn_voice_id
-                item['config']['FISH_VOICE_NAME'] = 'Michael' if turn_voice_id == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
-            elif not item['config'].get('FISH_VOICE_ID'):
-                item['config']['FISH_VOICE_ID'] = env_voice or jarvis_voice_id
-                item['config']['FISH_VOICE_NAME'] = 'Michael' if item['config']['FISH_VOICE_ID'] == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
-            item['config']['CENTRAL_AI_CALL_SPEECH'] = 'fish'
+            if body.get('voice') in {'jarvis', 'michael'}:
+                item['config']['OPENROUTER_TTS_VOICE'] = (os.environ.get('CUSTOMER_OPENROUTER_TTS_VOICE') or 'Orus') if body['voice'] == 'michael' else (os.environ.get('OPENROUTER_TTS_VOICE') or 'Charon')
             turn = str(UUID(body['turn_id']))
             prior_playback = [entry['text'] for entry in item['playback']
                               if time.monotonic() - entry['at'] < 30]

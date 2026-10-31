@@ -32,11 +32,7 @@ from whatsapp_callers import resolve_caller, provision_business_phone, provision
 from whatsapp_routing import routing, caller_data
 from whatsapp_speech import phone_speech, PREFERRED_LOCALE, FALLBACK_LOCALE
 
-CONVERSATION_MODE = os.environ.get('WHATSAPP_CONVERSATION_MODE', 'stream')
-if CONVERSATION_MODE == 'fish':
-    CONVERSATION_MODE = 'stream'
-if CONVERSATION_MODE not in {'native', 'fish', 'stream'}:
-    raise RuntimeError('Invalid phone conversation mode')
+CONVERSATION_MODE = 'stream'
 fish_service = None
 text_supervisor = None
 
@@ -92,74 +88,11 @@ except Exception as exc:
 # key -> is customer line; audio sockets are admitted only for the line that started the call.
 KEYS = {KEY: False, **({CUSTOMER_KEY: True} if CUSTOMER_KEY else {})}
 config = dotenv_values('/opt/data/profiles/leo/.env')
-from central_ai_integrations import discover_fish_credentials, integration_config, valid_fish_key
+from central_ai_integrations import integration_config
+from openrouter_speech import settings as speech_settings
 config = integration_config(config)
-config['FISH_API_KEY'] = valid_fish_key(config.get('FISH_API_KEY'))
-if not config.get('FISH_API_KEY'):
-    for k, v in discover_fish_credentials('/opt/data').items():
-        if v and not config.get(k):
-            config[k] = v
-if os.environ.get('OPENROUTER_API_KEY') and not config.get('OPENROUTER_API_KEY'):
-    config['OPENROUTER_API_KEY'] = os.environ['OPENROUTER_API_KEY'].strip()
-if os.environ.get('OPENAI_API_KEY') and not config.get('OPENAI_API_KEY'):
-    config['OPENAI_API_KEY'] = os.environ['OPENAI_API_KEY'].strip()
-if os.environ.get('FISH_API_KEY'):
-    env_fish_key = valid_fish_key(os.environ['FISH_API_KEY'])
-    if env_fish_key:
-        config['FISH_API_KEY'] = env_fish_key
-if os.environ.get('FISH_VOICE_ID'):
-    config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
-else:
-    config.setdefault('FISH_VOICE_ID', '612b878b113047d9a770c069c8b4fdfe')
-if os.environ.get('FISH_VOICE_NAME'):
-    config['FISH_VOICE_NAME'] = os.environ['FISH_VOICE_NAME'].strip()
-else:
-    config.setdefault('FISH_VOICE_NAME', 'Michael' if config.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis')
-try:
-    from voice_setup import load_settings
-    saved_voice = load_settings({'HERMES_PROFILE_ROOT': '/opt/data'})
-    if isinstance(saved_voice, dict):
-        for k, v in saved_voice.items():
-            if v:
-                config[k] = v
-except Exception as exc:
-    print(f"[voice] Private voice settings load skipped: {exc}", flush=True)
-if os.environ.get('FISH_VOICE_ID'):
-    config['FISH_VOICE_ID'] = os.environ['FISH_VOICE_ID'].strip()
-config['FISH_API_KEY'] = valid_fish_key(config.get('FISH_API_KEY'))
-if not config.get('FISH_VOICE_ID') or str(config.get('FISH_VOICE_ID') or '').strip() in {
-    '',
-    '31d3dd937d2944a1b06da3db533d27f9',
-    '711cf3ed00ab441a8f54a45058047b7a',
-    'bf342d9e9e5b44e0ade1ccfd1abb4815',
-}:
-    config['FISH_VOICE_ID'] = os.environ.get('FISH_VOICE_ID', '').strip() or '612b878b113047d9a770c069c8b4fdfe'
-    config['FISH_VOICE_NAME'] = 'Michael' if config['FISH_VOICE_ID'] == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'
-if not os.environ.get('CUSTOMER_FISH_VOICE_ID') or os.environ.get('CUSTOMER_FISH_VOICE_ID', '').strip() in {
-    '',
-    '31d3dd937d2944a1b06da3db533d27f9',
-    '711cf3ed00ab441a8f54a45058047b7a',
-    'bf342d9e9e5b44e0ade1ccfd1abb4815',
-}:
-    os.environ['CUSTOMER_FISH_VOICE_ID'] = 'a30d099a643d4173836cfee1d8ae6c13'
-config['CENTRAL_AI_CALL_SPEECH'] = 'fish'
-if not config.get('FISH_API_KEY') or not config.get('FISH_VOICE_ID'):
-    print("[voice] Warning: FISH_API_KEY or FISH_VOICE_ID missing; voice service running in idle waiting for credentials", flush=True)
-    config['FISH_API_KEY'] = config.get('FISH_API_KEY') or ''
-else:
-    for _shared_dir in ('/opt/data', '/data'):
-        try:
-            _rt_path = Path(_shared_dir) / '.runtime-fish-voice.json'
-            if _rt_path.parent.is_dir():
-                _rt_path.write_text(json.dumps({
-                    'FISH_API_KEY': config['FISH_API_KEY'],
-                    'FISH_VOICE_ID': config.get('FISH_VOICE_ID') or '612b878b113047d9a770c069c8b4fdfe',
-                    'FISH_VOICE_NAME': config.get('FISH_VOICE_NAME') or ('Michael' if config.get('FISH_VOICE_ID') == 'a30d099a643d4173836cfee1d8ae6c13' else 'Jarvis'),
-                    'FISH_TTS_MODEL': config.get('FISH_TTS_MODEL') or 's1',
-                }), encoding='utf-8')
-                os.chmod(_rt_path, 0o644)
-        except Exception:
-            pass
+config.update(speech_settings(config))
+config['CENTRAL_AI_CALL_SPEECH'] = 'openrouter'
 config = phone_speech(config)
 for _k in ('HERMES_API_KEY', 'APP_OS_URL', 'MICHAEL_OS_URL'):
     if not os.environ.get(_k) and config.get(_k):
@@ -486,34 +419,8 @@ def native(action, call, **extra):
 
 
 def speech(text):
-    fish_key = valid_fish_key(config.get('FISH_API_KEY'))
-    if not fish_key:
-        for k, v in discover_fish_credentials('/opt/data').items():
-            if v and not config.get(k):
-                config[k] = v
-        fish_key = valid_fish_key(config.get('FISH_API_KEY'))
-    if fish_key:
-        payload = json.dumps({'text': text[:1800], 'reference_id': config['FISH_VOICE_ID'],
-            'format': 'pcm', 'sample_rate': 16000, 'latency': 'balanced'}).encode()
-        request = urllib.request.Request('https://api.fish.audio/v1/tts', data=payload,
-            headers={'Authorization': 'Bearer ' + fish_key,
-                     'Content-Type': 'application/json',
-                     'model': config.get('FISH_TTS_MODEL') or 's1'})
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                audio = response.read(16000 * 2 * 45 + 1)
-            if 0 < len(audio) <= 16000 * 2 * 45 and len(audio) % 2 == 0:
-                return audio
-        except Exception:
-            pass
-    try:
-        from stream_conversation import _hermes_proxy_tts
-        audio = _hermes_proxy_tts(text[:1800], config.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13', 16000)
-        if audio and len(audio) % 2 == 0:
-            return audio
-    except Exception:
-        pass
-    return b''
+    from openrouter_speech import synthesize
+    return synthesize(text[:1800], config, 16000)
 
 
 GREETING = "Hey Mark! It's Leo. I'm here. What can I help you with?"
@@ -526,8 +433,8 @@ def fixed_speech(text):
     # private replies or arbitrary text. Includes voice/model in cache identity.
     if text not in {GREETING, RECOVERY, TASK_ACK}:
         raise ValueError('Only fixed phone phrases can be cached')
-    speech_mode = 'fish-' + (config.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13')
-    stamp = hashlib.sha256((speech_mode + '\0' + (config.get('FISH_TTS_MODEL') or 's1') + '\0' + text).encode()).hexdigest()
+    from openrouter_speech import voice_cache_key
+    stamp = hashlib.sha256(repr((voice_cache_key(config), text)).encode()).hexdigest()
     path = DATA / ('fixed-' + stamp + '.pcm')
     if path.exists():
         audio = path.read_bytes()
@@ -541,102 +448,16 @@ def fixed_speech(text):
 
 
 class StreamingSpeech:
-    """Connect during recognition; synthesize native text and forward PCM now."""
     def __init__(self, handler):
-        self.handler = handler
-        self.ready = threading.Event()
-        self.done = threading.Event()
-        self.cancelled = threading.Event()
-        self.socket = None
-        self.error = False
-        self.completed = False
-        self.first_audio = None
-        self.bytes = 0
-        self.unflushed = ''
-        self.pending_text = ''
-        self.first_text = None
-        self.first_flush = None
-        threading.Thread(target=self.receive, daemon=True).start()
+        from stream_conversation import FreeSpeech, TurnControl
+        self.control = TurnControl()
+        self.stream = FreeSpeech(config, handler.audio_chunk, self.control, 16000)
 
-    def receive(self):
-        try:
-            with connect_speech('wss://api.fish.audio/v1/tts/live',
-                    additional_headers={'Authorization': 'Bearer ' + config['FISH_API_KEY'],
-                        'model': config.get('FISH_TTS_MODEL') or 's1'},
-                    open_timeout=8, close_timeout=2, max_size=4*1024*1024, max_queue=8) as socket:
-                self.socket = socket
-                socket.send(msgpack.packb({'event': 'start', 'request': {
-                    'text': '', 'reference_id': config['FISH_VOICE_ID'], 'format': 'pcm',
-                    'sample_rate': 16000, 'latency': 'balanced', 'chunk_length': 100}}, use_bin_type=True))
-                self.ready.set()
-                deadline = time.monotonic() + 60
-                while not self.cancelled.is_set() and time.monotonic() < deadline:
-                    try:
-                        raw = socket.recv(timeout=.5)
-                    except TimeoutError:
-                        continue
-                    if not isinstance(raw, bytes):
-                        raise RuntimeError('Invalid speech message')
-                    event = msgpack.unpackb(raw, raw=False)
-                    if event.get('event') == 'audio' and event.get('audio'):
-                        audio = event['audio']
-                        self.bytes += len(audio)
-                        if self.bytes > 16000*2*45:
-                            raise RuntimeError('Speech exceeded bounded output')
-                        self.first_audio = self.first_audio or time.monotonic()
-                        self.handler.audio_chunk(audio)
-                    elif event.get('event') == 'finish':
-                        self.completed = event.get('reason') == 'stop'
-                        if not self.completed:
-                            raise RuntimeError('Speech did not finish')
-                        return
-                if not self.cancelled.is_set():
-                    raise RuntimeError('Speech deadline exceeded')
-        except Exception:
-            self.error = True
-        finally:
-            self.ready.set()
-            self.done.set()
-
-    def send(self, event):
-        if not self.ready.wait(9) or not self.socket or self.error or self.cancelled.is_set():
-            raise RuntimeError('Speech connection unavailable')
-        self.socket.send(msgpack.packb(event, use_bin_type=True))
-
-    def text(self, text):
-        if not text:
-            return
-        # Native deltas can split words and usually prefix their whitespace.
-        # Send complete words, then flush the first short phrase immediately;
-        # do not wait for an entire long first sentence to finish generating.
-        self.pending_text += text
-        boundaries = list(re.finditer(r'\s+|[!?;:]$|\.(?<!\d\.)$', self.pending_text))
-        if not boundaries:
-            return
-        cut = boundaries[-1].end()
-        phrase, self.pending_text = self.pending_text[:cut], self.pending_text[cut:]
-        self.send({'event': 'text', 'text': phrase})
-        self.first_text = self.first_text or time.monotonic()
-        self.unflushed += phrase
-        first_phrase = self.first_flush is None and len(self.unflushed.strip()) >= 24 and len(self.unflushed.split()) >= 5
-        if re.search(r'[.!?;:]\s*$', self.unflushed) or first_phrase or len(self.unflushed) >= 100:
-            self.send({'event': 'flush'})
-            self.first_flush = self.first_flush or time.monotonic()
-            self.unflushed = ''
-
-    def finish(self):
-        if self.pending_text:
-            self.send({'event': 'text', 'text': self.pending_text})
-            self.first_text = self.first_text or time.monotonic()
-            self.pending_text = ''
-        self.send({'event': 'stop'})
-        if not self.done.wait(20) or not self.completed or self.error:
-            raise RuntimeError('Speech stream did not complete')
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
 
     def cancel(self):
-        self.cancelled.set()
-        if self.socket:
-            self.socket.close()
+        self.control.cancel()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -708,26 +529,20 @@ class Handler(BaseHTTPRequestHandler):
             her_key = (os.environ.get('HERMES_API_KEY') or config.get('HERMES_API_KEY') or '').strip()
             if not (hmac.compare_digest(auth, 'Bearer ' + KEY) or (her_key and hmac.compare_digest(auth, 'Bearer ' + her_key))):
                 return self.reply(401, {})
-            fish_key = valid_fish_key(config.get('FISH_API_KEY'))
-            if not fish_key:
-                for k, v in discover_fish_credentials('/opt/data').items():
-                    if v and not config.get(k):
-                        config[k] = v
-                fish_key = valid_fish_key(config.get('FISH_API_KEY'))
-            if not fish_key:
-                return self.reply(503, {'error': 'FISH_API_KEY missing on voice service'})
             length = int(self.headers.get('Content-Length', '0'))
             if not 0 < length <= 65536:
                 return self.reply(400, {})
-            body = json.loads(self.rfile.read(length))
-            text = str(body.get('text') or '').strip()[:1800]
-            voice_id = str(body.get('voice_id') or config.get('FISH_VOICE_ID') or 'a30d099a643d4173836cfee1d8ae6c13').strip()
-            sample_rate = int(body.get('sample_rate') or 24000)
-            if not text:
-                return self.reply(200, b'', 'application/octet-stream')
-            from stream_conversation import fish_rest_tts
-            pcm_bytes = fish_rest_tts(text, {**config, 'FISH_API_KEY': fish_key, 'FISH_VOICE_ID': voice_id}, rate=sample_rate)
-            return self.reply(200 if pcm_bytes else 503, pcm_bytes or b'', 'application/octet-stream')
+            try:
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError('Invalid speech request')
+                from openrouter_speech import synthesize
+                pcm_bytes = synthesize(body.get('text'), config, body.get('sample_rate', 24000))
+            except (ValueError, TypeError):
+                return self.reply(400, {'error': 'Invalid speech request'})
+            except Exception:
+                return self.reply(503, {'error': 'OpenRouter speech is unavailable'})
+            return self.reply(200, pcm_bytes, 'application/octet-stream')
         # The line comes from the credential, never from a header alone.
         customer_auth = bool(CUSTOMER_KEY) and hmac.compare_digest(auth, 'Bearer ' + CUSTOMER_KEY)
         if not customer_auth and not hmac.compare_digest(auth, 'Bearer ' + KEY):
