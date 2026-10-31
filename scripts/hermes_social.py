@@ -1320,6 +1320,8 @@ class SocialWorkspace:
                 return self.private_reply(org, body)
             if action == "accounts":
                 return {"accounts": self.accounts(org)}
+            if action == "post_feed":
+                return self.post_feed(org, body)
             if action == "publish_approved" and body.get("video_url"):
                 return self.publish_reel(org, body)
             if action == "publish_approved":
@@ -1386,6 +1388,40 @@ class SocialWorkspace:
         if page.get("access_token") in (None, "", "box1_managed_session"):
             raise SocialError("Reconnect this account.", 409)
         return page
+
+    def post_feed(self, org, body):
+        platform = body.get("platform")
+        account = str(body.get("account_id") or "")
+        after = body.get("after") or ""
+        if platform not in ("facebook", "instagram") or not re.fullmatch(r"\d{1,100}", account):
+            raise SocialError("Choose a connected Facebook or Instagram account.")
+        if not isinstance(after, str) or len(after) > 2000:
+            raise SocialError("Invalid post cursor.")
+        page = self.account_page(org, platform, account)
+        facebook = platform == "facebook"
+        fields = ("id,message,created_time,permalink_url,full_picture,likes.limit(0).summary(true),comments.limit(0).summary(true),shares"
+                  if facebook else "id,caption,timestamp,permalink,media_type,media_url,thumbnail_url,like_count,comments_count")
+        query = {"fields": fields, "limit": 25}
+        if after:
+            query["after"] = after
+        feed = self.transport(f"{GRAPH_BASE}/{account}/{'posts' if facebook else 'media'}?" + urllib.parse.urlencode(query), token=page["access_token"])
+        def count(value):
+            return value if type(value) is int and value >= 0 else None
+        posts = []
+        for item in feed.get("data") or []:
+            if not isinstance(item, dict) or not re.fullmatch(r"[0-9_]{1,150}", str(item.get("id") or "")):
+                continue
+            posts.append({"post_id": str(item["id"]), "platform": platform, "account_id": account,
+                          "account_name": page.get("name") or account,
+                          "post_text": item.get("message" if facebook else "caption") or "",
+                          "post_url": item.get("permalink_url" if facebook else "permalink") or "",
+                          "image_url": item.get("full_picture") if facebook else (item.get("thumbnail_url") if item.get("media_type") == "VIDEO" else item.get("media_url")),
+                          "published_at": item.get("created_time" if facebook else "timestamp"),
+                          "likes": count(((item.get("likes") or {}).get("summary") or {}).get("total_count")) if facebook else count(item.get("like_count")),
+                          "comments": count(((item.get("comments") or {}).get("summary") or {}).get("total_count")) if facebook else count(item.get("comments_count")),
+                          "shares": count((item.get("shares") or {}).get("count")) if facebook else None})
+        paging = feed.get("paging") or {}
+        return {"posts": posts, "after": (paging.get("cursors") or {}).get("after") if paging.get("next") else None}
 
     def ingest_webhook(self, body):
         raw = base64.b64decode(body.get("raw") or "", validate=True)

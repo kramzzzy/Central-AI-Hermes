@@ -20,17 +20,25 @@ SECTIONS = {
     "calendar",
     "crm",
     "clients",
-    "contacts", "communications", "comments", "submissions", "social_posts", "files", "capabilities",
+    "contacts", "communications", "comments", "submissions", "social_posts", "published_posts", "files", "capabilities",
 }
 
 
 def validate(arguments):
-    if not isinstance(arguments, dict) or set(arguments) - {"section", "search", "id", "offset", "limit"}:
+    if not isinstance(arguments, dict) or set(arguments) - {"section", "search", "id", "offset", "limit", "platform", "account", "post", "refresh", "older"}:
         raise ValueError("Unsupported workspace arguments")
     if not isinstance(arguments.get("section"), str) or arguments["section"] not in SECTIONS:
         raise ValueError("Choose a supported workspace section")
     if not isinstance(arguments.get("search", ""), str) or len(arguments.get("search", "")) > 200:
         raise ValueError("Invalid workspace search")
+    if arguments.get("platform", "all") not in ("all", "facebook", "instagram"):
+        raise ValueError("Invalid post platform")
+    for key, pattern in (("account", r"\d{1,100}"), ("post", r"[0-9_]{1,150}")):
+        if key in arguments and (not isinstance(arguments[key], str) or not re.fullmatch(pattern, arguments[key])):
+            raise ValueError("Invalid post scope")
+    for key in ("refresh", "older"):
+        if key in arguments and type(arguments[key]) is not bool:
+            raise ValueError("Invalid refresh flag")
     for key, minimum, maximum, default in [("offset", 0, 10000, 0), ("limit", 1, 20, 10)]:
         value = arguments.get(key, default)
         if type(value) is not int or not minimum <= value <= maximum:
@@ -326,7 +334,7 @@ def owner_tools_available():
 def inspect_workspace(arguments, **kwargs):
     try:
         validate(arguments)
-        if arguments.get("section") in {"communications", "comments", "submissions", "social_posts", "files", "capabilities"} and not owner_tools_available():
+        if arguments.get("section") in {"communications", "comments", "submissions", "social_posts", "published_posts", "files", "capabilities"} and not owner_tools_available():
             return json.dumps({"error": "Owner workspace access required."})
         token = process_token()
         api_key = _hermes_api_key()

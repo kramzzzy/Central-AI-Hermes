@@ -50,6 +50,30 @@ class SocialTests(unittest.TestCase):
         self.assertIn("config_id=cfg-9", url)
         self.assertNotIn("scope=", url)
 
+    def test_post_feed_scopes_media_metrics_and_cursor(self):
+        def provider(url, **kw):
+            self.calls.append((url, kw))
+            return {"data": [{"id":"101_888","message":"Post","full_picture":"https://example.test/image.jpg","likes":{"summary":{"total_count":0}},"comments":{"summary":{"total_count":3}}}],
+                    "paging":{"next":"https://untrusted.test/never-follow","cursors":{"after":"cursor-2"}}}
+        self.social.transport=provider
+        result=self.social.handle({"org":ORG,"action":"post_feed","platform":"facebook","account_id":"101","after":"cursor-1"})
+        self.assertEqual(result["posts"][0]["likes"],0)
+        self.assertEqual(result["posts"][0]["comments"],3)
+        self.assertIsNone(result["posts"][0]["shares"])
+        self.assertEqual(result["after"],"cursor-2")
+        self.assertIn("/101/posts?",self.calls[-1][0])
+        self.assertIn("after=cursor-1",self.calls[-1][0])
+        self.assertEqual(self.calls[-1][1]["token"],"token-A")
+        with self.assertRaises(SocialError):
+            self.social.post_feed(OTHER,{"platform":"facebook","account_id":"101"})
+        with self.assertRaises(SocialError):
+            self.social.post_feed(ORG,{"platform":"facebook","account_id":"https://evil.test"})
+        self.social.transport=lambda *a,**k:{"data":[{"id":"30399","media_type":"VIDEO","thumbnail_url":"https://example.test/thumb.jpg","like_count":4,"comments_count":2}]}
+        ig=self.social.post_feed(ORG,{"platform":"instagram","account_id":"303"})
+        self.assertEqual(ig["posts"][0]["image_url"],"https://example.test/thumb.jpg")
+        self.assertIsNone(ig["posts"][0]["shares"])
+        self.assertIsNone(ig["after"])
+
     def test_business_pages_found_via_granular_scopes(self):
         def provider(url, **kw):
             if "/me/accounts" in url: return {"data": []}
