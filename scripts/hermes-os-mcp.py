@@ -599,10 +599,15 @@ def manage_submissions(action: str, id: str, status: str = '', message: str = ''
 
 
 @server.tool(name='manage_social')
-def manage_social(action: str) -> dict:
-    """Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one."""
+def manage_social(action: str, platform: str = '', account: str = '', post: str = '', search: str = '', offset: int = 0, refresh: bool = False, older: bool = False) -> dict:
+    """Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one. list_outside_posts browses posts excluded from the grid; include_post adds the explicitly requested platform/account/post without publishing."""
     try:
-        raw = _plugin_client.manage_social({'action': action})
+        payload = {'action': action}
+        if action == 'include_post':
+            payload.update(platform=platform, account=account, post=post)
+        elif action == 'list_outside_posts':
+            payload.update(platform=platform or 'all', account=account, search=search, offset=offset, refresh=refresh, older=older)
+        raw = _plugin_client.manage_social(payload)
         return json.loads(raw) if isinstance(raw, str) else raw
     except Exception as exc:
         return {'error': f'Social connection request failed: {str(exc)}'}

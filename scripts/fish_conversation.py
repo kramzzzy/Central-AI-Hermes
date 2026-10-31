@@ -72,7 +72,10 @@ MANAGE_SOCIAL_TOOL = {
     'tool_type': 'client', 'name': 'manage_social',
     'description': "Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page; tell the owner the link was created and offer to text it. Only create an invite when the owner asks.",
     'arguments': [
-        {'name': 'action', 'description': 'create_invite.'}
+        {'name': 'action', 'description': 'create_invite, list_outside_posts, or include_post. Include only the exact outside post requested by the owner; this does not publish.'},
+        {'name': 'platform', 'description': 'facebook or instagram for include_post; all for listing.'},
+        {'name': 'account', 'description': 'Connected account ID; empty for listing all accounts.'},
+        {'name': 'post', 'description': 'Exact post ID for include_post; empty for listing.'}
     ],
     'expects_response': True, 'timeout_seconds': 15,
 }

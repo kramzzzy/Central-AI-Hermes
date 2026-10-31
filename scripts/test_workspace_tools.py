@@ -26,7 +26,7 @@ class WorkspaceToolsTests(unittest.TestCase):
         self.assertIn('delete', submissions_tool['properties']['action']['enum'])
         social_tool = TOOLS['mcp__michael_os__manage_social']['schema']['parameters']
         self.assertEqual(['action'], social_tool['required'])
-        self.assertEqual(['create_invite'], social_tool['properties']['action']['enum'])
+        self.assertEqual(['create_invite', 'list_outside_posts', 'include_post'], social_tool['properties']['action']['enum'])
 
     def test_owner_tools_shared_and_restricted_context_denied(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -37,6 +37,9 @@ class WorkspaceToolsTests(unittest.TestCase):
                 self.assertTrue(json.loads(client.generate_image({'prompt':'solar poster','aspect_ratio':'3:4'}))['ok'])
                 self.assertEqual(call.call_args.args[0], 'central_ai_generate_image')
                 self.assertFalse(call.call_args.kwargs['retry'])
+                self.assertTrue(json.loads(client.manage_social({'action':'include_post','platform':'facebook','account':'123','post':'123_456'}))['ok'])
+                self.assertEqual(call.call_args.args[0], 'central_ai_manage_social')
+                self.assertEqual(call.call_args.args[1]['post'], '123_456')
                 for config in ['phone_business_context: true', 'os_specialist: {id: fixture}']:
                     (home/'config.yaml').write_text(config)
                     call.reset_mock()
