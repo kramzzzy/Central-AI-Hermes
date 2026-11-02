@@ -97,7 +97,7 @@ TOOLS = {
                         "description": "Task operation ('create' by default).",
                     },
                     "title": {"type": "string", "description": "Task title (e.g. 'Social media post — residential solar packages')."},
-                    "instruction": {"type": "string", "description": "Detailed task instructions or prompt for the assigned agent."},
+                    "instruction": {"type": "string", "description": "Detailed task instructions or prompt for the assigned agent. For social posts first ask Message us, Website, or No link unless already specified; preserve the answer and exact HTTPS destination. Caption links are not native buttons."},
                     "agent": {"type": "string", "description": "Optional agent name or role (exact enabled agent ID or name from inspect_workspace section=agents). Auto-detected from task topic if omitted."},
                     "due_date": {"type": "string", "description": "Optional due date (YYYY-MM-DD)."},
                     "task_id": {"type": "string", "description": "Task UUID when running, approving, rejecting, or deleting."},
@@ -118,7 +118,7 @@ TOOLS = {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Task title."},
-                    "instruction": {"type": "string", "description": "Detailed task instructions or prompt for the assigned agent."},
+                    "instruction": {"type": "string", "description": "Detailed task instructions or prompt for the assigned agent. For social posts first ask Message us, Website, or No link unless already specified; preserve the answer and exact HTTPS destination. Caption links are not native buttons."},
                     "agent": {"type": "string", "description": "Optional agent name (exact enabled agent ID or name from inspect_workspace section=agents)."},
                     "due_date": {"type": "string", "description": "Optional due date (YYYY-MM-DD)."},
                     "auto_run": {"type": "boolean", "description": "Immediately queue AI automation run for Approvals (default true)."},

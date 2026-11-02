@@ -65,3 +65,7 @@ For App OS publishing, use `social_accounts` then `social_prepare_post` once per
 - **CTA:** [Single frictionless action, e.g. "Book a free 2-minute solar pre-assessment call or site visit"]
 - **Hashtags:** #YourChoiceSolar #SolarAustralia #LowerPowerBills
 ```
+
+## Post destination choice
+
+Before creating or delegating a social post, ask once: Message us, Website, or No link? Wait for the answer unless the owner already specified the choice. Include the choice and exact destination in the task instruction. For Message us on Facebook, use https://m.me/<connected Facebook Page account_id> from social_accounts or live connection status, never a guessed ID. For Website, ask for the exact HTTPS URL unless already supplied. Put the destination in social_prepare_post.link and use an appropriate call to action in the caption. No link means omit link. This publishes a caption link, not a native Meta button; explain this before proceeding if a button was requested. Instagram caption URLs are not clickable: ask whether to use a DM instruction or an existing verified bio link instead. Keep human post approval and inspect social_posts by run ID to verify the saved destination and published_posts for the actual publication.

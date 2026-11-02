@@ -562,7 +562,7 @@ def manage_files(
 
 @server.tool(name='social_media')
 def social_media(operation: str = 'status', platform: str = '', account_id: str = '') -> dict:
-    """Read connected social account status or list_posts. Use an agent task for drafts requiring post approval."""
+    """Read connected social account status or list_posts. Before delegating a post ask Message us, Website, or No link unless already specified. Preserve the chosen destination in the task; caption links are not native buttons. Use an agent task for drafts requiring post approval."""
     if operation not in {'status', 'list_posts'}:
         return {'error': 'Use a Social Media task for post creation and approval.'}
     return json.loads(_plugin_client.social_media({k: v for k, v in {'operation': operation, 'platform': platform, 'account_id': account_id}.items() if v}))
