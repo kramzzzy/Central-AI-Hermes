@@ -1376,20 +1376,23 @@ class SocialWorkspace:
     def _account_owners(self, platform, account):
         with self.database() as db:
             rows = db.execute("SELECT org,encrypted FROM connections WHERE platform='facebook'").fetchall()
-        matches = []
+        matches = {}
         for row in rows:
             conn = self.decrypt(row["encrypted"])
             if conn.get("revoked"):
                 continue
             for page in conn.get("pages", []):
                 if (platform, str(account)) in self._page_accounts(page):
-                    matches.append((row["org"], page))
-        return matches
+                    # Repeated discovery rows are one owner, not a workspace conflict.
+                    matches.setdefault((row["org"], str(page["id"])), (row["org"], page))
+        return list(matches.values())
 
     def account_page(self, org, platform, account):
         matches = self._account_owners(platform, account)
-        if len(matches) != 1 or matches[0][0] != org:
-            raise SocialError("Account is not uniquely connected to this workspace.", 403)
+        if not matches or not any(owner == org for owner, _ in matches):
+            raise SocialError("This account is no longer connected to this workspace. Refresh accounts or reconnect it.", 403)
+        if len(matches) != 1:
+            raise SocialError("This account has conflicting workspace connections. Reconnect it to the intended workspace.", 403)
         page = matches[0][1]
         if page.get("access_token") in (None, "", "box1_managed_session"):
             raise SocialError("Reconnect this account.", 409)

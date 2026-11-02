@@ -247,6 +247,24 @@ class SocialTests(unittest.TestCase):
         self.assertEqual('token-B',media[0][1]['data']['access_token'])
         with self.assertRaises(SocialError): self.social.handle({**body,'org':OTHER})
 
+    def test_repeated_page_rows_are_one_owner(self):
+        conn = self.social.get_connection(ORG, "facebook")
+        conn["pages"].append(dict(conn["pages"][0]))
+        self.social.save_connection(ORG, "facebook", conn)
+        self.assertEqual(len(self.social._account_owners("facebook", "101")), 1)
+        self.social.transport = lambda *a, **kw: {"data": [{"id": "101_88", "message": "Older post"}]}
+        feed = self.social.post_feed(ORG, {"platform": "facebook", "account_id": "101", "after": "older-cursor"})
+        self.assertEqual(feed["posts"][0]["post_id"], "101_88")
+        self.social.save_connection(OTHER, "facebook", conn)
+        with self.assertRaisesRegex(SocialError, "conflicting workspace"):
+            self.social.post_feed(ORG, {"platform": "facebook", "account_id": "101"})
+
+    def test_missing_account_has_actionable_error(self):
+        with self.assertRaisesRegex(SocialError, "no longer connected"):
+            self.social.account_page(ORG, "facebook", "404")
+        with self.assertRaises(SocialError):
+            self.social.account_page(OTHER, "facebook", "101")
+
     def test_duplicate_workspace_link_rejected(self):
         with self.assertRaises(SocialError): self.social._save_facebook_and_instagram(OTHER,self.pages,self.pages[0],None)
 
