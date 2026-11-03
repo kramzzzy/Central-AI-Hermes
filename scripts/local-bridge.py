@@ -905,6 +905,8 @@ class Handler(BaseHTTPRequestHandler):
       return self.reply(200,fast_res)
     except Exception:
      pass
+   if body.get('context_isolation')=='provided-only':
+    return self.reply(503,{'error':'Isolated completion unavailable'})
   except Exception:
    return self.reply(400,{'error':'Invalid request body'})
   if not lock.acquire(timeout=120):return self.reply(429,{'error':'Agent busy'})
@@ -1020,7 +1022,8 @@ def _fast_draft_only_completion(body,settings_dict):
     last_user_msg=utxt
  enrichment_lines=[]
  sys_msg_text=str(msgs[0].get('content') or '') if msgs and msgs[0].get('role')=='system' else ''
- if all_user_msgs and 'OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR' not in sys_msg_text:
+ isolated=body.get('context_isolation')=='provided-only'
+ if not isolated and all_user_msgs and 'OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR' not in sys_msg_text:
   try:
    from hermes_plugins.central_ai_whatsapp.adapter import _calculate_solar_pre_assessment
    solar_calc_block=_calculate_solar_pre_assessment(' \n '.join(all_user_msgs))
@@ -1028,7 +1031,7 @@ def _fast_draft_only_completion(body,settings_dict):
     enrichment_lines.append(solar_calc_block)
   except Exception:
    pass
- if last_user_msg:
+ if last_user_msg and not isolated:
   laya_sig=_classify_customer_turn_laya(last_user_msg)
   if laya_sig:
    enrichment_lines.append(f"[LAYA DECISION ENGINE SIGNAL (<15ms ONNX): Customer message intent = {laya_sig['intent']} (confidence {laya_sig['confidence']})]")
@@ -1107,7 +1110,7 @@ def _fast_draft_only_completion(body,settings_dict):
   if raw_out_keys:
    import hashlib
    out_tags=list(dict.fromkeys('cust:'+hashlib.sha256(k.encode('utf-8')).hexdigest()[:24] for k in raw_out_keys))
-  if re.search(r'\[\[\s*(?:LEAD|BOOK)\s*:',content,flags=re.IGNORECASE):
+  if not isolated and re.search(r'\[\[\s*(?:LEAD|BOOK)\s*:',content,flags=re.IGNORECASE):
    try:
     from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
     threading.Thread(
@@ -1117,7 +1120,7 @@ def _fast_draft_only_completion(body,settings_dict):
     ).start()
    except Exception:
     pass
-  if out_tags and last_user_msg:
+  if not isolated and out_tags and last_user_msg:
    try:
     from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
     threading.Thread(
@@ -1129,6 +1132,7 @@ def _fast_draft_only_completion(body,settings_dict):
     pass
   return {
    'model':model,
+   'context_isolation':'provided-only' if isolated else None,
    'runtime_profile':settings_dict.get('HERMES_PROFILE','leo'),
    'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':content}}],
   }
