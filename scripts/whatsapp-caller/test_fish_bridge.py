@@ -1,20 +1,54 @@
 """Exercise the native action fence without provider calls or real user data."""
 import ast
 import json
+import os
+import sys
+import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from uuid import uuid4
 
 source = ast.parse(((Path(__file__).parents[1] / 'whatsapp_fish.py').read_text() + '\n' + (Path(__file__).parents[1] / 'fish_conversation.py').read_text()))
 node = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == 'NativeTaskBridge')
-scope = dict(threading=threading, time=time, uuid4=uuid4)
+scope = dict(threading=threading, time=time, uuid4=uuid4, json=json)
 exec(compile(ast.Module(body=[node], type_ignores=[]), '<actual native task bridge>', 'exec'), scope)
 NativeTaskBridge = scope['NativeTaskBridge']
 
 
 class BridgeTests(unittest.TestCase):
+    def test_task_stop_schema_and_actual_owner_dispatch_readback(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from hermes_plugins.central_ai_app_os import client
+        schema_node = next(n.value for n in source.body if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == 'MANAGE_TASKS_TOOL' for t in n.targets))
+        schema = ast.literal_eval(schema_node)
+        self.assertIn('task_id', [item['name'] for item in schema['arguments']])
+        self.assertIn('stop', next(item['description'] for item in schema['arguments'] if item['name'] == 'action'))
+        task_id = '00000000-0000-4000-8000-000000000001'
+        event = {**self.event, 'toolName': 'manage_tasks', 'params': {'action': 'stop', 'task_id': task_id}}
+        pending = {'ok': True, 'task_id': task_id, 'status': 'running', 'cancel_requested': True}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / 'owner'; home.mkdir(); (home/'config.yaml').write_text('{}')
+            with patch.dict(os.environ, {'HERMES_HOME': str(home), 'MICHAEL_RESTRICT_TEAM_TOOLS': 'false'}), patch.object(client, '_call_app_os_mcp', return_value=json.dumps(pending)) as call:
+                result = self.bridge.execute(event)
+                self.assertFalse(result['isError'])
+                self.assertEqual(result['result'], pending)
+                call.assert_called_once()
+                self.assertEqual(call.call_args.args[1], event['params'])
+                self.assertFalse(call.call_args.kwargs['retry'])
+                call.reset_mock(); self.admitted = False
+                self.assertTrue(self.bridge.execute(event)['isError']); call.assert_not_called()
+                self.admitted = True; self.bridge.cancel(close=True)
+                self.assertTrue(self.bridge.execute(event)['isError']); call.assert_not_called()
+            self.setUp()
+            (home/'config.yaml').write_text('phone_business_context: true')
+            with patch.dict(os.environ, {'HERMES_HOME': str(home), 'MICHAEL_RESTRICT_TEAM_TOOLS': 'false'}), patch.object(client, '_call_app_os_mcp') as call:
+                self.assertTrue(self.bridge.execute(event)['isError'])
+                call.assert_not_called()
+
     def setUp(self):
         self.actions = []
         self.admitted = True

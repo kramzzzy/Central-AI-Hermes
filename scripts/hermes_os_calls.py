@@ -14,6 +14,7 @@ import threading
 import time
 from uuid import UUID
 import urllib.request
+import urllib.error
 
 from hermes_chat import NativeChat
 from hermes_team import context_name
@@ -121,6 +122,8 @@ class OSCalls:
 
     def authorize_context(self, item):
         with self.guard:
+            if item.get('auth_blocked'):
+                raise PermissionError('Renew workspace authorization before continuing')
             if time.monotonic() < item.get('verified_until', 0):
                 return
             scope = dict(item['scope'])
@@ -128,45 +131,93 @@ class OSCalls:
         with self.guard:
             item['verified_until'] = time.monotonic() + 3
 
+    @staticmethod
+    def sync_payload(job, scope):
+        result, status = job.get('result') or {}, job['status']
+        mapped = ('queued' if status == 'queued' else 'in_progress' if status in ACTIVE
+                  else 'completed' if status == 'complete' else 'review' if status == 'approval_required'
+                  else 'cancelled' if status == 'interrupted' else 'failed')
+        payload = {'task_id': job['task_id'], 'status': mapped, 'worker_status': status,
+            'title': ('Call task: ' + job['label'])[:150], 'instruction': job['request'][:12000],
+            'agent': 'Personal assistant', 'output': str(result.get('message') or '')[:12000],
+            'native_session': str(job.get('native_session') or '')[:200]}
+        if status in {'unavailable', 'interrupted'}:
+            payload['error'] = payload['output'] or 'Outcome unconfirmed. Check actual status before retrying.'
+        if result.get('instruction'):
+            payload['output'] = (payload['output'] + '\n\n' + str(result['instruction']))[:12000]
+        if scope.get('assistant'):
+            payload['agent_id'] = scope['assistant']
+        return payload
+
+    def sync_pending(self, item):
+        with item['jobs'].lock:
+            return any(not job.get('os_sync_gone') and (job['status'] in ACTIVE or
+                job.get('os_sync_ack') != json.dumps(self.sync_payload(job, item['scope']), sort_keys=True))
+                for job in item['jobs'].jobs.values())
+
+    def context_pinned(self, item):
+        return any(job['status'] in ACTIVE for job in item['jobs'].snapshot(False)) or (
+            not item.get('auth_blocked') and self.sync_pending(item))
+
+    def retire_context(self, identity):
+        item = self.contexts.pop(identity)
+        item['retired'] = True
+        item['sync_wake'].set()
+        for call_id in [key for key, call in self.calls.items() if call['identity'] == identity]:
+            del self.calls[call_id]
+
     def sync_task_to_os(self, item, task_id):
         url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
-        grant = ((item or {}).get('scope') or {}).get('workspace_grant')
-        if not url or not grant:
-            return
-        with item['sync_guard']:
+        with self.guard:
+            if item.get('auth_blocked') or item.get('retired'):
+                return False
+            scope, generation = dict(item['scope']), item['auth_generation']
+        with item['jobs'].lock:
+            job = dict(item['jobs'].jobs.get(task_id, {}))
+        if not job or job.get('os_sync_gone'):
+            return True
+        payload = self.sync_payload(job, scope)
+        signature = json.dumps(payload, sort_keys=True)
+        if job['status'] not in ACTIVE and job.get('os_sync_ack') == signature:
+            return True
+        if not url or not scope.get('workspace_grant'):
+            return False
+        payload['action'] = 'update' if job.get('os_sync_created') else 'create'
+        try:
+            req = urllib.request.Request(url + '/api/hermes/task-sync', data=json.dumps(payload).encode(),
+                headers={'Content-Type': 'application/json', 'User-Agent': 'CentralAIOS/1.0',
+                         'Authorization': 'Bearer ' + scope['workspace_grant']})
+            # No context/job lock spans network I/O; the context owns exactly one sweep.
+            with urllib.request.urlopen(req, timeout=5) as response:
+                acknowledgement = json.load(response)
+            if acknowledgement.get('synced') is not True or not isinstance(acknowledgement.get('cancel_requested'), bool):
+                raise RuntimeError('Sync was not acknowledged')
             with item['jobs'].lock:
-                job = dict(item['jobs'].jobs.get(task_id, {}))
-            if not job:
-                return
-            result = job.get('result') or {}
-            status = job['status']
-            mapped = ('queued' if status == 'queued' else 'in_progress' if status in ACTIVE
-                      else 'completed' if status == 'complete' else 'review' if status == 'approval_required'
-                      else 'cancelled' if status == 'interrupted' else 'failed')
-            payload = {'action': 'create', 'task_id': task_id, 'status': mapped,
-                'title': ('Call task: ' + job['label'])[:150], 'instruction': job['request'][:12000],
-                'agent': 'Personal assistant', 'output': str(result.get('message') or '')[:12000],
-                'native_session': str(job.get('native_session') or '')[:200]}
-            if status in {'unavailable', 'interrupted'}:
-                payload['error'] = payload['output'] or 'Outcome unconfirmed. Check actual status before retrying.'
-            if result.get('instruction'):
-                payload['output'] = (payload['output'] + '\n\n' + str(result['instruction']))[:12000]
-            if item.get('scope', {}).get('assistant'):
-                payload['agent_id'] = item['scope']['assistant']
-            signature = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-            if item['synced'].get(task_id) == signature:
-                return
-            try:
-                req = urllib.request.Request(url + '/api/hermes/task-sync', data=signature.encode('utf-8'),
-                    headers={'Content-Type': 'application/json', 'User-Agent': 'CentralAIOS/1.0',
-                             'Authorization': 'Bearer ' + grant})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    if json.load(response).get('synced') is not True:
-                        raise RuntimeError('Sync was not acknowledged')
-                item['synced'][task_id] = signature
-            except Exception:
-                # Retry the state mirror on heartbeat; never replay the business action.
-                print('voice_task_sync_failed', flush=True)
+                current = item['jobs'].jobs[task_id]
+                current.update(os_sync_created=True, os_sync_ack=signature)
+                item['jobs'].save()
+            if acknowledgement['cancel_requested']:
+                item['jobs'].cancel(task_id)
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code in {404, 410}:
+                with item['jobs'].lock:
+                    item['jobs'].jobs[task_id]['os_sync_gone'] = True
+                    item['jobs'].save()
+                return True
+            if exc.code in {401, 403}:
+                with self.guard:
+                    if generation != item['auth_generation']:
+                        return False
+                    item['auth_blocked'] = True
+                    item['verified_until'] = 0
+                for local in item['jobs'].snapshot(False):
+                    item['jobs'].cancel(local['task_id'])
+                return False
+        except Exception:
+            pass
+        # Keep the persisted obligation; retry only the mirror, never the action.
+        return False
 
     def native_task(self, item, task_id, label, ready, conversation=False):
         self.authorize_context(item)
@@ -220,17 +271,39 @@ class OSCalls:
 
     def reconcile_tasks(self, item):
         with self.guard:
-            if item.get('syncing'):
+            if item.get('syncing') or item.get('auth_blocked') or item.get('retired') or not self.sync_pending(item):
                 return
             item['syncing'] = True
         def reconcile():
             try:
-                for job in item['jobs'].snapshot(False):
-                    self.sync_task_to_os(item, job['task_id'])
+                while True:
+                    with self.guard:
+                        if item.get('retired') or item.get('auth_blocked'):
+                            return
+                        delay = max(0, item['sync_next'] - time.monotonic())
+                    if delay:
+                        item['sync_wake'].wait(delay)
+                        item['sync_wake'].clear()
+                        continue
+                    success = True
+                    for job in item['jobs'].snapshot(False):
+                        if not self.sync_task_to_os(item, job['task_id']):
+                            success = False
+                            break
+                    with self.guard:
+                        delay = 2 if success else item['sync_retry']
+                        item['sync_retry'] = 2 if success else min(30, delay * 2)
+                        if item.get('retired') or item.get('auth_blocked') or not self.sync_pending(item):
+                            item['syncing'] = False
+                            return
+                        item['sync_next'] = time.monotonic() + delay
             finally:
                 with self.guard:
-                    item['syncing'] = False
-        threading.Thread(target=reconcile, daemon=True).start()
+                    if item.get('sync_thread') is threading.current_thread():
+                        item['syncing'] = False
+        with self.guard:
+            item['sync_thread'] = threading.Thread(target=reconcile, daemon=True)
+            item['sync_thread'].start()
 
     def inspection_chat(self, authorization):
         with self.guard:
@@ -258,22 +331,21 @@ class OSCalls:
             if call_id in self.calls:
                 if self.calls[call_id]['identity'] != identity:
                     raise PermissionError('Call belongs to another member')
-                return {'started': True}
             item = self.contexts.get(identity)
             revision = self.team.revision(scope['team']) if scope.get('assistant') else hashlib.sha256(json.dumps(None).encode()).hexdigest()
             if item and item['revision'] != revision:
-                if any(x['status'] in ACTIVE for x in item['jobs'].snapshot(False)):
-                    raise RuntimeError('Finish current work before changing this assistant')
-                del self.contexts[identity]
+                if self.context_pinned(item):
+                    raise RuntimeError('Finish work and synchronize its outcome before changing this assistant')
+                self.retire_context(identity)
                 item = None
             if not item:
                 if len(self.contexts) >= 4:
                     idle = [(key, value) for key, value in self.contexts.items()
-                        if not any(c['identity'] == key and c['until'] > time.monotonic() for c in self.calls.values())
-                        and not any(x['status'] in ACTIVE for x in value['jobs'].snapshot(False))]
+                        if (value.get('auth_blocked') or not any(c['identity'] == key and c['until'] > time.monotonic() for c in self.calls.values()))
+                        and not self.context_pinned(value)]
                     if not idle:
                         raise RuntimeError('Call task contexts are busy')
-                    del self.contexts[min(idle, key=lambda pair: pair[1]['at'])[0]]
+                    self.retire_context(min(idle, key=lambda pair: pair[1]['at'])[0])
                 settings = dict(self.settings, HERMES_VOICE_MODEL='')
                 if scope.get('assistant'):
                     settings, _ = self.team.provision(scope['team'], context_name(scope['team']))
@@ -282,18 +354,25 @@ class OSCalls:
                 path = storage / 'os-call-jobs' / identity
                 path.mkdir(mode=0o700, parents=True, exist_ok=True)
                 item = {'scope': dict(scope), 'settings': settings, 'root': path, 'revision': revision,
-                        'sync_guard': threading.RLock(), 'synced': {}}
+                        'sync_wake': threading.Event(), 'sync_next': 0, 'sync_retry': 2,
+                        'auth_generation': 0, 'auth_blocked': False}
                 item['jobs'] = BackgroundTasks(path / 'jobs', self.bridge_factory,
                     lambda task, label, ready: self.factory(item, task, label, ready),
                     owner='os:' + identity, workers=2, pending=6, slots=self.slots,
-                    on_change=lambda task: self.sync_task_to_os(item, task))
+                    on_change=lambda task: self.reconcile_tasks(item))
                 self.contexts[identity] = item
             item['scope'] = dict(scope)
+            item['auth_generation'] += 1
+            item['auth_blocked'] = False
+            item['sync_next'], item['sync_retry'] = 0, 2
+            item['sync_wake'].set()
             item['at'] = time.monotonic()
             item['verified_until'] = time.monotonic() + 3
             self.calls[call_id] = {'identity': identity, 'until': time.monotonic() + 90,
                 'last_progress': 0, 'pending': None}
-            return {'started': True, 'tasks': item['jobs'].snapshot(False)}
+            result = {'started': True, 'tasks': item['jobs'].snapshot(False)}
+        self.reconcile_tasks(item)
+        return result
 
     def handle(self, body):
         if not isinstance(body, dict) or set(body) - {'action', 'call_id', 'scope', 'event', 'notice_id', 'spoken_request'}:
@@ -314,6 +393,8 @@ class OSCalls:
                 return {'ended': True}
             if call['until'] <= time.monotonic():
                 raise PermissionError('Call lease expired')
+            if item['scope'].get('workspace_grant') != scope.get('workspace_grant'):
+                item['auth_generation'] += 1
             item['scope'] = dict(scope)
             call['until'] = time.monotonic() + 35
         if action == 'heartbeat':
@@ -322,7 +403,7 @@ class OSCalls:
         if action == 'tool':
             event = body.get('event')
             tool_name = event.get('toolName') if isinstance(event, dict) else ''
-            if tool_name not in {'native_leo', 'task_status', 'cancel_task', 'task_callback', 'send_whatsapp_message', 'send_message', 'call_whatsapp_contact', 'call_contact', 'inspect_workspace', 'manage_crm', 'add_knowledge', 'search_knowledge', 'get_knowledge', 'get_workspace_overview', 'get_live_weather', 'control_widget', 'end_call'}:
+            if tool_name not in {'native_leo', 'task_status', 'cancel_task', 'task_callback', 'send_whatsapp_message', 'send_message', 'call_whatsapp_contact', 'call_contact', 'inspect_workspace', 'manage_crm', 'manage_tasks', 'add_knowledge', 'search_knowledge', 'get_knowledge', 'get_workspace_overview', 'get_live_weather', 'control_widget', 'end_call'}:
                 raise ValueError('Unsupported voice tool')
             text = body.get('spoken_request', '')
             if not isinstance(text, str) or not 0 < len(text.strip()) <= 12000:
@@ -330,6 +411,44 @@ class OSCalls:
             if is_casual_greeting_intent(text):
                 return {'type': 'client_tool.result', 'callId': event.get('callId'), 'isError': True,
                     'result': {'status': 'conversation_only', 'message': 'This is a greeting, not a task. Answer conversationally; no work was started.'}}
+            if tool_name == 'manage_tasks':
+                packet_id, params = event.get('callId'), event.get('params')
+                if (not isinstance(packet_id, str) or not 1 <= len(packet_id) <= 160
+                        or event.get('expectsResponse') is not True or not isinstance(params, dict)):
+                    raise ValueError('Invalid task control request')
+                packet = call_id + ':' + packet_id
+                value = {'type': 'client_tool.result', 'callId': packet_id, 'isError': True,
+                    'result': {'status': 'unconfirmed', 'retry_action': False,
+                        'message': 'Task control outcome is unconfirmed. Inspect actual status before retrying.'}}
+                with item['jobs'].lock:
+                    if packet in item['jobs'].packets:
+                        return item['jobs'].packets[packet]
+                    # Persist a single-attempt receipt before a mutation can cross the network.
+                    item['jobs'].packets[packet] = value
+                    item['jobs'].save()
+                with self.guard:
+                    current_scope = dict(item['scope'])
+                    blocked = item.get('auth_blocked') or item.get('retired')
+                url = (os.environ.get('APP_OS_URL') or os.environ.get('MICHAEL_OS_URL', '')).rstrip('/')
+                try:
+                    if blocked or not url:
+                        raise PermissionError('Task control authorization unavailable')
+                    request = urllib.request.Request(url + '/api/hermes/task-control',
+                        data=json.dumps(params).encode(), headers={'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + current_scope['workspace_grant']})
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        result = json.load(response)
+                    value = {'type': 'client_tool.result', 'callId': packet_id,
+                        'result': result, **({'isError': True} if isinstance(result, dict) and 'error' in result else {})}
+                except urllib.error.HTTPError as exc:
+                    value['result'] = {'status': 'request_failed', 'http_status': exc.code,
+                        'retry_action': False, 'message': 'Task control was not acknowledged. Inspect actual status before retrying.'}
+                except Exception:
+                    pass
+                with item['jobs'].lock:
+                    item['jobs'].packets[packet] = value
+                    item['jobs'].save()
+                return value
             if tool_name == 'send_whatsapp_message':
                 params = event.get('params') or {}
                 recipient = str(params.get('recipient') or '').strip()
@@ -375,8 +494,7 @@ class OSCalls:
                 value = item['jobs'].handle(call_id, event,
                     lambda _: call['until'] > time.monotonic() and call_id in self.calls)
             if isinstance(value, dict) and value.get('result', {}).get('task_id'):
-                tid = value['result']['task_id']
-                self.sync_task_to_os(item, tid)
+                self.reconcile_tasks(item)
             return value
         if action == 'notice':
             # Issuing is not proof of speech. The client acknowledges only after playback.

@@ -13,6 +13,8 @@ import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
+from unittest.mock import patch
+from test_background_tasks import fixture_routing, seed_terminal_history
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from whatsapp_tasks import BackgroundTasks
@@ -21,9 +23,18 @@ source = ast.parse(((Path(__file__).parents[1] / 'whatsapp_fish.py').read_text()
 nodes = [n for n in source.body if (isinstance(n, ast.ClassDef) and n.name == 'FishCall') or
          (isinstance(n, ast.FunctionDef) and n.name in {'is_callback_request', 'is_correction', 'is_task_cancellation', 'business_connection_limit'})]
 scope = dict(asyncio=asyncio, time=time, re=re, json=json)
-from whatsapp_routing import routing
-scope['routing']=routing
+scope['routing'] = fixture_routing
 exec(compile(ast.Module(body=nodes, type_ignores=[]), '<actual callback dispatch>', 'exec'), scope)
+
+
+def setUpModule():
+    global routing_patch
+    routing_patch = patch('whatsapp_routing.routing', fixture_routing)
+    routing_patch.start()
+
+
+def tearDownModule():
+    routing_patch.stop()
 
 
 class CallbackTests(unittest.TestCase):
@@ -196,6 +207,42 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(self.manager.jobs[task]['callback']['status'], 'unconfirmed')
         with self.assertRaises(PermissionError):
             self.manager.attach_callback(request['callback_id'], 'late-call')
+
+    def test_large_history_preserves_requested_and_claimed_callbacks_across_reload(self):
+        seed_terminal_history(self.manager)
+        claimed, requested = 'history-0', 'history-4'
+        self.enable(claimed)
+        now = time.time() + 20
+        first_claim = self.manager.claim_callback(now)
+        self.assertIsNotNone(first_claim)
+        request_packet = self.event('task_callback', task_id=requested, mode='enable')
+        request_reply = self.handle(request_packet)
+        factories = self.manager.bridge_factory, self.manager.native_factory
+        self.manager.shutdown()
+        self.manager = BackgroundTasks(self.directory.name, *factories,
+            owner='whatsapp:61423947456', callbacks=True)
+        self.assertEqual(self.manager.jobs[claimed]['callback']['status'], 'unconfirmed')
+        self.assertEqual(self.manager.jobs[requested]['callback']['status'], 'requested')
+        self.assertEqual(self.handle(request_packet), request_reply)
+        task = self.task()
+        self.complete(task)
+        self.manager.controls[task]['thread'].join(3)
+        self.assertEqual(len(self.manager.jobs), 129)
+        self.assertEqual(self.executions, 1)
+        claim = self.manager.claim_callback(now + 30)
+        self.assertIsNotNone(claim)
+        self.assertNotEqual(claim['callback_id'], first_claim['callback_id'])
+        notice = self.manager.attach_callback(claim['callback_id'], 'one-callback')
+        self.assertEqual([job['task_id'] for job in notice['tasks']], [requested])
+        self.assertIsNone(self.manager.claim_callback(now + 31))
+        self.manager.shutdown()
+        self.manager = BackgroundTasks(self.directory.name, *factories,
+            owner='whatsapp:61423947456', callbacks=True)
+        self.assertIsNone(self.manager.claim_callback(now + 60))
+        self.assertEqual(self.manager.jobs[requested]['callback']['status'], 'unconfirmed')
+        self.assertEqual(self.handle(self.event('native_leo', request='historical request 0'))
+            ['result']['task_id'], claimed)
+        self.assertEqual(self.executions, 1)
 
 
 class CallbackIntentTests(unittest.IsolatedAsyncioTestCase):

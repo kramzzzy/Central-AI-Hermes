@@ -107,12 +107,13 @@ MANAGE_FILES_TOOL = {
 
 MANAGE_TASKS_TOOL = {
     'tool_type': 'client', 'name': 'manage_tasks',
-    'description': 'Create, assign, run, list, approve, or reject Box 3 workspace tasks and AI automation runs that appear in Tasks and Approvals. Use whenever the caller asks to make a social media post, create a task, assign work to Social Media / Customer Service / Appointment Coordinator, or approve/check tasks.',
+    'description': 'Owner workspace task control: create, run, list, stop, approve, reject or delete App OS tasks. Stop uses exact task_id from list; cancellation requested is pending, not stopped or rolled back. Inspect again for actual outcome. WhatsApp-native jobs use cancel_task instead.',
     'arguments': [
-        {'name': 'action', 'description': 'Task action: create, list, run, approve, reject, or delete.'},
+        {'name': 'action', 'description': 'Task action: create, list, run, stop, approve, reject, or delete.'},
+        {'name': 'task_id', 'description': 'Exact tasks.id from list for stop/run/approve/reject/delete; never latest_run_id. Empty for create/list.'},
         {'name': 'title', 'description': 'Task title (e.g. Social media post — solar packages). Pass empty string if listing.'},
         {'name': 'instruction', 'description': 'Detailed task instruction or prompt for the assigned agent (pass empty string if listing).'},
-        {'name': 'agent', 'description': 'Optional responsible agent name: Social Media, Customer Service, Appointment Coordinator, Sarah, or Leo (pass empty string to auto-assign).'}
+        {'name': 'agent', 'description': 'Exact enabled agent ID or name from inspect_workspace(section=agents); empty to auto-assign.'}
     ],
     'expects_response': True, 'timeout_seconds': 15,
 }
@@ -541,7 +542,11 @@ class NativeTaskBridge:
                     'result': mcp_res}
 
         if name == 'manage_tasks':
-            mcp_res = call_app_os_mcp('central_ai_manage_tasks', {k: v for k, v in params.items() if v not in ('', None)}, timeout=15)
+            if self.closed or not self.allowed(self.call):
+                return {'type': 'client_tool.result', 'callId': call_id, 'isError': True,
+                        'result': {'status': 'inactive_call'}}
+            from hermes_plugins.central_ai_app_os.client import manage_tasks as _manage_tasks
+            mcp_res = json.loads(_manage_tasks({k: v for k, v in params.items() if v not in ('', None)}))
             return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
                     'result': mcp_res}
 

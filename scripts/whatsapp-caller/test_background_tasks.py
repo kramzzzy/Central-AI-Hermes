@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from uuid import uuid4
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from whatsapp_tasks import BackgroundTasks
@@ -16,6 +17,38 @@ source = ast.parse(((Path(__file__).parents[1] / 'whatsapp_fish.py').read_text()
 node = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == 'NativeTaskBridge')
 scope = dict(threading=threading, time=time, uuid4=uuid4)
 exec(compile(ast.Module(body=[node], type_ignores=[]), '<actual task fence>', 'exec'), scope)
+
+
+def fixture_routing():
+    return {'owner': '639267200480', 'contacts': [
+        {'number': '639267200480', 'calls': True},
+        {'number': '61423947456', 'calls': True}]}
+
+
+def setUpModule():
+    global routing_patch
+    routing_patch = patch('whatsapp_routing.routing', fixture_routing)
+    routing_patch.start()
+
+
+def tearDownModule():
+    routing_patch.stop()
+
+
+def seed_terminal_history(manager):
+    """Synthetic persisted receipts, including outcomes that must never be replayed."""
+    for index in range(128):
+        task_id, request = 'history-' + str(index), 'historical request ' + str(index)
+        status = ('complete', 'approval_required', 'interrupted', 'unavailable')[index % 4]
+        manager.jobs[task_id] = {'task_id': task_id, 'label': 'Historical task',
+            'request': request, 'status': status, 'created': time.time() - 100,
+            'finished': time.time() - 50, 'announced': False,
+            'result': {'status': status, 'message': 'Historical receipt', 'retry_action': False}}
+        manager.requests[request] = task_id
+        manager.packets['history-call:packet-' + str(index)] = {
+            'type': 'client_tool.result', 'callId': 'packet-' + str(index),
+            'result': manager.view(manager.jobs[task_id])}
+    manager.save()
 
 
 class TaskTests(unittest.TestCase):
@@ -187,6 +220,78 @@ class TaskTests(unittest.TestCase):
     def test_status_queries_do_not_submit_work(self):
         self.assertEqual(self.handle(self.event('task_status', task_id=''))['result']['tasks'], [])
         self.assertFalse(self.workers)
+
+    def test_cancel_is_idempotent_persisted_and_leaves_terminal_results_unchanged(self):
+        with self.manager.lock:
+            task = self.handle(self.event())['result']['task_id']
+            self.manager.jobs[task]['callback'] = {'status': 'requested'}
+            first = self.manager.cancel(task)
+            requested_at = self.manager.jobs[task]['cancel_requested_at']
+            self.assertEqual(first['status'], 'cancelling')
+            self.assertEqual(self.manager.cancel(task), first)
+            self.assertEqual(self.manager.jobs[task]['cancel_requested_at'], requested_at)
+            self.assertEqual(self.manager.jobs[task]['callback']['status'], 'cancelled')
+            self.assertTrue(self.manager.controls[task]['cancel'].is_set())
+            self.assertEqual(json.loads(self.manager.path.read_text())['jobs'][0]['status'], 'cancelling')
+        self.manager.controls[task]['thread'].join(3)
+        self.assertNotIn(task, self.workers)
+        terminal = dict(self.manager.jobs[task])
+        self.manager.cancel(task)
+        self.assertEqual(self.manager.jobs[task], terminal)
+        self.assertEqual(self.manager.cancel('missing')['status'], 'unknown_task')
+
+    def test_129th_task_starts_after_terminal_history_and_reload_without_losing_receipts(self):
+        for reload in (False, True):
+            with self.subTest(reload=reload):
+                self.manager.shutdown()
+                self.manager = BackgroundTasks(Path(self.directory.name) / str(reload),
+                    scope['NativeTaskBridge'], self.factory)
+                seed_terminal_history(self.manager)
+                saved = json.loads(self.manager.path.read_text())
+                if reload:
+                    self.manager.shutdown()
+                    self.manager = BackgroundTasks(self.manager.path.parent,
+                        scope['NativeTaskBridge'], self.factory)
+                task = self.start('Unique task beyond retained history')
+                self.assertEqual(len(self.manager.jobs), 129)
+                self.workers[task]['release'].set()
+                self.manager.controls[task]['thread'].join(3)
+                self.assertEqual(self.manager.jobs[task]['status'], 'complete')
+                duplicate = self.handle(self.event(request='  HISTORICAL request 0  '))['result']
+                self.assertEqual(duplicate['task_id'], 'history-0')
+                self.assertTrue(duplicate['previously_dispatched'])
+                original_packet = saved['packets']['history-call:packet-0']
+                self.assertEqual(self.handle(self.event(packet='packet-0'), 'history-call'), original_packet)
+                persisted = json.loads(self.manager.path.read_text())
+                self.assertEqual(persisted['jobs'][:128], saved['jobs'])
+                for name in ('packets', 'requests'):
+                    self.assertEqual({key: persisted[name][key] for key in saved[name]}, saved[name])
+                self.assertEqual(len(self.manager.jobs), 129)
+
+    def test_whatsapp_and_os_active_caps_still_apply_with_terminal_history(self):
+        for owner, workers, pending in (('whatsapp:639267200480', 3, 8), ('os:fixture', 2, 6)):
+            with self.subTest(owner=owner):
+                self.manager.shutdown()
+                self.workers.clear()
+                self.manager = BackgroundTasks(Path(self.directory.name) / str(pending),
+                    scope['NativeTaskBridge'], self.factory, owner=owner, workers=workers,
+                    pending=pending, slots=threading.BoundedSemaphore(workers))
+                seed_terminal_history(self.manager)
+                running = [self.start('Active task ' + str(index)) for index in range(workers)]
+                queued = [self.handle(self.event(request='Queued task ' + str(index)))['result']['task_id']
+                    for index in range(pending - workers)]
+                self.assertEqual(self.manager.counts()['running'], workers)
+                self.assertEqual(self.manager.counts()['queued'], pending - workers)
+                self.assertEqual(len(self.workers), workers)
+                rejected = self.handle(self.event(request='Excess active task'))
+                self.assertTrue(rejected['isError'])
+                self.assertEqual(rejected['result']['status'], 'queue_full')
+                self.assertEqual(len(self.manager.jobs), 128 + pending)
+                for task in running:
+                    self.workers[task]['release'].set()
+                self.wait(lambda: all(self.manager.jobs[task]['status'] == 'complete' for task in running))
+                self.wait(lambda: any(task in self.workers for task in queued))
+                self.assertLessEqual(self.manager.counts()['running'], workers)
 
 if __name__ == '__main__':
     unittest.main()

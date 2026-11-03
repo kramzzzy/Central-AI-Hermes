@@ -14,12 +14,12 @@ metadata:
 # Team coordination
 
 Give Michael a reliable overview of shared work, who owns each next step and
-which decisions need his attention. Use straightforward English.
+which decisions need the owner's attention. Use straightforward English.
 
 ## When to Use
 
 Use for team progress updates, project status, blockers, overdue work, handovers
-or preparing a team update. This skill does not grant team members access to Leo.
+or preparing a team update. This skill does not grant team members owner-assistant access.
 
 ## Prerequisites
 
@@ -49,6 +49,15 @@ substitute for a team update. WhatsApp admission supplies no OS session.
 6. Draft a team message when requested. Include only information the chosen
    recipients may see. Use the existing approval flow for the exact audience and
    text before sending. Installing this skill does not schedule status broadcasts.
+7. For an owner-requested stop of App OS work, list tasks and use
+   `manage_tasks(action='stop', task_id=<tasks.id>)`; never substitute `latest_run_id`.
+   The same capability is available in owner App OS chat/voice and WhatsApp chat/calls.
+   Read back status, cancel_requested_at, heartbeat_at, worker_status and error.
+   Cancellation requested is pending intent, not proof of stopped work or rollback.
+   An active voice mirror without a heartbeat for six minutes is outcome unconfirmed.
+   Wait for an acknowledged terminal result before deletion; completion can win the race.
+   Never repeat an uncertain mutation. WhatsApp-native jobs without an App OS task ID
+   retain their caller-bound `cancel_task`; do not create another task to cancel them.
 
 ## Pitfalls
 

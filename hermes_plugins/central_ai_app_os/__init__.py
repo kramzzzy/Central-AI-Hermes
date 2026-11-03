@@ -82,25 +82,25 @@ TOOLS = {
     },
     "mcp__michael_os__manage_tasks": {
         "handler": manage_tasks,
-        "check_fn": None,
+        "check_fn": owner_tools_available,
         "emoji": "✅",
-        "description": "Create, assign, run, list, approve, reject, or delete tasks in Box 3 Tasks & Approvals.",
+        "description": "Create, assign, run, stop, list, approve, reject, or delete tasks in Box 3 Tasks & Approvals. Read back stop requests; cancellation is not rollback.",
         "schema": {
             "name": "mcp__michael_os__manage_tasks",
-            "description": "Create, assign, run, list, approve, reject, or delete tasks in the Box 3 Tasks & Approvals AI automation pipeline. When action='create', assigns the responsible specialist agent (exact enabled agent ID or name from inspect_workspace section=agents), queues the AI automation run, and sends the completed draft/actions to the Approvals tab ('review' status).",
+            "description": "Create, assign, run, stop, list, approve, reject, or delete tasks in the Box 3 Tasks & Approvals AI automation pipeline. When action='create', assigns the responsible specialist agent (exact enabled agent ID or name from inspect_workspace section=agents), queues the AI automation run, and sends the completed draft/actions to the Approvals tab ('review' status).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["create", "assign", "delegate", "list", "run", "approve", "reject", "delete"],
-                        "description": "Task operation ('create' by default).",
+                        "enum": ["create", "assign", "delegate", "list", "run", "stop", "approve", "reject", "delete"],
+                        "description": "Task operation ('create' by default). Stop needs exact task_id from list; cancel_requested means pending. Poll status/heartbeat/error until the actual terminal result. Active or unconfirmed voice tasks cannot be deleted.",
                     },
                     "title": {"type": "string", "description": "Task title (e.g. 'Social media post — residential solar packages')."},
                     "instruction": {"type": "string", "description": "Detailed task instructions or prompt for the assigned agent. For social posts first ask Message us, Website, or No link unless already specified; preserve the answer and exact HTTPS destination. Caption links are not native buttons."},
                     "agent": {"type": "string", "description": "Optional agent name or role (exact enabled agent ID or name from inspect_workspace section=agents). Auto-detected from task topic if omitted."},
                     "due_date": {"type": "string", "description": "Optional due date (YYYY-MM-DD)."},
-                    "task_id": {"type": "string", "description": "Task UUID when running, approving, rejecting, or deleting."},
+                    "task_id": {"type": "string", "description": "Exact tasks.id from list when stopping, running, approving, rejecting, or deleting; not latest_run_id."},
                     "auto_run": {"type": "boolean", "description": "Whether to immediately queue and execute the AI automation run so the output appears in Approvals (default true)."},
                 },
             },

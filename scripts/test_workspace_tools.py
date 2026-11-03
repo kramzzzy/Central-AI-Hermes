@@ -5,14 +5,42 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from hermes_plugins.central_ai_app_os import TOOLS, client
+from hermes_plugins.central_ai_app_os import TOOLS, client, register
 from hermes_os import SECTIONS, WORKSPACE_TOOLS_NOTE, _without_app_blocks
 from hermes_voice import VOICE_CALL_NOTE
 
 
 class WorkspaceToolsTests(unittest.TestCase):
+    def test_registered_task_control_executes_once_and_preserves_readback(self):
+        context = MagicMock()
+        register(context)
+        tool = next(call.kwargs for call in context.register_tool.call_args_list
+                    if call.kwargs['name'] == 'mcp__michael_os__manage_tasks')
+        self.assertIn('stop', tool['schema']['parameters']['properties']['action']['enum'])
+        task_id = '00000000-0000-4000-8000-000000000001'
+        pending = {'ok': True, 'task_id': task_id, 'status': 'running', 'cancel_requested': True}
+        snapshot = {'tasks': [{'task_id': task_id, 'latest_run_id': 'different-run',
+            'worker_status': 'cancelling', 'heartbeat_at': '2026-11-04T00:00:00Z',
+            'cancel_requested_at': '2026-11-04T00:00:00Z', 'error': None}]}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / 'owner'; home.mkdir(); (home/'config.yaml').write_text('{}')
+            with patch.dict(os.environ, {'HERMES_HOME': str(home), 'MICHAEL_RESTRICT_TEAM_TOOLS': 'false'}), patch.object(client, '_call_app_os_mcp', side_effect=[json.dumps(pending), json.dumps(snapshot)]) as call:
+                self.assertTrue(tool['check_fn']())
+                self.assertEqual(json.loads(tool['handler']({'action': 'stop', 'task_id': task_id})), pending)
+                self.assertEqual(call.call_count, 1)
+                self.assertEqual(call.call_args.args, ('central_ai_manage_tasks', {'action': 'stop', 'task_id': task_id}))
+                self.assertFalse(call.call_args.kwargs['retry'])
+                self.assertEqual(json.loads(tool['handler']({'action': 'list'})), snapshot)
+                self.assertTrue(call.call_args.kwargs['retry'])
+            for configuration in ('phone_business_context: true', 'os_specialist: {id: fixture}'):
+                (home/'config.yaml').write_text(configuration)
+                with patch.dict(os.environ, {'HERMES_HOME': str(home), 'MICHAEL_RESTRICT_TEAM_TOOLS': 'false'}), patch.object(client, '_call_app_os_mcp') as call:
+                    self.assertFalse(tool['check_fn']())
+                    self.assertIn('error', json.loads(tool['handler']({'action': 'stop', 'task_id': task_id})))
+                    call.assert_not_called()
+
     def test_new_sections_validate_and_do_not_fabricate_empty_snapshot(self):
         sections = {'communications', 'comments', 'submissions', 'social_posts', 'files', 'capabilities'}
         schema = TOOLS['mcp__michael_os__inspect_workspace']['schema']['parameters']['properties']['section']['enum']

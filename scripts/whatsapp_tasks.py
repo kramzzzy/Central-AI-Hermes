@@ -22,6 +22,7 @@ class BackgroundTasks:
         self.limit, self.pending = workers, pending
         self.lock = threading.RLock()
         self.slots = slots or threading.BoundedSemaphore(workers)
+        # shortcut: history is unbounded; add a bounded archive retaining dedup/callback receipts if growth becomes material.
         self.jobs, self.packets, self.requests, self.controls = {}, {}, {}, {}
         self.closed = False
         self.on_change = on_change
@@ -83,6 +84,21 @@ class BackgroundTasks:
             return {status: sum(job['status'] == status for job in self.jobs.values())
                     for status in sorted(ACTIVE | TERMINAL)}
 
+    def cancel(self, task_id):
+        """Persist cooperative intent; completion can still win the race."""
+        with self.lock:
+            job = self.jobs.get(task_id)
+            if not job:
+                return {'status': 'unknown_task'}
+            if job['status'] in ACTIVE:
+                self.controls[task_id]['cancel'].set()
+                job['status'] = 'cancelling'
+                job.setdefault('cancel_requested_at', time.time())
+                if job.get('callback', {}).get('status') == 'requested':
+                    job['callback']['status'] = 'cancelled'
+                self.save()
+            return self.view(job)
+
     def handle(self, call, event, allowed):
         call_id, name, params = event.get('callId'), event.get('toolName'), event.get('params')
         def response(value, error=False):
@@ -129,12 +145,8 @@ class BackgroundTasks:
                     elif callback.get('status') != 'requested':
                         job['callback'] = {'status': 'requested', 'requested': time.time(),
                             'expires': time.time() + 86400, 'requested_call': call}
-                if name == 'cancel_task' and job['status'] in ACTIVE:
-                    self.controls[task_id]['cancel'].set()
-                    job['status'] = 'cancelling'
-                    if job.get('callback', {}).get('status') == 'requested':
-                        job['callback']['status'] = 'cancelled'
-                    self.save()
+                if name == 'cancel_task':
+                    self.cancel(task_id)
                 result = response(self.view(job))
                 self.packets[packet] = result
                 self.save()
@@ -149,7 +161,7 @@ class BackgroundTasks:
                 job = self.jobs[self.requests[normalized]]
                 result = response({**self.view(job), 'previously_dispatched': True,
                     'instruction': 'This is the earlier task, not a new execution. Check its actual outcome before any retry.'})
-            elif len(self.jobs) >= 128 or sum(job['status'] in ACTIVE for job in self.jobs.values()) >= self.pending:
+            elif sum(job['status'] in ACTIVE for job in self.jobs.values()) >= self.pending:
                 result = response({'status': 'queue_full', 'retry_action': False,
                     'message': 'No new task was started. Existing work is continuing.'}, True)
             else:
@@ -183,11 +195,11 @@ class BackgroundTasks:
                 if self.slots.acquire(timeout=.2):
                     acquired = True
                     break
-            if control['cancel'].is_set():
-                result = {'status': 'interrupted', 'retry_action': False,
-                          'message': 'Cancelled before the task started.'}
-                return
             with self.lock:
+                if control['cancel'].is_set():
+                    result = {'status': 'interrupted', 'retry_action': False,
+                              'message': 'Cancelled before the task started.'}
+                    return
                 job = self.jobs[task_id]
                 job['status'] = 'starting'
                 self.save()
