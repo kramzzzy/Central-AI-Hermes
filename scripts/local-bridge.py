@@ -1065,6 +1065,8 @@ def _fast_draft_only_completion(body,settings_dict):
   'messages':out_msgs,
   'max_tokens':max(int(body.get('max_tokens') or 180),1200),
   'temperature':0.3,
+  # These hybrid models default to reasoning, which can consume the entire short reply/review budget.
+  **({'reasoning':{'enabled':False}} if isolated and model in {'deepseek/deepseek-v4.1-flash','z-ai/glm-5.2'} else {}),
  }).encode('utf-8')
  req=urllib.request.Request(
   f"{base_url}/chat/completions",
@@ -1081,6 +1083,10 @@ def _fast_draft_only_completion(body,settings_dict):
   if resp.status!=200:
    return None
   data=json.loads(resp.read().decode('utf-8'))
+  choice=(data.get('choices') or [{}])[0]
+  # Never relabel truncated/filtered output as a completed customer reply or review.
+  if choice.get('finish_reason')!='stop':
+   return None
   content=str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
   if not content:
    return None

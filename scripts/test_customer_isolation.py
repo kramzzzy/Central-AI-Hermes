@@ -21,14 +21,18 @@ class CustomerIsolationTests(unittest.TestCase):
             status = 200
             def __enter__(self): return self
             def __exit__(self, *args): pass
-            def read(self): return json.dumps({'choices': [{'message': {'content': 'No approved price is available.'}}]}).encode()
+            def read(self): return json.dumps({'choices': [{'finish_reason': finish_reason, 'message': {'content': response_content}}]}).encode()
         def provider(request, **kwargs):
             self.assertEqual(json.loads(request.data)['messages'], messages)
             self.assertEqual(json.loads(request.data)['model'], expected_model)
+            expected_reasoning = {'enabled': False} if expected_model in {'deepseek/deepseek-v4.1-flash', 'z-ai/glm-5.2'} else None
+            self.assertEqual(json.loads(request.data).get('reasoning'), expected_reasoning)
             return Response()
         # Recall, classification and retention helpers are deliberately absent.
         for selected in ['deepseek/deepseek-v4.1-flash', 'z-ai/glm-5.2', 'workspace-default', 'hermes', '']:
             expected_model = selected if selected not in {'workspace-default', 'hermes', ''} else 'configured/default'
+            finish_reason = 'stop'
+            response_content = 'No approved price is available.'
             with self.subTest(model=selected), patch.dict(os.environ, {}, clear=True), patch('urllib.request.urlopen', provider):
                 result = scope['_fast_draft_only_completion']({
                     'model': selected, 'execution_mode': 'draft-only', 'context_isolation': 'provided-only',
@@ -36,6 +40,15 @@ class CustomerIsolationTests(unittest.TestCase):
                 }, {'OPENROUTER_API_KEY': 'local-test-only', 'HERMES_CHAT_MODEL': 'configured/default'})
             self.assertEqual(result['context_isolation'], 'provided-only')
             self.assertEqual(result['choices'][0]['message']['content'], 'No approved price is available.')
+
+        # Reproduce provider exhaustion, including apparently valid but truncated approval JSON.
+        for finish_reason, response_content in [('length', ''), ('length', '{"approved":true,"violations":[]}'),
+                                                ('content_filter', 'Partial answer'), (None, 'Unknown completion')]:
+            with self.subTest(finish_reason=finish_reason), patch.dict(os.environ, {}, clear=True), patch('urllib.request.urlopen', provider):
+                result = scope['_fast_draft_only_completion']({
+                    'execution_mode': 'draft-only', 'context_isolation': 'provided-only', 'messages': messages,
+                }, {'OPENROUTER_API_KEY': 'local-test-only', 'HERMES_CHAT_MODEL': 'configured/default'})
+            self.assertIsNone(result)
 
     def test_job_and_profile_preserve_selected_models(self):
         root = Path(__file__).parent
