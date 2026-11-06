@@ -408,4 +408,21 @@ class SocialTests(unittest.TestCase):
         with self.assertRaisesRegex(SocialError,'outcome unknown'): self.social.handle(body)
         self.assertFalse(self.social.handle({**body,"action":"delete_status"})['deleted'])
 
+    def test_oauth_401_marks_connection_reconnect_required(self):
+        self.ingest()
+        def expired_transport(url, **kw):
+            raise SocialError("Error validating access token: The session has been invalidated.", 401, rejected=True)
+        self.social.transport = expired_transport
+        with self.assertRaises(SocialError) as ctx:
+            self.send(delivery_id="reply:expired-1")
+        self.assertEqual(401, ctx.exception.status)
+        status = self.social.handle({"org": ORG, "action": "status"})
+        self.assertEqual("reconnect_required", status["platforms"]["facebook"]["state"])
+        self.assertFalse(status["platforms"]["facebook"]["connected"])
+        self.assertIn("Error validating access token", status["platforms"]["facebook"]["auth_error"] or "")
+        self.assertEqual("reconnect_required", status["platforms"]["instagram"]["state"])
+        self.assertFalse(status["platforms"]["instagram"]["connected"])
+        # Inbound customer DMs must still be accepted into the inbox while awaiting token reconnection.
+        self.assertEqual(1, self.ingest(mid="m-while-expired")["accepted"])
+
 if __name__ == '__main__': unittest.main()

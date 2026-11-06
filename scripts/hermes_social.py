@@ -105,19 +105,21 @@ def provider_request(url, method="GET", data=None, token=None, form=False, heade
             return json.loads(content.decode("utf-8", errors="replace")) if content else {}
     except urllib.error.HTTPError as exc:
         err_msg = ""
+        err_code = None
         try:
             raw_err = exc.read(8192).decode("utf-8", errors="replace")
             parsed = json.loads(raw_err)
             if isinstance(parsed, dict):
                 if isinstance(parsed.get("error"), dict):
                     err_msg = str(parsed["error"].get("message") or "")
+                    err_code = parsed["error"].get("code")
                 elif isinstance(parsed.get("error_description"), str):
                     err_msg = parsed["error_description"]
                 elif isinstance(parsed.get("message"), str):
                     err_msg = parsed["message"]
         except Exception:
             pass
-        if exc.code == 401:
+        if exc.code == 401 or err_code == 190 or "error validating access token" in err_msg.lower():
             raise SocialError(err_msg or "Social account authorization expired. Reconnect in Settings -> Connection.", 401, rejected=True) from None
         if exc.code == 403:
             raise SocialError(err_msg or "Platform denied this permission. Check Page access and scopes.", 403, rejected=True) from None
@@ -363,6 +365,24 @@ class SocialWorkspace:
                 (org, platform, self.encrypt(value)),
             )
 
+    def _mark_revoked(self, org, platform, reason=None):
+        targets = (
+            ("facebook", "instagram")
+            if str(platform or "").strip().lower() in ("", "facebook", "instagram")
+            else (str(platform).strip().lower(),)
+        )
+        for target in targets:
+            conn = self.get_connection(org, target)
+            if not isinstance(conn, dict):
+                continue
+            conn["auth_error"] = str(reason or "Social account authorization expired. Reconnect in Settings -> Connection.")[:300]
+            conn["checked_at"] = self.clock()
+            for page in conn.get("pages") or []:
+                if isinstance(page, dict):
+                    page["messaging_state"] = "reconnect_required"
+                    page["comments_state"] = "reconnect_required"
+            self.save_connection(org, target, conn)
+
     def _public_platform_status(self, org, platform):
         cfg = self.get_config(platform)
         conn = self.get_connection(org, platform)
@@ -379,6 +399,7 @@ class SocialWorkspace:
                 "client_id": (cfg or {}).get("client_id", ""),
                 "state": "ready" if cfg else "not_configured",
                 "connected": False,
+                "auth_error": None,
                 "account_id": None,
                 "account_name": None,
                 "handle": None,
@@ -390,6 +411,7 @@ class SocialWorkspace:
                 "capabilities": DEFAULT_CAPABILITIES.get(platform, []),
                 "checked_at": None,
             }
+        needs_reconnect = bool(conn.get("revoked") or conn.get("auth_error"))
         pages_public = []
         for p in conn.get("pages") or []:
             if isinstance(p, dict):
@@ -403,8 +425,8 @@ class SocialWorkspace:
                         "followers_count": p.get("followers_count") or p.get("fan_count"),
                         "picture_url": p.get("picture_url"),
                         "has_instagram": bool(ig_obj),
-                        "messaging_state": p.get("messaging_state", "reconnect_required"),
-                        "comments_state": p.get("comments_state", "reconnect_required"),
+                        "messaging_state": "reconnect_required" if needs_reconnect else p.get("messaging_state", "reconnect_required"),
+                        "comments_state": "reconnect_required" if needs_reconnect else p.get("comments_state", "reconnect_required"),
                         "instagram_username": (ig_obj or {}).get("username") if isinstance(ig_obj, dict) else None,
                         "instagram_name": (ig_obj or {}).get("name") if isinstance(ig_obj, dict) else None,
                     }
@@ -413,8 +435,9 @@ class SocialWorkspace:
             "platform": platform,
             "configured": True,
             "client_id": (cfg or {}).get("client_id", ""),
-            "state": "connected" if not conn.get("revoked") else "reconnect_required",
-            "connected": not conn.get("revoked"),
+            "state": "connected" if not needs_reconnect else "reconnect_required",
+            "connected": not needs_reconnect,
+            "auth_error": conn.get("auth_error") if needs_reconnect else None,
             "auth_mode": conn.get("auth_mode") or "oauth",
             "account_id": conn.get("account_id"),
             "account_name": conn.get("account_name"),
@@ -641,6 +664,7 @@ class SocialWorkspace:
             "connected_at": now,
             "checked_at": now,
             "revoked": False,
+            "auth_error": None,
         }
         self.save_connection(org, "facebook", fb_conn)
 
@@ -670,6 +694,7 @@ class SocialWorkspace:
                 "connected_at": now,
                 "checked_at": now,
                 "revoked": False,
+                "auth_error": None,
             }
             self.save_connection(org, "instagram", ig_conn)
 
@@ -696,7 +721,7 @@ class SocialWorkspace:
             pages, selected, ig = self._discover_facebook_pages(token)
             previous = self.get_connection(org, "facebook")
             # Persist real Page tokens in Box 1 only; the browser never receives them.
-            if previous and not previous.get("revoked"):
+            if previous and not previous.get("revoked") and not previous.get("auth_error"):
                 previous["available_pages"] = pages
                 previous["user_access_token"] = token
                 self.save_connection(org, "facebook", previous)
@@ -1108,6 +1133,8 @@ class SocialWorkspace:
                 or conn.get("followers_count")
             )
         conn["checked_at"] = self.clock()
+        conn["revoked"] = False
+        conn["auth_error"] = None
         self.save_connection(org, platform, conn)
         return {
             "ok": True,
@@ -1304,58 +1331,63 @@ class SocialWorkspace:
         user = str(body.get("user") or "owner")
         action = str(body.get("action") or "status").strip().lower()
         with self.lock:
-            if action == "inbox_claim":
-                return self.claim_message(org)
-            if action == "inbox_done":
-                with self.database() as db:
-                    db.execute("UPDATE social_inbox SET done=1 WHERE id=? AND org=?", (body.get("id"), org))
-                return {"ok": True}
-            if action in ("send_message", "sender_action"):
-                return self.send_message(org, body)
-            if action == "comment_context":
-                return self.comment_context(org, body)
-            if action == "send_comment":
-                return self.send_comment(org, body)
-            if action == "private_reply":
-                return self.private_reply(org, body)
-            if action == "accounts":
-                return {"accounts": self.accounts(org)}
-            if action == "post_feed":
-                return self.post_feed(org, body)
-            if action == "available_posts":
-                return self.available_posts(org, body)
-            if action == "delete_status":
-                return self.delete_post(org, body, status_only=True)
-            if action == "delete_post":
-                return self.delete_post(org, body)
-            if action == "publish_approved" and body.get("video_url"):
-                return self.publish_reel(org, body)
-            if action == "publish_approved":
-                return self.deliver_once(org, body, lambda: self.execute_tool(org, {**body, "operation": "publish_post"}))
-            if action == "status":
-                return self.status(org)
-            if action == "discover_pages":
-                return self.discover_pages(org, body)
-            if action == "link_pages":
-                return self.link_pages(org, body)
-            if action == "configure":
-                return self.configure(org, body)
-            if action == "connect_oauth":
-                return self.start_oauth(org, user, body)
-            if action == "callback":
-                return self.finish_oauth(org, user, body)
-            if action == "connect_token":
-                return self.connect_token(org, body)
-            if action == "select_page":
-                return self.select_page(org, body)
-            if action == "test":
-                return self.test_connection(org, body)
-            if action == "disconnect":
-                return self.disconnect(org, body)
-            if action in ("tool", "publish_post", "list_posts", "reply_comment"):
-                op = body.get("operation") or (action if action != "tool" else "status")
-                return self.execute_tool(org, {**body, "operation": op})
-            raise SocialError(f"Unsupported social action: {action}")
+            try:
+                if action == "inbox_claim":
+                    return self.claim_message(org)
+                if action == "inbox_done":
+                    with self.database() as db:
+                        db.execute("UPDATE social_inbox SET done=1 WHERE id=? AND org=?", (body.get("id"), org))
+                    return {"ok": True}
+                if action in ("send_message", "sender_action"):
+                    return self.send_message(org, body)
+                if action == "comment_context":
+                    return self.comment_context(org, body)
+                if action == "send_comment":
+                    return self.send_comment(org, body)
+                if action == "private_reply":
+                    return self.private_reply(org, body)
+                if action == "accounts":
+                    return {"accounts": self.accounts(org)}
+                if action == "post_feed":
+                    return self.post_feed(org, body)
+                if action == "available_posts":
+                    return self.available_posts(org, body)
+                if action == "delete_status":
+                    return self.delete_post(org, body, status_only=True)
+                if action == "delete_post":
+                    return self.delete_post(org, body)
+                if action == "publish_approved" and body.get("video_url"):
+                    return self.publish_reel(org, body)
+                if action == "publish_approved":
+                    return self.deliver_once(org, body, lambda: self.execute_tool(org, {**body, "operation": "publish_post"}))
+                if action == "status":
+                    return self.status(org)
+                if action == "discover_pages":
+                    return self.discover_pages(org, body)
+                if action == "link_pages":
+                    return self.link_pages(org, body)
+                if action == "configure":
+                    return self.configure(org, body)
+                if action == "connect_oauth":
+                    return self.start_oauth(org, user, body)
+                if action == "callback":
+                    return self.finish_oauth(org, user, body)
+                if action == "connect_token":
+                    return self.connect_token(org, body)
+                if action == "select_page":
+                    return self.select_page(org, body)
+                if action == "test":
+                    return self.test_connection(org, body)
+                if action == "disconnect":
+                    return self.disconnect(org, body)
+                if action in ("tool", "publish_post", "list_posts", "reply_comment"):
+                    op = body.get("operation") or (action if action != "tool" else "status")
+                    return self.execute_tool(org, {**body, "operation": op})
+                raise SocialError(f"Unsupported social action: {action}")
+            except SocialError as exc:
+                if exc.status == 401 and action not in ("webhook_verify", "webhook_ingest", "connect_oauth", "callback", "status"):
+                    self._mark_revoked(org, body.get("platform") or "facebook", str(exc))
+                raise
 
     @staticmethod
     def _page_accounts(page):
