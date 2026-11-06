@@ -149,9 +149,6 @@ def bootstrap(mode, config):
         if v or k not in os.environ:
             os.environ[k] = v
     os.environ['CENTRAL_AI_MANAGED_INTEGRATIONS'] = '1'
-    for mk, mdef in (('HERMES_CHAT_MODEL', 'deepseek/deepseek-chat-v3-0324'), ('WHATSAPP_CHAT_MODEL', 'openai/gpt-4o-mini'), ('HERMES_VOICE_MODEL', 'openai/gpt-4o-mini')):
-        if 'deepseek-v4.1-flash' in os.environ.get(mk, '') or 'glm-5.2' in os.environ.get(mk, ''):
-            os.environ[mk] = mdef
     if mode == 'hermes':
         from hermes_premade import preserved_profiles
         from app_os_plugin import profile_lock, install_files

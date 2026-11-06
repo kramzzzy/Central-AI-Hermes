@@ -94,10 +94,8 @@ def load_profile():
     os.environ.update(managed)
     from hermes_cli.runtime_provider import _get_model_config
     config = _get_model_config()
-    if not config.get('default') or any(m in str(config.get('default')) for m in ('glm-5.2', 'deepseek-v4.1-flash')):
+    if not config.get('default'):
         fallback_model = os.environ.get('HERMES_CHAT_MODEL', 'deepseek/deepseek-chat-v3-0324')
-        if 'deepseek-v4.1-flash' in str(fallback_model) or 'glm-5.2' in str(fallback_model):
-            fallback_model = 'deepseek/deepseek-chat-v3-0324'
         config['default'] = fallback_model
         config['provider'] = os.environ.get('HERMES_CHAT_PROVIDER', 'openrouter')
     return home, config

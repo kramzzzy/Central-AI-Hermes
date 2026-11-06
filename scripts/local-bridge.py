@@ -1010,8 +1010,6 @@ def _fast_draft_only_completion(body,settings_dict):
   or 'deepseek/deepseek-chat-v3-0324'
  ).strip()
  model=req_model if req_model and req_model not in {'workspace-default','hermes'} else raw_default
- if 'deepseek-v4.1-flash' in model or 'glm-5.2' in model:
-  model='deepseek/deepseek-chat-v3-0324'
  last_user_msg=''
  all_user_msgs=[]
  for m in msgs:

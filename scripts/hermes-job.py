@@ -16,8 +16,6 @@ with contextlib.redirect_stdout(sys.stderr):
  requested_model=body.get('model')
  raw_default=config.get('default') or os.environ.get('HERMES_CHAT_MODEL') or 'deepseek/deepseek-chat-v3-0324'
  model=requested_model if requested_model and requested_model not in {'workspace-default','hermes'} else raw_default
- if 'deepseek-v4.1-flash' in str(model) or 'glm-5.2' in str(model):
-  model='deepseek/deepseek-chat-v3-0324'
  runtime=resolve_runtime_provider(requested=config.get('provider'),target_model=model)
  kwargs={key:runtime[key] for key in ['provider','api_mode','base_url','api_key','acp_command','acp_args'] if key in runtime}
  if not kwargs.get('api_key') and os.environ.get('OPENROUTER_API_KEY'):
