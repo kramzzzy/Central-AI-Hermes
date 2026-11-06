@@ -412,6 +412,29 @@ class SocialWorkspace:
                 "checked_at": None,
             }
         needs_reconnect = bool(conn.get("revoked") or conn.get("auth_error"))
+        token = conn.get("access_token") or ""
+        if (
+            platform == "facebook"
+            and not needs_reconnect
+            and token
+            and token != "box1_managed_session"
+            and self.clock() - float(conn.get("checked_at") or 0) >= 300
+        ):
+            page_id = conn.get("selected_page_id") or conn.get("account_id")
+            if page_id:
+                try:
+                    self.transport(
+                        f"{GRAPH_BASE}/{urllib.parse.quote(str(page_id))}?"
+                        + urllib.parse.urlencode({"fields": "id", "access_token": token}),
+                        timeout=4,
+                    )
+                    conn["checked_at"] = self.clock()
+                    self.save_connection(org, "facebook", conn)
+                except SocialError as exc:
+                    if exc.status == 401:
+                        self._mark_revoked(org, "facebook", str(exc))
+                        conn = self.get_connection(org, platform) or conn
+                        needs_reconnect = True
         pages_public = []
         for p in conn.get("pages") or []:
             if isinstance(p, dict):
@@ -544,6 +567,10 @@ class SocialWorkspace:
                             }
                         )
                 break
+            except SocialError as exc:
+                if exc.status == 401:
+                    raise
+                continue
             except Exception:
                 continue
 
