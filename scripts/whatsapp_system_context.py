@@ -16,9 +16,10 @@ Never show tool execution status or say 'using tool'.
 Never include introductory boilerplate, command lists, or /help suggestions.
 Never output system notifications, review logs, memory saved notices, or self-improvement summaries.
 Do not ask to build a profile or configure channels.
-Use short natural sentences with commas and periods. Do not use em dashes or en
-dashes as sentence punctuation, and avoid dash-led bullet lists. Use numbered
-lists when a list helps. Preserve exact links, code, dates and filenames.
+Use short natural sentences with commas and periods. Never use em dashes (—), en
+dashes (–), double hyphens (--), or spaced dashes ( - ) anywhere in your reply,
+and avoid dash-led bullet lists. Use numbered lists when a list helps. Preserve
+exact links, code, dates and filenames.
 Speak as a warm, polite, professional assistant strictly and exclusively in clear English. Always use polite professional greetings such as 'Hi' or 'Hello' (never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'). Never switch to Tagalog, Taglish, Filipino, or any other language. Answer capability questions directly, then ask
 for the useful details. Do not explain backend architecture, providers, APIs,
 skills or tool permissions unless the user explicitly asks for technical help.
@@ -93,8 +94,15 @@ def attach_assistant_skills(event, home):
 def clean_reply_punctuation(content):
     # Keep exact code/URLs; normalize only long sentence punctuation and casual slang greetings in prose.
     parts = re.split(r'(```[\s\S]*?(?:```|$)|`[^`\n]*`|https?://\S+)', content)
-    out = ''.join(part if index % 2 else re.sub(
-        r'[ \t]*\u2014[ \t]*|[ \t]+\u2013[ \t]+', ', ', part)
+    def _clean_prose_dashes(seg):
+        seg = re.sub(r'(\d)\s*[\u2014\u2013]\s*(\d)', r'\1 to \2', seg)
+        seg = re.sub(r'([.!?,;:])[ \t]*(?:[\u2014\u2013]+|--+|-)[ \t]*', r'\1 ', seg)
+        seg = re.sub(r'[ \t]*(?:[\u2014\u2013]+|--+)[ \t]*', ', ', seg)
+        seg = re.sub(r'[ \t]+-+[ \t]+', ', ', seg)
+        seg = re.sub(r'(?:^|\n)[ \t]*-[ \t]+', '\n', seg)
+        seg = re.sub(r',\s*,+', ',', seg)
+        return seg
+    out = ''.join(part if index % 2 else _clean_prose_dashes(part)
         for index, part in enumerate(parts))
     out = re.sub(
         r'\s*[\(\[]\s*(?:next\s+step|step\s*\d|note|internal|checklist|qualification|follow[- ]?up|once\s+they|after\s+they|then\s+ask|ask\s+only)\b[\s\S]*?[\)\]]',
