@@ -532,7 +532,8 @@ class SocialWorkspace:
         """Inspect a Facebook User or Page token and return (pages_list, active_page, ig_account)."""
         pages = []
         field_sets = [
-            "id,name,access_token,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
+            "id,name,access_token,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count},connected_instagram_account{id,username,name,profile_picture_url,followers_count}",
+            "id,name,access_token,category,fan_count,picture{url},instagram_business_account{id,username,name},connected_instagram_account{id,username,name}",
             "id,name,access_token,category,fan_count,picture{url}",
             "id,name,access_token,category",
         ]
@@ -563,7 +564,7 @@ class SocialWorkspace:
                                 "category": item.get("category") or "Business Page",
                                 "followers_count": item.get("followers_count") or item.get("fan_count"),
                                 "picture_url": pic,
-                                "instagram_business_account": item.get("instagram_business_account"),
+                                "instagram_business_account": item.get("instagram_business_account") or item.get("connected_instagram_account"),
                             }
                         )
                 break
@@ -591,7 +592,7 @@ class SocialWorkspace:
             for page_id in ids[:50]:
                 try:
                     item = self.transport(f"{GRAPH_BASE}/{page_id}?" + urllib.parse.urlencode({
-                        "fields": "id,name,access_token,category,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
+                        "fields": "id,name,access_token,category,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count},connected_instagram_account{id,username,name,profile_picture_url,followers_count}",
                         "access_token": token,
                     }))
                 except Exception:
@@ -604,13 +605,13 @@ class SocialWorkspace:
                         "category": item.get("category") or "Business Page",
                         "followers_count": None,
                         "picture_url": ((item.get("picture") or {}).get("data") or {}).get("url"),
-                        "instagram_business_account": item.get("instagram_business_account"),
+                        "instagram_business_account": item.get("instagram_business_account") or item.get("connected_instagram_account"),
                     })
 
         if not pages:
             me = None
             for me_fields in [
-                "id,name,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count}",
+                "id,name,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count},connected_instagram_account{id,username,name,profile_picture_url,followers_count}",
                 "id,name,picture{url}",
                 "id,name",
             ]:
@@ -643,7 +644,7 @@ class SocialWorkspace:
                     "category": me.get("category") or "Facebook Page",
                     "followers_count": me.get("followers_count") or me.get("fan_count"),
                     "picture_url": pic,
-                    "instagram_business_account": me.get("instagram_business_account"),
+                    "instagram_business_account": me.get("instagram_business_account") or me.get("connected_instagram_account"),
                 }
             )
 
@@ -1419,7 +1420,7 @@ class SocialWorkspace:
     @staticmethod
     def _page_accounts(page):
         result = [("facebook", str(page["id"]))]
-        ig = page.get("instagram_business_account")
+        ig = page.get("instagram_business_account") or page.get("connected_instagram_account")
         if isinstance(ig, dict) and ig.get("id"):
             result.append(("instagram", str(ig["id"])))
         return result
