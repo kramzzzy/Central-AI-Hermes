@@ -1598,14 +1598,14 @@ def _start_customer_whatsapp_poller():
          solar_calc_prompt or "OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR (planning-v2): Ready. If the customer asks to calculate their kWh usage, solar panel size (kW), or savings before giving a bill amount, ask for their typical monthly or quarterly electricity bill (in AUD) or kWh usage so you can calculate it for them immediately.",
          lead_info['checklist_prompt'],
          avail_block,
-         "MANDATORY FULL LEAD COLLECTION & DATA CONFIRMATION (ONE STEP AT A TIME):\n"
-         "1. Every solar inquiry must be added to the Central OS CRM New Lead pipeline ONLY AFTER all 4 required fields (Full Name with first AND last name, Phone Number, Email Address, and Property Street Address) are collected AND explicitly confirmed by the customer.\n"
-         "2. NEVER close the conversation or say 'A specialist will reach out shortly' or 'I\\'ll arrange a consultation' while Full Name (first AND last name), Phone Number, Email Address, Property Street Address, or Customer Confirmation are still MISSING or INCOMPLETE in the checklist above.\n"
-         f"3. Guide the conversation one simple step at a time. Right now, ask ONLY for the NEXT SINGLE QUESTION shown in the checklist above ({lead_info.get('next_single_question') or 'read back and ask the customer to confirm all 4 details'}). Do NOT combine multiple questions into one message.\n"
+         "HASSLE-FREE LEAD CAPTURE & QUICK CALL HANDOFF:\n"
+         "1. Whenever the customer asks a question where our team needs to confirm specifics (such as which solar panel/inverter brands we use, custom packages, or pricing) or asks how to connect with the team, never tell them to dial a phone number themselves unless they explicitly ask for our phone number. Instead, offer a quick call or chat with our solar team and ask for their name and best phone number.\n"
+         "2. Only Name and Phone Number are required to add a New Lead to CRM or book a quick call, and our assigned team completes any remaining details on the call or chat.\n"
+         f"3. Guide the conversation one simple step at a time ({lead_info.get('next_single_question') or 'ask for their name and best phone number'}).\n"
          + (
-          f"4. All 4 details are collected AND confirmed by the customer! Now append the hidden CRM lead tag (or [[BOOK:{{\"kind\":\"call\",\"day\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]] if they confirmed a specific appointment slot) at the very end of your message:\n[[LEAD:{{\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]]"
-          if (lead_info.get('is_complete') and lead_info.get('is_confirmed'))
-          else "4. DO NOT output [[LEAD:...]] or [[BOOK:...]] on this turn! Never output placeholder values like '...' or 'name@example.com'. When all 4 fields are collected, first read back Full Name, Phone Number, Email Address, and Property Street Address and ask the customer to confirm they are correct."
+          f"4. Name and Phone Number are collected! Now append the hidden CRM lead tag (or [[BOOK:{{\"kind\":\"call\",\"day\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]] if they confirmed a specific appointment slot) at the very end of your message:\n[[LEAD:{{\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]]"
+          if lead_info.get('is_complete')
+          else "4. DO NOT output [[LEAD:...]] or [[BOOK:...]] until the customer has provided at least their Name and Phone Number."
          ),
          f"CONVERSATION HISTORY:\n{hist_str}",
          f"KNOWLEDGE BASE (FROM APP OS):\n{kb_text}" if kb_text else "",

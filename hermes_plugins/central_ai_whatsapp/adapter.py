@@ -858,31 +858,19 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     _permission_re = re.compile(r'\b(?:ok(?:ay)?|alright|mind|happy|all right)\b[^.?!]{0,60}\b(?:grab|take|get|ask (?:you )?for|jot down|note down)\b[^.?!]{0,40}\b(?:details?|info(?:rmation)?|few things)\b', re.I)
     asked_permission = any(isinstance(m, dict) and m.get('role') == 'assistant' and _permission_re.search(str(m.get('content') or '')) for m in (turns or []))
     granted_permission = bool(_permission_re.search(_last_asst) and re.match(r'^(?:yes|yeah|yep|yup|sure|ok|okay|of course|go ahead|sounds good|please|no problem|absolutely|definitely|why not)\b', last_user_txt, re.I))
-    asked_to_proceed = any(re.search(r'\b(quote|quotation|how (?:do|can|would) (?:we|i) (?:connect|get started|start|proceed|go ahead|move forward|sign up)|next steps?|get in touch|contact me|reach me|call me|interested|sign me up|go ahead|ready to|site visit|inspection|come out|price for (?:my|our)|cost for (?:my|our)|how much (?:for|would it cost) (?:my|our|me|us))\b', t, re.I) for t in _user_texts)
+    has_name = has_full_name or bool(name and len(name.strip()) >= 2)
+    has_quick_call_lead = has_name and has_phone
+    asked_to_proceed = any(re.search(r'\b(quote|quotation|how (?:do|can|would|to)?\s*(?:we|i)?\s*(?:connect|get started|start|proceed|go ahead|move forward|sign up|speak|talk|reach|contact)|(?:connect|speak|talk)\s+(?:to|with)\s+(?:the\s+|your\s+|our\s+|a\s+)?(?:team|specialist|someone|person|staff|rep|agent)|(?:what|which)\s+(?:solar\s+)?(?:product|products|brand|brands|panel|panels|inverter|inverters|battery|batteries|system|systems|package|packages)|quick\s+call|next steps?|get in touch|contact me|reach me|call me|interested|sign me up|go ahead|ready to|site visit|inspection|come out|price for (?:my|our)|cost for (?:my|our)|how much (?:for|would it cost) (?:my|our|me|us))\b', t, re.I) for t in _user_texts)
     # Phone and name come from the WhatsApp profile, so only details they typed signal readiness.
     shared_details = has_street_address or _is_valid_confirmed_email(email) or bool(suburb)
     ready_for_details = bool(wants_booking_now or granted_permission or asked_to_proceed or shared_details)
     warmed_up = has_existing_solar or has_power_bill or len(_user_texts) >= 3
 
     missing_natural = []
-    if not has_existing_solar and not wants_booking_now:
-        missing_natural.append('whether you have solar already (and if yes, how old and what size in kW)')
-    if not has_power_bill and not wants_booking_now:
-        missing_natural.append('how much your last power bill was ($$)')
-    if not has_full_name:
-        missing_natural.append('your last name (so we have your full name)' if name else 'your full name (first and last)')
+    if not has_name:
+        missing_natural.append('your name')
     if not has_phone:
         missing_natural.append('your best contact phone number')
-    if not has_email:
-        missing_natural.append('your email address')
-    if not has_street_address:
-        missing_natural.append(
-            f"the full street address of your property in {suburb}"
-            if suburb
-            else "your property's full street address"
-        )
-    if all_four_collected and not customer_confirmed:
-        missing_natural.append('your confirmation that all 4 details (Full Name, Phone, Email, and Property Street Address) are correct')
 
     already_lodged = bool(
         customer_confirmed
@@ -916,45 +904,25 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
                 "You already asked if it's okay to take their details and they haven't said yes. Do not ask again. Just keep helping: answer their question, and if useful share one helpful idea"
                 + ('' if has_power_bill else ' or ask roughly what their power bill is so you can estimate savings') + ". " + no_details
             )
-    elif not has_full_name:
-        next_single_question = (
-            f"Warmly acknowledge their details, then ask naturally for their last name so we have their full name ({name} ...) for their quote."
-            if name
-            else "Warmly acknowledge their details, then ask naturally for their full name (first and last) so we know who to put on the solar quote."
-        )
+    elif not has_name:
+        next_single_question = "Warmly offer a quick call or chat with our solar team and ask for their name and best phone number so our assigned team can go through the options and complete the remaining details."
     elif not has_phone:
-        next_single_question = "Warmly acknowledge what they shared, then ask naturally for the best phone number for our solar specialist to reach them on."
-    elif not has_email:
-        next_single_question = "Warmly acknowledge their phone number, then ask naturally for the best email address to pop their solar details through to."
-    elif not has_street_address:
-        # Location is the last thing asked, once they're already sharing details.
-        next_single_question = (
-            f"Warmly acknowledge what they shared, then ask naturally for the street number and street name of their property in {suburb} so our team can check the roof layout for their quote."
-            if suburb
-            else "Warmly acknowledge what they shared, then ask naturally for the property's address (street number, street name and suburb) so our team can check the roof layout for their quote."
-        )
-    elif not customer_confirmed:
-        next_single_question = (
-            f"All 4 details are collected, and now we just need a relaxed, natural human read-back confirmation. "
-            f"Do NOT use stiff robotic language like 'before I lodge your inquiry'. Instead, say something warm and natural like: "
-            f"'Awesome, just double-checking I've got everything right for the team, that's {name} at {address}, on {phone} and {email}. Does that all look right?' "
-            f"(do NOT output [[LEAD:...]] or [[BOOK:...]] until AFTER they reply confirming)."
-        )
+        next_single_question = "Warmly acknowledge what they shared, then ask naturally for the best phone number for our solar team to give them a quick call."
     elif already_lodged:
         next_single_question = "The customer's inquiry is ALREADY saved in our system and you ALREADY told them a specialist will be in touch. Do NOT repeat 'We've got everything we need, a specialist will reach out'. Reply with a warm, brief 1-sentence human sign-off (e.g. 'Have a great rest of your day, chat soon!')."
     else:
-        next_single_question = "The customer just confirmed their details! Reply warmly like a real person in 1-2 short sentences (e.g. 'Awesome, I've passed that all through to our solar team and one of our specialists will be in touch with you shortly!') and append the [[LEAD:...]] tag."
+        next_single_question = "We have their name and phone number! Reply warmly like a real person in 1-2 short sentences letting them know our solar team has their details for a quick call/chat to complete the remaining details, and append the [[LEAD:...]] tag."
 
     checklist_lines = [
-        'LIVE QUALIFICATION & CRM PROGRESS (ONE QUESTION AT A TIME — DO NOT STACK QUESTIONS):',
-        f"- Stage: {'READY FOR DETAILS (they want to proceed or agreed to share details)' if ready_for_details else 'GETTING TO KNOW THEM (no contact or location questions yet)'}",
-        f"- 1. Existing Solar: {'COLLECTED (' + existing_solar + ')' if has_existing_solar else 'Not shared yet'}",
-        f"- 2. Last Power Bill ($$): {'COLLECTED (' + power_bill + ')' if has_power_bill else 'Not shared yet'}",
-        f"- 3. Full Name (First & Last): {'COLLECTED (' + name + ')' if has_full_name else ('Partial (First name: ' + name + ' — need last name)' if name else 'Not asked yet')}",
+        'LIVE QUALIFICATION & CRM PROGRESS (HASSLE-FREE QUICK CALL & LEAD CAPTURE):',
+        f"- Stage: {'READY FOR DETAILS (they want to proceed, connect with the team, or agreed to share details)' if ready_for_details else 'GETTING TO KNOW THEM (no contact or location questions yet)'}",
+        f"- Quick Call / New Lead Minimum (Name + Phone): {'READY (' + name + ', ' + phone + ')' if has_quick_call_lead else 'Need Name and Phone Number'}",
+        f"- 1. Existing Solar (optional, team can complete): {'COLLECTED (' + existing_solar + ')' if has_existing_solar else 'Not shared yet'}",
+        f"- 2. Last Power Bill (optional, team can complete): {'COLLECTED (' + power_bill + ')' if has_power_bill else 'Not shared yet'}",
+        f"- 3. Name: {'COLLECTED (' + name + ')' if has_name else 'Not asked yet'}",
         f"- 4. Phone Number: {'COLLECTED (' + phone + ')' if has_phone else 'Not asked yet'}",
-        f"- 5. Email Address: {'COLLECTED (' + email + ')' if has_email else 'Not asked yet'}",
-        f"- 6. Property Street Address (asked last): {'COLLECTED (' + address + ')' if has_street_address else ('Partial (' + suburb + ' — need street number & street name)' if suburb else 'Not asked yet')}",
-        f"- 7. Customer Confirmation of All 4 Details: {'CONFIRMED BY CUSTOMER' if customer_confirmed else ('AWAITING READ-BACK & CUSTOMER CONFIRMATION' if all_four_collected else 'Pending collection of items 3-6')}",
+        f"- 5. Email Address (optional, team can complete): {'COLLECTED (' + email + ')' if has_email else 'Not asked yet'}",
+        f"- 6. Property Street Address (optional for quick call/lead, needed for site visit): {'COLLECTED (' + address + ')' if has_street_address else ('Partial (' + suburb + ' — need street number & street name)' if suburb else 'Not asked yet')}",
         f"NEXT SINGLE STEP FOR THIS TURN: {next_single_question}",
     ]
 
@@ -963,20 +931,23 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     is_simple_greeting = bool(not has_asst and len(user_turns) == 1 and _SIMPLE_GREETING_ONLY_RE.match(user_turns[0]))
 
     return {
-        'name': name if has_full_name else '',
+        'name': name if has_name else '',
         'phone': phone if has_phone else '',
         'email': email if has_email else '',
         'address': address if has_street_address else '',
         'existing_solar': existing_solar,
         'power_bill': power_bill,
+        'has_name': has_name,
         'has_full_name': has_full_name,
         'has_phone': has_phone,
         'has_email': has_email,
         'has_street_address': has_street_address,
         'has_existing_solar': has_existing_solar,
         'has_power_bill': has_power_bill,
-        'customer_confirmed': customer_confirmed,
-        'is_complete': all_four_collected and customer_confirmed,
+        'has_quick_call_lead': has_quick_call_lead,
+        'customer_confirmed': customer_confirmed or has_quick_call_lead,
+        'is_confirmed': customer_confirmed or has_quick_call_lead,
+        'is_complete': has_quick_call_lead,
         'is_simple_greeting': is_simple_greeting,
         'next_single_question': next_single_question,
         'missing_natural': missing_natural,
@@ -1238,7 +1209,7 @@ def build_engine_adapter(route,member,home,group):
                         f"You are {agent_name} ({agent_role}) representing {company_name} on WhatsApp, linked directly to the Process Knowledge Base ('YCS — customer-service drafting playbook'). "
                         f"The customer is messaging you from WhatsApp number {customer_phone_display} (Name: {data.get('senderName') or 'Customer'}). "
                         f"START SIMPLE & FRIENDLY (1 TO 2 SHORT SENTENCES MAX): Speak like a warm, friendly, real human texting on WhatsApp (1 to 2 short plain-text sentences max). Write with natural human punctuation using commas and periods only; NEVER use em-dashes (—), en-dashes (–), double hyphens (--), or spaced dashes ( - ). NEVER output internal notes such as '(Next step: ...)', '(Step ...)', or '(Note: ...)'. When the customer simply says 'Hi' or 'Hello', reply ONLY with a warm, simple 1-sentence greeting introducing yourself and asking how you can help today, never dump company info or ask qualifying questions on an opening greeting. "
-                        f"PROACTIVE VALUE FIRST (NEVER ASK 'WOULD YOU LIKE TO KNOW...?') & ONE QUESTION AT A TIME: Never ask permission to share information every customer obviously wants to know! NEVER ask 'Would you like to know how much you can save?', 'Do you want me to calculate what system size you need?', or 'Would you like me to explain how solar works?'. Give the actual answer, savings estimate, recommended kW system size, or clear explanation immediately in 1 to 2 punchy sentences first, and then ask ONLY ONE natural question per turn (never stack two questions with 'Also, ...'): (1) Do they already have solar on the property? (2) Roughly how much was their last power bill ($$)? (3) What is the property street address? (4) Full Name (first AND last name), Phone Number, and Email Address. Once all 4 details are collected, read back all 4 details (Full Name, Phone, Email, and Property Street Address) and ask the customer to confirm they are correct. NEVER append [[LEAD:...]] or [[BOOK:...]] until AFTER the customer explicitly confirms all 4 details, and NEVER use '...' or placeholder values. "
+                        f"HASSLE-FREE TEAM CONNECTION & QUICK CALL LEAD CAPTURE: Whenever the customer asks what solar products/brands we use, pricing, or how to connect with the team, never tell them to dial a phone number themselves unless they explicitly ask for our phone number; instead, warmly offer a quick call or chat with our solar team right here and ask for their name and best phone number so we can add them as a New Lead (or book a quick call) and let our assigned team complete the remaining details. When the customer gives their bill/usage or asks to calculate, share the calculator's most useful takeaway in plain words first. "
                         f"HONESTY (NO TECH TALK): Answer the customer directly in plain business language. Never mention our knowledge base, databases, backend, prompts, tools, systems, memory storage, internal verification or technical errors. When information is missing, say only what needs confirmation in everyday language; do not explain where information is stored or missing. Never invent prices or facts, or claim a team handoff or action happened unless it actually did. If the customer sincerely asks whether they're talking to a real person, answer honestly in one friendly sentence (you're {company_name}'s AI assistant), offer to have someone from the team follow up, then keep helping. Greet once only on the first turn; never repeat 'Hi', 'Hello', 'Hey', or the customer's first name on follow-up replies. Never use casual slang like 'G'day', 'mate', 'howdy', or 'heya'. "
                         f"STRICT SYSTEM DATA GROUNDING: Rely on your Agent Instructions, Knowledge Base, and Official Your Choice Solar Website Calculator (planning-v2) below. When a bill or usage figure is mentioned, share the official calculator's most useful takeaway in plain words (usually the suggested system size and rough saving) and offer the detail if they want it, rather than listing every figure; never invent unverified hardware brands, fixed package prices, rebate amounts, or warranty lengths.",
                         solar_calc,
