@@ -432,9 +432,29 @@ class SocialWorkspace:
                     self.save_connection(org, "facebook", conn)
                 except SocialError as exc:
                     if exc.status == 401:
-                        self._mark_revoked(org, "facebook", str(exc))
-                        conn = self.get_connection(org, platform) or conn
-                        needs_reconnect = True
+                        user_tok = conn.get("user_access_token") or ""
+                        refreshed = False
+                        if user_tok and user_tok != "box1_managed_session" and user_tok != token:
+                            try:
+                                pages, selected, ig = self._discover_facebook_pages(
+                                    user_tok, preferred_page_id=str(page_id)
+                                )
+                                self._save_facebook_and_instagram(
+                                    org,
+                                    pages,
+                                    selected,
+                                    ig,
+                                    user_token=user_tok,
+                                    auth_mode=conn.get("auth_mode") or "oauth",
+                                )
+                                conn = self.get_connection(org, platform) or conn
+                                refreshed = True
+                            except Exception:
+                                refreshed = False
+                        if not refreshed:
+                            self._mark_revoked(org, "facebook", str(exc))
+                            conn = self.get_connection(org, platform) or conn
+                            needs_reconnect = True
         pages_public = []
         for p in conn.get("pages") or []:
             if isinstance(p, dict):
@@ -528,8 +548,31 @@ class SocialWorkspace:
             return self.connect_token(org, {**body, "platform": platform})
         return self.status(org)
 
+    def _exchange_facebook_token(self, token):
+        cfg = self.get_config("facebook") or {}
+        if not token or not cfg.get("client_id") or not cfg.get("client_secret"):
+            return token
+        try:
+            ll_res = self.transport(
+                f"{GRAPH_BASE}/oauth/access_token?"
+                + urllib.parse.urlencode(
+                    {
+                        "grant_type": "fb_exchange_token",
+                        "client_id": cfg["client_id"],
+                        "client_secret": cfg["client_secret"],
+                        "fb_exchange_token": token,
+                    }
+                )
+            )
+            if isinstance(ll_res, dict) and ll_res.get("access_token"):
+                return str(ll_res["access_token"])
+        except Exception:
+            pass
+        return token
+
     def _discover_facebook_pages(self, token, preferred_page_id=None):
         """Inspect a Facebook User or Page token and return (pages_list, active_page, ig_account)."""
+        token = self._exchange_facebook_token(token)
         pages = []
         field_sets = [
             "id,name,access_token,category,fan_count,followers_count,picture{url},instagram_business_account{id,username,name,profile_picture_url,followers_count},connected_instagram_account{id,username,name,profile_picture_url,followers_count}",
@@ -776,8 +819,14 @@ class SocialWorkspace:
         # Never fabricate Pages: every listed Page must come from the Graph API.
         existing_fb = self.get_connection(org, "facebook") if platform in ("facebook", "instagram") else None
         user_token = (existing_fb or {}).get("user_access_token") or ""
+        page_token = (existing_fb or {}).get("access_token") or ""
         if user_token and user_token != "box1_managed_session":
-            return self.discover_pages(org, {"platform": platform, "access_token": user_token})
+            try:
+                return self.discover_pages(org, {"platform": platform, "access_token": user_token})
+            except SocialError as exc:
+                if exc.status == 401 and page_token and page_token != user_token and page_token != "box1_managed_session":
+                    return self.discover_pages(org, {"platform": platform, "access_token": page_token})
+                raise
         raise SocialError(
             "Sign in with Facebook first. Box 1 lists only the real Pages your Facebook account manages.",
             400,
@@ -1413,7 +1462,7 @@ class SocialWorkspace:
                     return self.execute_tool(org, {**body, "operation": op})
                 raise SocialError(f"Unsupported social action: {action}")
             except SocialError as exc:
-                if exc.status == 401 and action not in ("webhook_verify", "webhook_ingest", "connect_oauth", "callback", "status"):
+                if exc.status == 401 and action not in ("webhook_verify", "webhook_ingest", "connect_oauth", "callback", "status", "discover_pages"):
                     self._mark_revoked(org, body.get("platform") or "facebook", str(exc))
                 raise
 
