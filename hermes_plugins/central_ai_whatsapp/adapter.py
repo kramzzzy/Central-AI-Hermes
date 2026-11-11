@@ -859,7 +859,8 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
     asked_permission = any(isinstance(m, dict) and m.get('role') == 'assistant' and _permission_re.search(str(m.get('content') or '')) for m in (turns or []))
     granted_permission = bool(_permission_re.search(_last_asst) and re.match(r'^(?:yes|yeah|yep|yup|sure|ok|okay|of course|go ahead|sounds good|please|no problem|absolutely|definitely|why not)\b', last_user_txt, re.I))
     has_name = has_full_name or bool(name and len(name.strip()) >= 2)
-    has_quick_call_lead = has_name and has_phone
+    # CRM/Zoho minimum: full name (first + last) and phone; address/email optional.
+    has_quick_call_lead = has_full_name and has_phone
     asked_to_proceed = any(re.search(r'\b(quote|quotation|how (?:do|can|would|to)?\s*(?:we|i)?\s*(?:connect|get started|start|proceed|go ahead|move forward|sign up|speak|talk|reach|contact)|(?:connect|speak|talk)\s+(?:to|with)\s+(?:the\s+|your\s+|our\s+|a\s+)?(?:team|specialist|someone|person|staff|rep|agent)|(?:what|which)\s+(?:solar\s+)?(?:product|products|brand|brands|panel|panels|inverter|inverters|battery|batteries|system|systems|package|packages)|quick\s+call|next steps?|get in touch|contact me|reach me|call me|interested|sign me up|go ahead|ready to|site visit|inspection|come out|price for (?:my|our)|cost for (?:my|our)|how much (?:for|would it cost) (?:my|our|me|us))\b', t, re.I) for t in _user_texts)
     # Phone and name come from the WhatsApp profile, so only details they typed signal readiness.
     shared_details = has_street_address or _is_valid_confirmed_email(email) or bool(suburb)
@@ -904,14 +905,14 @@ def _extract_and_analyze_customer_lead(turns: list, sender_name: str = '', sende
                 "You already asked if it's okay to take their details and they haven't said yes. Do not ask again. Just keep helping: answer their question, and if useful share one helpful idea"
                 + ('' if has_power_bill else ' or ask roughly what their power bill is so you can estimate savings') + ". " + no_details
             )
-    elif not has_name:
-        next_single_question = "Warmly offer a quick call or chat with our solar team and ask for their name and best phone number so our assigned team can go through the options and complete the remaining details."
+    elif not has_full_name:
+        next_single_question = "Warmly offer a quick call or chat with our solar team and ask for their full name (first and last) and best phone number so our assigned team can go through the options and complete the remaining details."
     elif not has_phone:
         next_single_question = "Warmly acknowledge what they shared, then ask naturally for the best phone number for our solar team to give them a quick call."
     elif already_lodged:
         next_single_question = "The customer's inquiry is ALREADY saved in our system and you ALREADY told them a specialist will be in touch. Do NOT repeat 'We've got everything we need, a specialist will reach out'. Reply with a warm, brief 1-sentence human sign-off (e.g. 'Have a great rest of your day, chat soon!')."
     else:
-        next_single_question = "We have their name and phone number! Reply warmly like a real person in 1-2 short sentences letting them know our solar team has their details for a quick call/chat to complete the remaining details, and append the [[LEAD:...]] tag."
+        next_single_question = "We have their full name and phone number! Reply warmly like a real person in 1-2 short sentences letting them know our solar team has their details for a quick call/chat to complete the remaining details, and append the [[LEAD:...]] tag with \"inquiry_type\" set to ONE of: \"New Solar\", \"Solar + Battery\", \"Battery Only\", \"Upgrade / Replace Solar\", \"Service / Fault\", \"Commercial\", \"General\" (decide from the conversation; never ask the customer)."
 
     checklist_lines = [
         'LIVE QUALIFICATION & CRM PROGRESS (HASSLE-FREE QUICK CALL & LEAD CAPTURE):',

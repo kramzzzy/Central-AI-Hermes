@@ -521,11 +521,21 @@ def manage_communications(action: str, id: str, version: int | None = None) -> d
 
 
 @server.tool(name='generate_image')
-def generate_image(prompt: str, aspect_ratio: str = '3:4', project: str = '') -> dict:
-    """Generate and save one image to Files (and optional project folder); ratios 1:1,3:4,4:5,4:3,16:9,9:16. Does not publish."""
-    payload = {'prompt': prompt, 'aspect_ratio': aspect_ratio}
+def generate_image(
+    prompt: str,
+    aspect_ratio: str = '3:4',
+    project: str = '',
+    preset: str = '',
+    reference_file_ids: list[str] | None = None,
+) -> dict:
+    """Generate and save one image to Files (and optional project folder); ratios 1:1,3:4,4:5,4:3,16:9,9:16; optional preset (/promotion,/product,/educational,/lifestyle) and reference_file_ids. Does not publish."""
+    payload: dict = {'prompt': prompt, 'aspect_ratio': aspect_ratio}
     if project.strip():
         payload['project'] = project.strip()
+    if preset.strip():
+        payload['preset'] = preset.strip()
+    if reference_file_ids:
+        payload['reference_file_ids'] = reference_file_ids
     return json.loads(_plugin_client.generate_image(payload))
 
 

@@ -1600,12 +1600,13 @@ def _start_customer_whatsapp_poller():
          avail_block,
          "HASSLE-FREE LEAD CAPTURE & QUICK CALL HANDOFF:\n"
          "1. Whenever the customer asks a question where our team needs to confirm specifics (such as which solar panel/inverter brands we use, custom packages, or pricing) or asks how to connect with the team, never tell them to dial a phone number themselves unless they explicitly ask for our phone number. Instead, offer a quick call or chat with our solar team and ask for their name and best phone number.\n"
-         "2. Only Name and Phone Number are required to add a New Lead to CRM or book a quick call, and our assigned team completes any remaining details on the call or chat.\n"
+         "2. Only Full Name (first and last) and Phone Number are required to add a New Lead to CRM or book a quick call; address and email are optional, and our assigned team completes any remaining details on the call or chat. If they give only a first name, ask once for their last name.\n"
+         "INQUIRY TYPE: Decide from the conversation which ONE type of inquiry this is: \"New Solar\", \"Solar + Battery\", \"Battery Only\", \"Upgrade / Replace Solar\", \"Service / Fault\", \"Commercial\", or \"General\". Put it in the lead tag's \"inquiry_type\" field exactly as written. Never ask the customer to pick a category.\n"
          f"3. Guide the conversation one simple step at a time ({lead_info.get('next_single_question') or 'ask for their name and best phone number'}).\n"
          + (
-          f"4. Name and Phone Number are collected! Now append the hidden CRM lead tag (or [[BOOK:{{\"kind\":\"call\",\"day\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]] if they confirmed a specific appointment slot) at the very end of your message:\n[[LEAD:{{\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]]"
+          f"4. Name and Phone Number are collected! Now append the hidden CRM lead tag (or [[BOOK:{{\"kind\":\"call\",\"day\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"notes\":\"Confirmed solar inquiry\"}}]] if they confirmed a specific appointment slot) at the very end of your message (replace INQUIRY_TYPE with your decision):\n[[LEAD:{{\"name\":\"{lead_info['name']}\",\"phone\":\"{lead_info['phone']}\",\"email\":\"{lead_info['email']}\",\"address\":\"{lead_info['address']}\",\"inquiry_type\":\"INQUIRY_TYPE\",\"notes\":\"Confirmed solar inquiry\"}}]]"
           if lead_info.get('is_complete')
-          else "4. DO NOT output [[LEAD:...]] or [[BOOK:...]] until the customer has provided at least their Name and Phone Number."
+          else "4. DO NOT output [[LEAD:...]] or [[BOOK:...]] until the customer has provided their Full Name (first and last) and Phone Number."
          ),
          f"CONVERSATION HISTORY:\n{hist_str}",
          f"KNOWLEDGE BASE (FROM APP OS):\n{kb_text}" if kb_text else "",

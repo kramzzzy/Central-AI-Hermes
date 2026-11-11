@@ -502,10 +502,11 @@ def manage_communications(arguments, **kwargs):
     return _call_app_os_mcp("central_ai_manage_communications", arguments, timeout=20, retry=False) or json.dumps({"error": "Communication operation unavailable."})
 
 
-def generate_image(arguments, **kwargs):
+def generate_image(arguments=None, **kwargs):
     if not owner_tools_available():
         return json.dumps({"error": "Owner workspace access required."})
-    return _call_app_os_mcp("central_ai_generate_image", arguments, timeout=180, retry=False) or json.dumps({"error": "Image generation unavailable."})
+    params = {k: v for k, v in dict(arguments or kwargs or {}).items() if v not in ("", None)}
+    return _call_app_os_mcp("central_ai_generate_image", params, timeout=180, retry=False) or json.dumps({"error": "Image generation unavailable."})
 
 
 def manage_tasks(arguments, **kwargs):
