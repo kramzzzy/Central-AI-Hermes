@@ -50,6 +50,32 @@ class CustomerIsolationTests(unittest.TestCase):
                 }, {'OPENROUTER_API_KEY': 'local-test-only', 'HERMES_CHAT_MODEL': 'configured/default'})
             self.assertIsNone(result)
 
+    def test_image_parts_and_structured_review_are_preserved(self):
+        tree = ast.parse(Path(__file__).with_name('local-bridge.py').read_text(encoding='utf-8'))
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_fast_draft_only_completion')
+        scope = dict(os=os, json=json, re=re)
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), '<bridge>', 'exec'), scope)
+        verdict = json.dumps({'approved': False, 'violations': ['Unsupported promise (note: not sent)']})
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content': verdict}}]}).encode()
+        image = {'type': 'image_url', 'image_url': {'url': 'data:image/webp;base64,YmlsbA=='}}
+        messages = [{'role': 'system', 'content': 'Assigned instructions'}, {'role': 'user', 'content': [{'type': 'text', 'text': 'Read my bill'}, image]}]
+        body = {'execution_mode': 'draft-only', 'context_isolation': 'provided-only', 'messages': messages, 'response_format': {'type': 'json_object'}}
+        with patch.dict(os.environ, {}, clear=True), patch('urllib.request.urlopen', return_value=Response()) as provider:
+            result = scope['_fast_draft_only_completion'](body, {'OPENROUTER_API_KEY': 'test-only'})
+            payload = json.loads(provider.call_args.args[0].data)
+            self.assertEqual(payload['messages'], messages)
+            self.assertEqual(payload['response_format'], {'type': 'json_object'})
+            self.assertEqual(result['choices'][0]['message']['content'], verdict)
+            for uri in ['https://private.example/image', 'file:///etc/passwd', 'data:image/svg+xml;base64,YmlsbA==']:
+                image['image_url']['url'] = uri
+                provider.reset_mock()
+                self.assertIsNone(scope['_fast_draft_only_completion'](body, {'OPENROUTER_API_KEY': 'test-only'}))
+                provider.assert_not_called()
+
     def test_job_and_profile_preserve_selected_models(self):
         root = Path(__file__).parent
         job = ast.parse((root / 'hermes-job.py').read_text(encoding='utf-8'))

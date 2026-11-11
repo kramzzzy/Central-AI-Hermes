@@ -994,7 +994,19 @@ def _fast_draft_only_completion(body,settings_dict):
  if not isinstance(msgs,list) or not msgs:
   return None
  for m in msgs:
-  if not isinstance(m,dict) or not isinstance(m.get('content'),str):
+  if not isinstance(m,dict):
+   return None
+  content=m.get('content')
+  if isinstance(content,str):
+   continue
+  if body.get('context_isolation')!='provided-only' or m.get('role')!='user' or not isinstance(content,list) or not 1<=len(content)<=3:
+   return None
+  for part in content:
+   if not isinstance(part,dict):return None
+   if part.get('type')=='text' and isinstance(part.get('text'),str):continue
+   if part.get('type')=='image_url' and isinstance(part.get('image_url'),dict):
+    uri=part['image_url'].get('url')
+    if isinstance(uri,str) and len(uri)<=1400000 and re.fullmatch(r'data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}',uri):continue
    return None
  import urllib.request
  api_key=(os.environ.get('OPENROUTER_API_KEY') or settings_dict.get('OPENROUTER_API_KEY') or '').strip().strip('\'"')
@@ -1065,6 +1077,7 @@ def _fast_draft_only_completion(body,settings_dict):
   'messages':out_msgs,
   'max_tokens':max(int(body.get('max_tokens') or 180),1200),
   'temperature':0.3,
+  **({'response_format':{'type':'json_object'}} if body.get('response_format')=={'type':'json_object'} else {}),
   # These hybrid models default to reasoning, which can consume the entire short reply/review budget.
   **({'reasoning':{'enabled':False}} if isolated and model in {'deepseek/deepseek-v4.1-flash','z-ai/glm-5.2'} else {}),
  }).encode('utf-8')
@@ -1090,6 +1103,7 @@ def _fast_draft_only_completion(body,settings_dict):
   content=str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
   if not content:
    return None
+  original_content=content
   content=re.sub(
    r'\s*[\(\[]\s*(?:next\s+step|step\s*\d|note|internal|checklist|qualification|follow[- ]?up|once\s+they|after\s+they|then\s+ask|ask\s+only)\b[\s\S]*?[\)\]]',
    '',
@@ -1104,6 +1118,7 @@ def _fast_draft_only_completion(body,settings_dict):
   ).strip()
   if not content:
    return None
+  if body.get('response_format')=={'type':'json_object'}:content=original_content
   raw_out_keys=[]
   if isinstance(body.get('memory_keys'),list):
    raw_out_keys.extend(str(k).strip()[:300] for k in body['memory_keys'] if k and str(k).strip())
