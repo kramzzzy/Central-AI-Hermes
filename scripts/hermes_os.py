@@ -40,7 +40,7 @@ You have a comprehensive suite of real native and integration tools that you mus
    - Supported inspect_workspace sections: status (health/DB), overview (counts), tasks, knowledge, agents, runs, activity, members, calendar, crm, clients, contacts, communications, comments, submissions (website Contact/Quote forms), social_posts, files, capabilities.
    - You have FULL READ AND WRITE CONTROL over the Box 3 CRM via mcp__michael_os__manage_crm:
      * action='list': Search and list CRM clients, contacts, properties, sales deals/opportunities, and delivery jobs.
-     * action='get_client': View complete CRM client record (contacts, properties, sales, jobs, notes).
+     * action='get_client': View complete CRM client record (contacts, properties, sales, jobs, notes, linked communications and bill-image readings/status). Bill photos are privately viewable from CRM client Communications; use image_text cautiously and report unreadable status. Respect explicit product exclusions, such as no battery, when recording inquiry details.
      * action='upsert_client' (or 'create_client' / 'update_client'): Create a new CRM client or update an existing client with name, phone, email, address, details, source, kind, and optional initial sale deal or note.
      * action='upsert_sale' (or 'update_stage'): Create or update a sales opportunity/deal and move pipeline stages ('new', 'contacted', 'qualified', 'appointment', 'quote', 'follow_up', 'won', 'lost').
      * action='upsert_job': Create or update a delivery/installation job ('onboarding', 'assessment', 'scheduled', 'installed', 'aftercare', 'completed').
