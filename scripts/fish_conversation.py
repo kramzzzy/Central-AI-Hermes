@@ -55,9 +55,9 @@ INSPECT_WORKSPACE_TOOL = {
 
 MANAGE_CRM_TOOL = {
     'tool_type': 'client', 'name': 'manage_crm',
-    'description': 'Full read and write control over Box 3 CRM (list/search clients, get_client, upsert_client, upsert_sale/update_stage, upsert_job, add_note, delete).',
+    'description': 'Full read and write control over Box 3 CRM (list/search clients, get_client, upsert_client, upsert_sale/update_stage, upsert_job, add_note, delete, sync_status, sync_external to push leads to the linked external CRM such as Zoho).',
     'arguments': [
-        {'name': 'action', 'description': 'CRM action: list, get_client, upsert_client, upsert_sale, update_stage, upsert_job, add_note, or delete.'},
+        {'name': 'action', 'description': 'CRM action: list, get_client, upsert_client, upsert_sale, update_stage, upsert_job, add_note, delete, sync_status, or sync_external.'},
         {'name': 'name', 'description': 'Client name or search query (pass empty string if none).'},
         {'name': 'phone', 'description': 'Client phone number (pass empty string if none).'},
         {'name': 'email', 'description': 'Client email address (pass empty string if none).'},

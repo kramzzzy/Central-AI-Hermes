@@ -422,7 +422,7 @@ def manage_crm(
     search: str = '',
 ) -> dict:
     """Full read and write control over the Box 3 CRM (Clients, Contacts, Properties, Sales Opportunities/Deals, Delivery Jobs, and Notes).
-    action: 'list', 'get_client', 'upsert_client' (or 'create_client'/'update_client'), 'upsert_sale' (or 'update_stage'), 'upsert_job', 'add_note', or 'delete'.
+    action: 'list', 'get_client', 'upsert_client' (or 'create_client'/'update_client'), 'upsert_sale' (or 'update_stage'), 'upsert_job', 'add_note', 'delete', 'sync_status' (external CRM e.g. Zoho sync counts/errors), or 'sync_external' (push pending inquiries or one client_id to the external CRM now).
     """
     payload = {
         k: v for k, v in {

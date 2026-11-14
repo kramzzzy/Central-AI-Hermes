@@ -48,13 +48,13 @@ TOOLS = {
         "description": "Full read & write control over Box 3 CRM clients, contacts, properties, sales deals/stages, delivery jobs, and notes.",
         "schema": {
             "name": "mcp__michael_os__manage_crm",
-            "description": "Full read and write control over the Box 3 CRM (Clients, Contacts, Properties, Sales Opportunities/Deals, Delivery Jobs, and Notes). Actions: 'list', 'get_client', 'upsert_client' (or 'create_client'/'update_client'), 'upsert_sale' (or 'update_stage'), 'upsert_job', 'add_note', 'delete'.",
+            "description": "Full read and write control over the Box 3 CRM (Clients, Contacts, Properties, Sales Opportunities/Deals, Delivery Jobs, and Notes). Actions: 'list', 'get_client', 'upsert_client' (or 'create_client'/'update_client'), 'upsert_sale' (or 'update_stage'), 'upsert_job', 'add_note', 'delete', 'sync_status' (linked external CRM such as Zoho: synced/pending/failed), 'sync_external' (push pending inquiries or one client_id to the external CRM now).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "get_client", "upsert_client", "create_client", "update_client", "upsert_sale", "update_stage", "upsert_job", "add_note", "delete"],
+                        "enum": ["list", "get_client", "upsert_client", "create_client", "update_client", "upsert_sale", "update_stage", "upsert_job", "add_note", "delete", "sync_status", "sync_external"],
                         "description": "CRM action to execute.",
                     },
                     "client_id": {"type": "string", "description": "Optional CRM client UUID."},
