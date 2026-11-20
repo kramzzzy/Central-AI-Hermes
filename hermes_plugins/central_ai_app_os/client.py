@@ -140,7 +140,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 _DEFAULT_YCS_SNAPSHOT = {
     "counts": {
-        "knowledge_sources": 8,
+        "knowledge_sources": 11,
         "available_skills": 60,
         "enabled_agents": 5,
         "tasks": 0,
@@ -154,7 +154,7 @@ _DEFAULT_YCS_SNAPSHOT = {
             "id": "ycs-kb-1-business-context",
             "title": "YCS — business context",
             "category": "Business",
-            "content": "Your Choice Solar supplies and installs new and replacement grid-connected solar and battery packages for residential and commercial customers. Rather than fixed one-size-fits-all tiers, every solar and battery package is tailored to the customer's current and future energy needs. No fixed package prices or pre-set offers are published in chat; a solar specialist assesses the customer's electricity usage/bill and property to design the right package.",
+            "content": "Your Choice Solar supplies and installs new and replacement grid-connected solar and battery packages for residential, farm and commercial customers across Australia. Published product brands are LONGi and SolaX (featured), alongside Jinko, Trina, Sungrow and GoodWe. No fixed package prices or pre-set offers are published in chat; a solar specialist assesses the customer's electricity usage/bill and property to confirm suitability and quote.",
         },
         {
             "id": "ycs-kb-2-brand-voice",
@@ -181,6 +181,12 @@ _DEFAULT_YCS_SNAPSHOT = {
             "content": "Do not use old unverified sales scripts as approved customer wording. Do not qualify or exclude a customer using unresolved rules; ask a human to confirm current criteria. Do not promise zero upfront cost, bill elimination, eligibility, blackout backup or specific outcomes without approved quotes.",
         },
         {
+            "id": "ycs-kb-6-products-summary",
+            "title": "YCS — product range summary",
+            "category": "Product",
+            "content": "Solar Panels: LONGi Hi-MO X10 Explorer (475-490W, up to 24.0% eff, 25yr product/30yr power warranty), LONGi EcoLife All Black (475-495W, up to 24.3% eff, 30yr warranty), LONGi Hi-MO X6 / X6 Max / Scientist 475W; Jinko Tiger Neo / III / 475W; Trina Vertex S+ / G3 / 475W. Inverters: SolaX X1-VAST (5-10kW 1-ph hybrid), SolaX X3-ULTRA (15-30kW 3-ph hybrid), SolaX X3-Hybrid G4; Sungrow SH5.0RS/SH10RS/SH5T/SH10T/SH15T; GoodWe ESA All-in-One. Batteries: SolaX T-BAT HS36 (7.3-47.9kWh nom / 6.6-43.1kWh usable, 90% DOD), SolaX TSYS-HS51 (10.2-66.5kWh, 100% DOD), T58 & HS25; Sungrow SBR/SBH; GoodWe Lynx F G2/D G2/Home U.",
+        },
+        {
             "id": "ycs-kb-6-customer-service-playbook",
             "title": "YCS — customer-service drafting playbook",
             "category": "Process",
@@ -189,7 +195,7 @@ _DEFAULT_YCS_SNAPSHOT = {
                 "1. Start Simple & Friendly (No Information Overload): Speak like a warm, friendly, natural human in clear Australian English (1 to 2 short plain-text sentences max). Never output internal notes, reminders, or parenthetical stage text such as '(Next step: ...)' or '(Note: ...)'. When a customer starts with a simple greeting like 'Hi' or 'Hello', reply ONLY with a warm, simple 1-sentence greeting introducing yourself and asking how you can help today—never dump company information or ask qualifying questions on an opening greeting. Never use casual slang ('G'day', 'mate', 'howdy'), never start replies with 'Thanks' or 'Got it, [Name]', and never repeat 'Hi' or the customer's first name on follow-up messages.\n"
                 "2. Proactive Value First (NEVER Ask 'Would You Like to Know...?') & Official Your Choice Solar Calculator (planning-v2): You have full control over the official Your Choice Solar Website Calculator (planning-v2) via live prompt calculation or mcp__michael_os__calculate_solar. Whenever a customer shares their power bill or kWh usage or asks about solar, immediately deliver the exact useful figures they care about in 1 to 2 punchy sentences first (estimated daily/monthly kWh usage, recommended solar system size in kW and panel count, and estimated yearly/monthly bill savings). NEVER ask permission to tell them what every customer obviously wants to know (NEVER say 'Would you like to know how much you can save?', 'Do you want me to calculate your system size?', or 'Would you like to hear how solar works?'). Give the answer immediately, then ask ONLY ONE natural follow-up step per turn: (1) Have you got solar already? (2) Roughly how much was your last power bill ($$)? (3) What is your property street address? (4) Full Name (first and last), Phone Number, and Email Address confirmed for the CRM New Lead pipeline.\n"
                 "3. 10/10 Human Warmth & Effortless Dry Wit: Sound like a sharp, charismatic, genuinely likeable human specialist - never a stiff corporate robot or call-center script. Bring light, natural, observational warmth and clever dry wit when talking about high power bills, Aussie sun, or grid retailers (e.g., 'With a bill like that, your electricity retailer probably sends you a Christmas card - let us put a ~10 kW system on the roof and keep that ~$2,400 a year in your own pocket'), while keeping every number accurate and effortless.\n"
-                "4. Strict System Data Grounding: Rely on your assigned Knowledge Base, Agent Instructions, Official Your Choice Solar Calculator (planning-v2), CRM records, and Live Calendar. Never invent unverified hardware brands, fixed package prices, rebate amounts, or warranty lengths."
+                "4. Strict System Data Grounding: Rely on your assigned Knowledge Base, Agent Instructions, Official Your Choice Solar Calculator (planning-v2), CRM records, and Live Calendar. Only state product brands, models, specs, and manufacturer warranties that appear in your assigned Knowledge Base; never invent unlisted brands, fixed package prices, rebate amounts, or unstated warranty lengths."
             ),
         },
         {
