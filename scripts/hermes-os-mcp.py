@@ -609,14 +609,16 @@ def manage_submissions(action: str, id: str, status: str = '', message: str = ''
 
 
 @server.tool(name='manage_social')
-def manage_social(action: str, platform: str = '', account: str = '', post: str = '', search: str = '', offset: int = 0, refresh: bool = False, older: bool = False, confirmed: bool = False) -> dict:
-    """Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one. list_outside_posts browses posts excluded from the grid; remove_post (platform/account/post) hides the card only, leaving the published post untouched; include_post restores it. delete_post (platform/account/post, confirmed=true) permanently deletes from both App OS and the social platform only after explicit user confirmation of both destinations. include_post adds the explicitly requested platform/account/post without publishing."""
+def manage_social(action: str, platform: str = '', account: str = '', post: str = '', search: str = '', offset: int = 0, refresh: bool = False, older: bool = False, confirmed: bool = False, enabled: bool | None = None) -> dict:
+    """Facebook & Instagram client invites and Social Media Post controls. AI agents ONLY respond to comments on posts listed in Social Media Post; unlisted posts receive no AI responses. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one. list_outside_posts browses posts excluded from the grid; remove_post (platform/account/post) hides the card and stops AI comment responses without deleting the published post; include_post restores it. set_post_auto_chat (platform/account/post, enabled=true|false) toggles whether the enquiry agent can auto-DM commenters on a listed post (default false: only the community agent replies publicly). delete_post (platform/account/post, confirmed=true) permanently deletes from both App OS and the social platform only after explicit user confirmation of both destinations. include_post adds the explicitly requested platform/account/post without publishing."""
     try:
         payload = {'action': action}
-        if action in ('include_post', 'remove_post', 'delete_post'):
+        if action in ('include_post', 'remove_post', 'delete_post', 'set_post_auto_chat'):
             payload.update(platform=platform, account=account, post=post)
             if action == 'delete_post':
                 payload['confirmed'] = confirmed
+            elif action == 'set_post_auto_chat' and isinstance(enabled, bool):
+                payload['enabled'] = enabled
         elif action == 'list_outside_posts':
             payload.update(platform=platform or 'all', account=account, search=search, offset=offset, refresh=refresh, older=older)
         raw = _plugin_client.manage_social(payload)

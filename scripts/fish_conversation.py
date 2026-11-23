@@ -70,12 +70,13 @@ MANAGE_CRM_TOOL = {
 
 MANAGE_SOCIAL_TOOL = {
     'tool_type': 'client', 'name': 'manage_social',
-    'description': "Facebook & Instagram client invites. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page; tell the owner the link was created and offer to text it. Only create an invite when the owner asks.",
+    'description': "Facebook & Instagram client invites and Social Media Post controls. AI agents ONLY respond to comments on posts listed in Social Media Post; unlisted posts receive no AI responses. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page; tell the owner the link was created and offer to text it. Only create an invite when the owner asks. action='set_post_auto_chat' toggles enquiry-agent auto-chat on comments for one listed post (enabled true/false; default false so only the community agent replies publicly).",
     'arguments': [
-        {'name': 'action', 'description': 'create_invite, list_outside_posts, include_post, remove_post, or delete_post. Delete only after the owner explicitly confirms permanent removal from both App OS and the platform.'},
-        {'name': 'platform', 'description': 'facebook or instagram for include_post; all for listing.'},
+        {'name': 'action', 'description': 'create_invite, list_outside_posts, include_post, remove_post, delete_post, or set_post_auto_chat. Delete only after the owner explicitly confirms permanent removal from both App OS and the platform.'},
+        {'name': 'platform', 'description': 'facebook or instagram for include_post/set_post_auto_chat; all for listing.'},
         {'name': 'account', 'description': 'Connected account ID; empty for listing all accounts.'},
-        {'name': 'post', 'description': 'Exact post ID for include_post, remove_post or delete_post; empty for listing.'},
+        {'name': 'post', 'description': 'Exact post ID for include_post, remove_post, delete_post, or set_post_auto_chat; empty for listing.'},
+        {'name': 'enabled', 'description': 'For set_post_auto_chat: true to allow enquiry-agent auto-chat on comments for this post, false for community-agent public replies only.'},
         {'name': 'confirmed', 'description': 'true only after explicit confirmation to delete from both App OS and the platform; false otherwise.'}
     ],
     'expects_response': True, 'timeout_seconds': 15,
@@ -532,6 +533,9 @@ class NativeTaskBridge:
             payload = {k: params[k] for k in ('action', 'platform', 'account', 'post') if params.get(k) not in ('', None)}
             if payload.get('action') == 'delete_post':
                 payload['confirmed'] = params.get('confirmed') is True or params.get('confirmed') == 'true'
+            elif payload.get('action') == 'set_post_auto_chat' and params.get('enabled') not in ('', None):
+                val = params.get('enabled')
+                payload['enabled'] = val if isinstance(val, bool) else str(val).strip().lower() == 'true'
             mcp_res = json.loads(_manage_social(payload))
             return {'type': 'client_tool.result', 'callId': call_id, 'isError': 'error' in mcp_res,
                     'result': mcp_res}

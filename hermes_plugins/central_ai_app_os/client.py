@@ -1019,7 +1019,7 @@ def manage_social(arguments=None, **kwargs):
         return json.dumps({"error": "Owner workspace access required."})
     params = {k: v for k, v in dict(arguments or kwargs or {}).items() if v not in ('', None)}
     raw = _call_app_os_mcp("central_ai_manage_social", params, timeout=15)
-    return raw or json.dumps({"error": "App OS is unreachable; no invite link was created."})
+    return raw or json.dumps({"error": "App OS is unreachable; the social request was not completed."})
 
 
 def manage_whatsapp_customer_line(arguments=None, **kwargs):
