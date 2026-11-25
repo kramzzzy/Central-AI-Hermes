@@ -1505,6 +1505,8 @@ class SocialWorkspace:
                     return {"accounts": self.accounts(org)}
                 if action == "post_feed":
                     return self.post_feed(org, body)
+                if action == "refresh_posts":
+                    return self.refresh_posts(org, body)
                 if action == "available_posts":
                     return self.available_posts(org, body)
                 if action == "delete_status":
@@ -1640,6 +1642,67 @@ class SocialWorkspace:
                 raise SocialError("Invalid post verification response from the social platform.", 502) from None
         return {"post_ids": available}
 
+    @staticmethod
+    def _extract_post_image(facebook, item):
+        if not isinstance(item, dict):
+            return ""
+        if facebook:
+            direct = item.get("full_picture")
+            if isinstance(direct, str) and direct.strip():
+                return direct.strip()
+            for att in (item.get("attachments") or {}).get("data") or []:
+                if not isinstance(att, dict):
+                    continue
+                src = ((att.get("media") or {}).get("image") or {}).get("src")
+                if isinstance(src, str) and src.strip():
+                    return src.strip()
+                for sub in (att.get("subattachments") or {}).get("data") or []:
+                    if not isinstance(sub, dict):
+                        continue
+                    sub_src = ((sub.get("media") or {}).get("image") or {}).get("src")
+                    if isinstance(sub_src, str) and sub_src.strip():
+                        return sub_src.strip()
+            pic = item.get("picture")
+            return pic.strip() if isinstance(pic, str) and pic.strip() else ""
+        media_type = str(item.get("media_type") or "").upper()
+        if media_type == "VIDEO":
+            val = item.get("thumbnail_url")
+            return val.strip() if isinstance(val, str) and val.strip() else ""
+        else:
+            for key in ("media_url", "thumbnail_url"):
+                val = item.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+        for child in (item.get("children") or {}).get("data") or []:
+            if not isinstance(child, dict):
+                continue
+            for key in ("thumbnail_url", "media_url"):
+                val = child.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+        return ""
+
+    @classmethod
+    def _normalize_feed_post(cls, platform, account, page, item):
+        if not isinstance(item, dict) or not re.fullmatch(r"[0-9_]{1,150}", str(item.get("id") or "")):
+            return None
+        facebook = platform == "facebook"
+        def count(value):
+            return value if type(value) is int and value >= 0 else None
+        return {
+            "post_id": str(item["id"]),
+            "platform": platform,
+            "account_id": account,
+            "account_name": page.get("name") or account,
+            "post_text": item.get("message" if facebook else "caption") or "",
+            "post_url": item.get("permalink_url" if facebook else "permalink") or "",
+            "image_url": cls._extract_post_image(facebook, item) or None,
+            "published_at": item.get("created_time" if facebook else "timestamp"),
+            "likes": count(((item.get("likes") or {}).get("summary") or {}).get("total_count")) if facebook else count(item.get("like_count")),
+            "comments": count(((item.get("comments") or {}).get("summary") or {}).get("total_count")) if facebook else count(item.get("comments_count")),
+            "shares": count((item.get("shares") or {}).get("count")) if facebook else None,
+        }
+
     def post_feed(self, org, body):
         platform = body.get("platform")
         account = str(body.get("account_id") or "")
@@ -1650,29 +1713,90 @@ class SocialWorkspace:
             raise SocialError("Invalid post cursor.")
         page = self.account_page(org, platform, account)
         facebook = platform == "facebook"
-        fields = ("id,message,created_time,permalink_url,full_picture,likes.limit(0).summary(true),comments.limit(0).summary(true),shares"
-                  if facebook else "id,caption,timestamp,permalink,media_type,media_url,thumbnail_url,like_count,comments_count")
-        query = {"fields": fields, "limit": 25}
+        rich_fields = (
+            "id,message,created_time,permalink_url,full_picture,attachments.limit(1){media{image{src}},subattachments.limit(1){media{image{src}}}},likes.limit(0).summary(true),comments.limit(0).summary(true),shares"
+            if facebook else
+            "id,caption,timestamp,permalink,media_type,media_url,thumbnail_url,children.limit(1){media_url,thumbnail_url},like_count,comments_count"
+        )
+        base_fields = (
+            "id,message,created_time,permalink_url,full_picture,likes.limit(0).summary(true),comments.limit(0).summary(true),shares"
+            if facebook else
+            "id,caption,timestamp,permalink,media_type,media_url,thumbnail_url,like_count,comments_count"
+        )
+        query = {"fields": rich_fields, "limit": 25}
         if after:
             query["after"] = after
-        feed = self.transport(f"{GRAPH_BASE}/{account}/{'posts' if facebook else 'media'}?" + urllib.parse.urlencode(query), token=page["access_token"])
-        def count(value):
-            return value if type(value) is int and value >= 0 else None
+        try:
+            feed = self.transport(f"{GRAPH_BASE}/{account}/{'posts' if facebook else 'media'}?" + urllib.parse.urlencode(query), token=page["access_token"])
+        except SocialError:
+            query["fields"] = base_fields
+            feed = self.transport(f"{GRAPH_BASE}/{account}/{'posts' if facebook else 'media'}?" + urllib.parse.urlencode(query), token=page["access_token"])
         posts = []
         for item in feed.get("data") or []:
-            if not isinstance(item, dict) or not re.fullmatch(r"[0-9_]{1,150}", str(item.get("id") or "")):
-                continue
-            posts.append({"post_id": str(item["id"]), "platform": platform, "account_id": account,
-                          "account_name": page.get("name") or account,
-                          "post_text": item.get("message" if facebook else "caption") or "",
-                          "post_url": item.get("permalink_url" if facebook else "permalink") or "",
-                          "image_url": item.get("full_picture") if facebook else (item.get("thumbnail_url") if item.get("media_type") == "VIDEO" else item.get("media_url")),
-                          "published_at": item.get("created_time" if facebook else "timestamp"),
-                          "likes": count(((item.get("likes") or {}).get("summary") or {}).get("total_count")) if facebook else count(item.get("like_count")),
-                          "comments": count(((item.get("comments") or {}).get("summary") or {}).get("total_count")) if facebook else count(item.get("comments_count")),
-                          "shares": count((item.get("shares") or {}).get("count")) if facebook else None})
+            normalized = self._normalize_feed_post(platform, account, page, item)
+            if normalized:
+                posts.append(normalized)
         paging = feed.get("paging") or {}
         return {"posts": posts, "after": (paging.get("cursors") or {}).get("after") if paging.get("next") else None}
+
+    def refresh_posts(self, org, body):
+        platform = body.get("platform")
+        account = str(body.get("account_id") or "")
+        ids = body.get("post_ids")
+        if platform not in ("facebook", "instagram") or not re.fullmatch(r"\d{1,100}", account):
+            raise SocialError("Choose a connected Facebook or Instagram account.")
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 25 or any(not isinstance(i, str) or not re.fullmatch(r"[0-9_]{1,150}", i) for i in ids):
+            raise SocialError("Invalid post identities.")
+        page = self.account_page(org, platform, account)
+        facebook = platform == "facebook"
+        rich_fields = (
+            "id,message,created_time,permalink_url,full_picture,attachments.limit(1){media{image{src}},subattachments.limit(1){media{image{src}}}},likes.limit(0).summary(true),comments.limit(0).summary(true),shares"
+            if facebook else
+            "id,caption,timestamp,permalink,media_type,media_url,thumbnail_url,children.limit(1){media_url,thumbnail_url},like_count,comments_count"
+        )
+        base_fields = (
+            "id,message,created_time,permalink_url,full_picture,likes.limit(0).summary(true),comments.limit(0).summary(true),shares"
+            if facebook else
+            "id,caption,timestamp,permalink,media_type,media_url,thumbnail_url,like_count,comments_count"
+        )
+        result = self.transport(GRAPH_BASE, method="POST", form=True, data={
+            "access_token": page["access_token"],
+            "batch": json.dumps([{"method": "GET", "relative_url": f"{i}?" + urllib.parse.urlencode({"fields": rich_fields})} for i in ids]),
+        })
+        if not isinstance(result, list) or len(result) != len(ids):
+            raise SocialError("Unable to refresh posts from the social platform.", 502)
+        posts = []
+        fallback_ids = []
+        for post_id, response in zip(ids, result):
+            try:
+                data = json.loads(response["body"])
+                if response.get("code") == 200 and isinstance(data, dict):
+                    normalized = self._normalize_feed_post(platform, account, page, data)
+                    if normalized:
+                        posts.append(normalized)
+                elif response.get("code") == 400:
+                    fallback_ids.append(post_id)
+            except (KeyError, TypeError, ValueError):
+                continue
+        if fallback_ids:
+            try:
+                retry = self.transport(GRAPH_BASE, method="POST", form=True, data={
+                    "access_token": page["access_token"],
+                    "batch": json.dumps([{"method": "GET", "relative_url": f"{i}?" + urllib.parse.urlencode({"fields": base_fields})} for i in fallback_ids]),
+                })
+                if isinstance(retry, list):
+                    for response in retry:
+                        try:
+                            data = json.loads(response["body"])
+                            if response.get("code") == 200 and isinstance(data, dict):
+                                normalized = self._normalize_feed_post(platform, account, page, data)
+                                if normalized:
+                                    posts.append(normalized)
+                        except (KeyError, TypeError, ValueError):
+                            continue
+            except Exception:
+                pass
+        return {"posts": posts}
 
     def ingest_webhook(self, body):
         raw = base64.b64decode(body.get("raw") or "", validate=True)
@@ -1762,15 +1886,23 @@ class SocialWorkspace:
         page, event = self.verified_comment(org, body)
         facebook = event["platform"] == "facebook"
         field = "message" if facebook else "caption"
-        fields = "message,permalink_url,full_picture" if facebook else "caption,permalink,media_url,media_type"
+        rich_fields = (
+            "message,permalink_url,full_picture,attachments.limit(1){media{image{src}},subattachments.limit(1){media{image{src}}}}"
+            if facebook else
+            "caption,permalink,media_url,thumbnail_url,media_type"
+        )
+        base_fields = "message,permalink_url,full_picture" if facebook else "caption,permalink,media_url,media_type"
         try:
-            post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?fields={fields}", token=page["access_token"])
+            post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?" + urllib.parse.urlencode({"fields": rich_fields}), token=page["access_token"])
         except SocialError:
-            post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?fields={field}", token=page["access_token"])
+            try:
+                post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?fields={base_fields}", token=page["access_token"])
+            except SocialError:
+                post = self.transport(f"{GRAPH_BASE}/{event['post_id']}?fields={field}", token=page["access_token"])
         return {"post_text": str(post.get(field) or "")[:4000], "comment_text": event["text"],
                 "post_id": event["post_id"], "account_name": page.get("name", ""),
                 "post_url": post.get("permalink_url") or post.get("permalink") or (f"https://www.facebook.com/{event['post_id']}" if facebook else ""),
-                "image_url": post.get("full_picture") or (post.get("media_url") if post.get("media_type") != "VIDEO" else ""),
+                "image_url": self._extract_post_image(facebook, post),
                 "sender_name": self._event_name(org, event), "sender_id": str(event.get("sender_id") or "")}
 
     def send_comment(self, org, body):

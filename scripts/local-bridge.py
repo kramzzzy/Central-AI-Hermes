@@ -646,7 +646,7 @@ class Handler(BaseHTTPRequestHandler):
     length=int(self.headers.get('Content-Length','0'))
     if not 0<length<=64*1024*1024:return self.reply(413,{'error':'Artwork request too large'})
     req_body=json.loads(self.rfile.read(length))
-    is_marketing=isinstance(req_body,dict) and (req_body.get('mode') in {'marketing','social','voice_clone','voice_tts','video_models','video_plan','video_scene','video_stitch'} or bool(req_body.get('prompt')))
+    is_marketing=isinstance(req_body,dict) and (req_body.get('mode') in {'marketing','social','image_models','voice_clone','voice_tts','video_models','video_plan','video_scene','video_stitch'} or bool(req_body.get('prompt')))
     if not is_marketing:
      acquired=portrait_slot.acquire(blocking=False)
      if not acquired:return self.reply(429,{'error':'Another portrait is being generated. Please wait.'})

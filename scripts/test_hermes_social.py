@@ -477,4 +477,41 @@ class SocialTests(unittest.TestCase):
         res = self.social.handle(body)
         self.assertEqual("ig-reel-published", res["post_id"])
 
+    def test_post_feed_extracts_attachments_and_refresh_posts_batch(self):
+        def provider(url, **kw):
+            if '/101/posts?' in url:
+                return {
+                    "data": [{
+                        "id": "101_999",
+                        "message": "Album post without full_picture",
+                        "attachments": {
+                            "data": [{
+                                "subattachments": {
+                                    "data": [{"media": {"image": {"src": "https://scontent.example.test/album-photo.jpg"}}}]
+                                }
+                            }]
+                        },
+                    }]
+                }
+            if kw.get("method") == "POST" and "batch" in (kw.get("data") or {}):
+                return [{
+                    "code": 200,
+                    "body": json.dumps({
+                        "id": "101_20250831",
+                        "message": "Old 2025 post",
+                        "permalink_url": "https://www.facebook.com/101_20250831",
+                        "attachments": {"data": [{"media": {"image": {"src": "https://scontent.example.test/fresh-2025.jpg"}}}]},
+                        "likes": {"summary": {"total_count": 12}},
+                        "comments": {"summary": {"total_count": 3}},
+                    }),
+                }]
+            return {}
+        self.social.transport = provider
+        feed = self.social.handle({"org": ORG, "action": "post_feed", "platform": "facebook", "account_id": "101"})
+        self.assertEqual(feed["posts"][0]["image_url"], "https://scontent.example.test/album-photo.jpg")
+        refreshed = self.social.handle({"org": ORG, "action": "refresh_posts", "platform": "facebook", "account_id": "101", "post_ids": ["101_20250831"]})
+        self.assertEqual(len(refreshed["posts"]), 1)
+        self.assertEqual(refreshed["posts"][0]["image_url"], "https://scontent.example.test/fresh-2025.jpg")
+        self.assertEqual(refreshed["posts"][0]["likes"], 12)
+
 if __name__ == '__main__': unittest.main()

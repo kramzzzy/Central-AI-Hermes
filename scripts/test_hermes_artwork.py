@@ -100,5 +100,30 @@ class SocialArtworkTests(unittest.TestCase):
                 artwork.generate({'mode': 'social', 'prompt': prompt})
 
 
+    @patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-key', 'SOCIAL_IMAGE_MODEL': ''})
+    @patch('hermes_artwork.urllib.request.build_opener')
+    def test_model_override_and_pure_image_modalities(self, opener):
+        seen = []
+        def fake_open(req, timeout=0):
+            seen.append(json.loads(req.data.decode()))
+            return self.response()
+        opener.return_value.open.side_effect = fake_open
+        res1 = artwork.generate({'mode': 'social', 'prompt': 'Solar promo', 'model': 'black-forest-labs/flux.2-pro'})
+        self.assertEqual(res1['data'][0]['model'], 'black-forest-labs/flux.2-pro')
+        self.assertEqual(seen[-1]['model'], 'black-forest-labs/flux.2-pro')
+        self.assertEqual(seen[-1]['modalities'], ['image'])
+        res2 = artwork.generate({'mode': 'social', 'prompt': 'Solar promo', 'model': 'openai/gpt-5-image-mini'})
+        self.assertEqual(res2['data'][0]['model'], 'openai/gpt-5-image-mini')
+        self.assertEqual(seen[-1]['modalities'], ['image', 'text'])
+        with self.assertRaises(artwork.ArtworkError):
+            artwork.generate({'mode': 'social', 'prompt': 'Solar promo', 'model': 'bad model with spaces!'})
+        artwork._IMAGE_MODELS_CACHE['models'] = []
+        with patch('hermes_artwork.urllib.request.urlopen', side_effect=OSError('offline')):
+            catalog = artwork.generate({'mode': 'image_models', 'force_refresh': True})
+        self.assertTrue(catalog['ok'])
+        self.assertEqual(catalog['default_model'], 'google/gemini-2.5-flash-image')
+        self.assertTrue(any(m['id'] == 'black-forest-labs/flux.2-pro' for m in catalog['models']))
+
+
 if __name__ == '__main__':
     unittest.main()
