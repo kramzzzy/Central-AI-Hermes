@@ -426,6 +426,63 @@ class NativeChat:
         return {'profile': self.settings['HERMES_PROFILE'], 'sessions': sessions,
                 'current_session_id': self.stored, 'limit': 500, 'protocol': 1}
 
+    def _delete_session_sqlite(self, target_profile, target_ids):
+        root_str = self.settings.get('HERMES_PROFILE_ROOT', '')
+        if not root_str or not target_profile:
+            return False
+        try:
+            root = Path(root_str).resolve(strict=True)
+            db_path = (root / 'profiles' / target_profile / 'state.db').resolve()
+            if not db_path.is_relative_to(root / 'profiles') or not db_path.is_file():
+                return False
+            import sqlite3
+            conn = sqlite3.connect(str(db_path), timeout=10)
+            try:
+                cols = {row[1] for row in conn.execute('PRAGMA table_info(sessions)').fetchall()}
+                if 'id' not in cols:
+                    return False
+                ids = {str(i) for i in target_ids if i}
+                if not ids:
+                    return False
+                if 'parent_session_id' in cols:
+                    while True:
+                        placeholders = ','.join('?' for _ in ids)
+                        rows = conn.execute(
+                            f'SELECT id, parent_session_id FROM sessions '
+                            f'WHERE id IN ({placeholders}) OR parent_session_id IN ({placeholders})',
+                            (*ids, *ids),
+                        ).fetchall()
+                        before = len(ids)
+                        for rid, pid in rows:
+                            if rid:
+                                ids.add(str(rid))
+                            if pid:
+                                ids.add(str(pid))
+                        if len(ids) == before:
+                            break
+                placeholders = ','.join('?' for _ in ids)
+                id_tuple = tuple(ids)
+                tables = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                for tbl in tables:
+                    if tbl == 'sessions' or tbl.startswith('sqlite_'):
+                        continue
+                    tcols = {row[1] for row in conn.execute(f'PRAGMA table_info("{tbl}")').fetchall()}
+                    if 'session_id' in tcols:
+                        conn.execute(f'DELETE FROM "{tbl}" WHERE session_id IN ({placeholders})', id_tuple)
+                if 'parent_session_id' in cols:
+                    conn.execute(
+                        f'UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({placeholders})',
+                        id_tuple,
+                    )
+                cur = conn.execute(f'DELETE FROM sessions WHERE id IN ({placeholders})', id_tuple)
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
     def delete_session(self, body):
         profile = self.settings['HERMES_PROFILE']
         if body.get('profile') != profile:
@@ -443,12 +500,68 @@ class NativeChat:
             raise RuntimeError('This conversation is not available in the connected profile. Refresh the library.')
         # Profile comes from the server's listing, never a client-selected path.
         target_profile = target_info.get('profile') or profile
-        if (target_profile == getattr(self, 'active_profile', profile)
-                and self.stored in {target, target_info.get('resolved_id')} and self.stored):
-            raise RuntimeError('Open another conversation before deleting this one.')
-        result = self.rpc('session.delete', {'profile': target_profile, 'session_id': target})
-        if result.get('deleted') != target:
-            raise RuntimeError('Deletion could not be confirmed. Refresh the library before trying again.')
+        resolved = target_info.get('resolved_id')
+        target_ids = {x for x in (target, resolved) if x}
+        active_profile = getattr(self, 'active_profile', profile)
+        is_active = bool(target_profile == active_profile and self.stored and self.stored in target_ids)
+        if is_active and self.info.get('running'):
+            raise RuntimeError('Finish the current reply before deleting this conversation.')
+
+        prev_stored = None if is_active else self.stored
+        prev_profile = active_profile
+
+        deleted_ok = False
+        last_error = None
+        if not is_active:
+            try:
+                result = self.rpc('session.delete', {'profile': target_profile, 'session_id': target})
+                deleted_ok = result.get('deleted') in target_ids
+            except Exception as exc:
+                last_error = exc
+
+        if not deleted_ok:
+            if self.info.get('running'):
+                raise RuntimeError(str(last_error or 'Finish the current reply before deleting this conversation.'))
+            # Recycle the gateway subprocess to release any in-memory session handles
+            # left loaded from earlier switches (e.g. Bot Chat or resumed threads).
+            self.close()
+            self.start()
+            for candidate_id in [target] + ([resolved] if resolved and resolved != target else []):
+                try:
+                    result = self.rpc('session.delete', {'profile': target_profile, 'session_id': candidate_id})
+                    if result.get('deleted') in target_ids:
+                        deleted_ok = True
+                except Exception as exc:
+                    last_error = exc
+            if not deleted_ok:
+                deleted_ok = self._delete_session_sqlite(target_profile, target_ids)
+            if prev_stored:
+                try:
+                    resumed = self.resume(prev_profile, prev_stored)
+                    with self.guard:
+                        self.sid = resumed['session_id']
+                        self.stored = resumed.get('stored_session_id') or resumed.get('session_key') or self.sid
+                        self.info = resumed.get('info', {})
+                        self.active_profile = prev_profile
+                except Exception:
+                    pass
+
+        remaining = self.sessions()['sessions']
+        still_present = any(
+            (s.get('profile') or profile) == target_profile
+            and (s.get('id') in target_ids or (s.get('resolved_id') and s.get('resolved_id') in target_ids))
+            for s in remaining
+        )
+        if still_present:
+            if self._delete_session_sqlite(target_profile, target_ids):
+                remaining = self.sessions()['sessions']
+                still_present = any(
+                    (s.get('profile') or profile) == target_profile
+                    and (s.get('id') in target_ids or (s.get('resolved_id') and s.get('resolved_id') in target_ids))
+                    for s in remaining
+                )
+        if still_present:
+            raise RuntimeError(str(last_error or 'Deletion could not be confirmed. Refresh the library before trying again.'))
         return {'deleted': target, 'profile': profile, 'protocol': 1}
 
     def switch_session(self, body):
@@ -458,6 +571,8 @@ class NativeChat:
             current = self.snapshot(0)
             if current['info'].get('running') or current['approvals'] or current['requests']:
                 raise RuntimeError('Finish the current reply and pending questions before changing conversations.')
+        old_sid = self.sid
+        old_profile = getattr(self, 'active_profile', None) or self.settings['HERMES_PROFILE']
         profile = self.settings['HERMES_PROFILE']
         if body['action'] == 'session_open':
             target = body.get('session_id')
@@ -474,6 +589,11 @@ class NativeChat:
             session = self.rpc('session.create', {'profile': profile, 'title': title,
                                'source': 'desktop', 'follow_profile_config': True}, timeout=60)
             sess_profile = profile
+        if old_sid and old_sid != session['session_id']:
+            try:
+                self.rpc('session.close', {'session_id': old_sid, 'profile': old_profile}, timeout=5)
+            except Exception:
+                pass
         with self.guard:
             self.sid = session['session_id']
             self.stored = session.get('stored_session_id') or session.get('session_key') or self.sid
