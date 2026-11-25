@@ -54,7 +54,7 @@ class WorkspaceToolsTests(unittest.TestCase):
         self.assertIn('delete', submissions_tool['properties']['action']['enum'])
         social_tool = TOOLS['mcp__michael_os__manage_social']['schema']['parameters']
         self.assertEqual(['action'], social_tool['required'])
-        self.assertEqual(['create_invite', 'list_outside_posts', 'include_post', 'remove_post', 'delete_post', 'set_post_auto_chat', 'approval_alerts_status', 'configure_approval_alerts', 'resend_approval_alert', 'retry_post'], social_tool['properties']['action']['enum'])
+        self.assertEqual(['create_invite', 'list_outside_posts', 'include_post', 'remove_post', 'delete_post', 'set_post_auto_chat', 'approval_alerts_status', 'configure_approval_alerts', 'resend_approval_alert', 'retry_post', 'list_revision_requests', 'request_post_changes', 'submit_post_revision', 'skip_post_revision'], social_tool['properties']['action']['enum'])
         self.assertIs(TOOLS['mcp__michael_os__social_media']['check_fn'], client.owner_tools_available)
         self.assertNotIn('publish_post', TOOLS['mcp__michael_os__social_media']['schema']['parameters']['properties']['operation']['enum'])
         self.assertEqual('boolean', social_tool['properties']['enabled']['type'])

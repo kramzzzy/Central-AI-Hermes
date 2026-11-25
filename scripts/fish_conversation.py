@@ -70,9 +70,11 @@ MANAGE_CRM_TOOL = {
 
 MANAGE_SOCIAL_TOOL = {
     'tool_type': 'client', 'name': 'manage_social',
-    'description': "Facebook & Instagram client invites and Social Media Post controls. AI agents ONLY respond to comments on posts listed in Social Media Post; unlisted posts receive no AI responses. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page; tell the owner the link was created and offer to text it. Only create an invite when the owner asks. action='set_post_auto_chat' toggles enquiry-agent auto-chat on comments for one listed post (enabled true/false; default false so only the community agent replies publicly). action='approval_alerts_status', 'configure_approval_alerts', and 'resend_approval_alert' inspect, configure, or resend WhatsApp social post approval alerts.",
+    'description': "Facebook & Instagram client invites and Social Media Post controls. AI agents ONLY respond to comments on posts listed in Social Media Post; unlisted posts receive no AI responses. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page; tell the owner the link was created and offer to text it. Only create an invite when the owner asks. action='set_post_auto_chat' toggles enquiry-agent auto-chat on comments for one listed post (enabled true/false; default false so only the community agent replies publicly). action='approval_alerts_status', 'configure_approval_alerts', and 'resend_approval_alert' inspect, configure, or resend WhatsApp social post approval alerts. When the owner rejects a draft, use action='request_post_changes' (code); if they have not said what to change, ask them, then action='submit_post_revision' (code, feedback) so the social agent revises it and sends it back for approval. action='skip_post_revision' (code) drops it; 'list_revision_requests' shows drafts waiting for changes.",
     'arguments': [
-        {'name': 'action', 'description': 'create_invite, list_outside_posts, include_post, remove_post, delete_post, set_post_auto_chat, approval_alerts_status, configure_approval_alerts, or resend_approval_alert. Delete only after the owner explicitly confirms permanent removal from both App OS and the platform.'},
+        {'name': 'action', 'description': 'create_invite, list_outside_posts, include_post, remove_post, delete_post, set_post_auto_chat, approval_alerts_status, configure_approval_alerts, resend_approval_alert, list_revision_requests, request_post_changes, submit_post_revision, or skip_post_revision. Delete only after the owner explicitly confirms permanent removal from both App OS and the platform.'},
+        {'name': 'code', 'description': 'Social post code like SP-AB12 for request_post_changes, submit_post_revision, or skip_post_revision (empty otherwise).'},
+        {'name': 'feedback', 'description': "The owner's requested changes in their own words for submit_post_revision or request_post_changes (empty otherwise)."},
         {'name': 'platform', 'description': 'facebook or instagram for include_post/set_post_auto_chat; all for listing.'},
         {'name': 'account', 'description': 'Connected account ID; empty for listing all accounts.'},
         {'name': 'post', 'description': 'Exact post ID for include_post, remove_post, delete_post, or set_post_auto_chat; empty for listing.'},
@@ -532,7 +534,7 @@ class NativeTaskBridge:
                 return {'type': 'client_tool.result', 'callId': call_id, 'isError': True,
                         'result': {'status': 'inactive_call'}}
             from hermes_plugins.central_ai_app_os.client import manage_social as _manage_social
-            payload = {k: params[k] for k in ('action', 'platform', 'account', 'post', 'run_id') if params.get(k) not in ('', None)}
+            payload = {k: params[k] for k in ('action', 'platform', 'account', 'post', 'run_id', 'code', 'feedback') if params.get(k) not in ('', None)}
             if payload.get('action') == 'delete_post':
                 payload['confirmed'] = params.get('confirmed') is True or params.get('confirmed') == 'true'
             elif payload.get('action') in ('set_post_auto_chat', 'configure_approval_alerts') and params.get('enabled') not in ('', None):
@@ -540,7 +542,7 @@ class NativeTaskBridge:
                 payload['enabled'] = val if isinstance(val, bool) else str(val).strip().lower() == 'true'
             if payload.get('action') == 'configure_approval_alerts' and isinstance(params.get('approver_user_ids'), list):
                 payload['approver_user_ids'] = params.get('approver_user_ids')
-            if payload.get('action') == 'resend_approval_alert' and params.get('step') not in ('', None, 0, '0'):
+            if payload.get('action') in ('resend_approval_alert', 'request_post_changes') and params.get('step') not in ('', None, 0, '0'):
                 try:
                     payload['step'] = int(params.get('step'))
                 except Exception:
