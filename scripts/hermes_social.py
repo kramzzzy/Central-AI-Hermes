@@ -155,7 +155,7 @@ def slugify_handle(name):
 
 
 class SocialWorkspace:
-    def __init__(self, root, transport=provider_request, clock=time.time):
+    def __init__(self, root, transport=provider_request, clock=time.time, sleeper=time.sleep):
         profile_root = os.environ.get("HERMES_PROFILE_ROOT")
         if profile_root and Path(profile_root).is_dir():
             base_root = Path(profile_root)
@@ -167,6 +167,7 @@ class SocialWorkspace:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.transport = transport
         self.clock = clock
+        self.sleeper = sleeper
         self.lock = threading.RLock()
         # (org, platform, account, sender) -> (display name, expiry). Name lookups are best-effort.
         self._names = {}
@@ -1306,11 +1307,11 @@ class SocialWorkspace:
 
             if token and token != "box1_managed_session":
                 if platform == "instagram":
-                    ig_conn = page.get("instagram_business_account")
-                    if not ig_conn:
-                        raise SocialError("Instagram Business is not linked.", 409)
+                    ig_conn = page.get("instagram_business_account") or page.get("connected_instagram_account")
+                    if not isinstance(ig_conn, dict) or not ig_conn.get("id"):
+                        raise SocialError("Instagram Business is not linked.", 409, rejected=True)
                     if not image_url:
-                        raise SocialError("Instagram publishing requires an image_url.", 400)
+                        raise SocialError("Instagram publishing requires an image_url.", 400, rejected=True)
                     ig_id = ig_conn["id"]
                     ig_token = token
                     container = self.transport(
@@ -1326,19 +1327,78 @@ class SocialWorkspace:
                     creation_id = container.get("id")
                     if not creation_id:
                         raise SocialError("Meta did not create the media container.", 502)
-                    published = self.transport(
-                        f"{GRAPH_BASE}/{urllib.parse.quote(str(ig_id))}/media_publish",
-                        method="POST",
-                        data={"creation_id": creation_id, "access_token": ig_token},
-                        form=True,
-                    )
-                    if not published.get("id"):
+                    # Wait until Instagram finishes fetching/processing the image container before calling media_publish.
+                    for poll_idx in range(12):
+                        try:
+                            status_res = self.transport(
+                                f"{GRAPH_BASE}/{urllib.parse.quote(str(creation_id))}?fields=status_code,status",
+                                token=ig_token,
+                                timeout=10,
+                            )
+                        except SocialError:
+                            break
+                        code = str(status_res.get("status_code") or "").upper() if isinstance(status_res, dict) else ""
+                        if not code or code in ("FINISHED", "PUBLISHED"):
+                            break
+                        if code in ("ERROR", "EXPIRED"):
+                            detail = str(status_res.get("status") or "").strip()
+                            raise SocialError(
+                                detail or "Instagram rejected the image container. Ensure the image is a public JPEG with 4:5 to 1.91:1 aspect ratio.",
+                                400,
+                                rejected=True,
+                            )
+                        if poll_idx < 11:
+                            self.sleeper(min(2.0, 0.5 + poll_idx * 0.25))
+                    else:
+                        raise SocialError(
+                            "Instagram media container is still processing. Retry shortly.",
+                            502,
+                            rejected=True,
+                        )
+                    published = None
+                    for pub_attempt in range(3):
+                        try:
+                            published = self.transport(
+                                f"{GRAPH_BASE}/{urllib.parse.quote(str(ig_id))}/media_publish",
+                                method="POST",
+                                data={"creation_id": creation_id, "access_token": ig_token},
+                                form=True,
+                            )
+                            break
+                        except SocialError as exc:
+                            err_lower = str(exc).lower()
+                            is_not_ready = exc.rejected and (
+                                "not ready" in err_lower
+                                or "media id is not available" in err_lower
+                                or "9007" in err_lower
+                            )
+                            if is_not_ready and pub_attempt < 2:
+                                self.sleeper(2.0 * (pub_attempt + 1))
+                                continue
+                            raise
+                    if not isinstance(published, dict) or not published.get("id"):
                         raise SocialError("Meta did not confirm publication.", 502)
+                    post_id = str(published["id"])
+                    post_url = ""
+                    media_preview = ""
+                    try:
+                        meta_post = self.transport(
+                            f"{GRAPH_BASE}/{urllib.parse.quote(post_id)}?fields=permalink,media_url",
+                            token=ig_token,
+                            timeout=6,
+                        )
+                        if isinstance(meta_post, dict):
+                            post_url = str(meta_post.get("permalink") or "")
+                            media_preview = str(meta_post.get("media_url") or "")
+                    except Exception:
+                        pass
                     return {
                         "ok": True,
                         "platform": "instagram",
-                        "account_name": ig_conn.get("account_name"),
-                        "post_id": published.get("id"),
+                        "account_name": ig_conn.get("name") or ig_conn.get("username") or conn.get("account_name"),
+                        "post_id": post_id,
+                        **({"url": post_url} if post_url else {}),
+                        **({"image_url": media_preview} if media_preview else {}),
                     }
 
                 if image_url:
@@ -1360,15 +1420,33 @@ class SocialWorkspace:
                     )
                 if not (res.get("id") or res.get("post_id")):
                     raise SocialError("Meta did not confirm publication.", 502)
+                post_id = str(res.get("post_id") or res.get("id"))
+                post_url = f"https://www.facebook.com/{post_id}"
+                media_preview = ""
+                try:
+                    meta_post = self.transport(
+                        f"{GRAPH_BASE}/{urllib.parse.quote(post_id)}?fields=permalink_url,full_picture",
+                        token=token,
+                        timeout=6,
+                    )
+                    if isinstance(meta_post, dict):
+                        if meta_post.get("permalink_url"):
+                            post_url = str(meta_post["permalink_url"])
+                        if meta_post.get("full_picture"):
+                            media_preview = str(meta_post["full_picture"])
+                except Exception:
+                    pass
                 return {
                     "ok": True,
                     "platform": "facebook",
                     "page_id": page_id,
-                    "page_name": conn.get("account_name"),
-                    "post_id": res.get("post_id") or res.get("id"),
+                    "page_name": page.get("name") or conn.get("account_name"),
+                    "post_id": post_id,
+                    "url": post_url,
+                    **({"image_url": media_preview} if media_preview else {}),
                 }
 
-            raise SocialError("Reconnect this account before publishing.", 409)
+            raise SocialError("Reconnect this account before publishing.", 409, rejected=True)
 
         if operation in ("reply_comment", "comment"):
             conn = self.get_connection(org, "facebook")
@@ -1865,37 +1943,57 @@ class SocialWorkspace:
         def save(value):
             with self.database() as db:
                 db.execute("UPDATE social_deliveries SET encrypted=? WHERE org=? AND id=?", (self.encrypt(value) if value else None, org, identity))
+        def clear_delivery():
+            with self.database() as db:
+                db.execute("DELETE FROM social_deliveries WHERE org=? AND id=?", (org, identity))
         platform = body.get("platform")
+        ig_acct = page.get("instagram_business_account") or page.get("connected_instagram_account")
+        if platform == "instagram" and (not isinstance(ig_acct, dict) or not ig_acct.get("id")):
+            clear_delivery()
+            raise SocialError("Instagram Business is not linked.", 409, rejected=True)
         if not state:
-            if platform == "instagram":
-                account = page["instagram_business_account"]["id"]
-                created = self.transport(f"{GRAPH_BASE}/{account}/media", method="POST", token=token,
-                    data={"media_type":"REELS", "video_url":url, "caption":body["message"]}, form=True)
-                video = created.get("id")
-            else:
-                created = self.transport(f"{GRAPH_BASE}/{page['id']}/video_reels", method="POST", token=token,
-                    data={"upload_phase":"start"}, form=True)
-                video = created.get("video_id")
-                if not video or not str(video).isdigit():
-                    raise SocialError("Meta did not create a Reel upload.", 502)
-                uploaded = self.transport(f"https://rupload.facebook.com/video-upload/{GRAPH_API_VERSION}/{video}",
-                    method="POST", token=token, headers_extra={"file_url":url,"Authorization":"OAuth " + token})
-                if not uploaded.get("success"):
-                    raise SocialError("Meta did not confirm the Reel upload.", 502)
-            if not video:
-                raise SocialError("Meta did not create a Reel container.", 502)
+            try:
+                if platform == "instagram":
+                    account = ig_acct["id"]
+                    created = self.transport(f"{GRAPH_BASE}/{account}/media", method="POST", token=token,
+                        data={"media_type":"REELS", "video_url":url, "caption":body["message"]}, form=True)
+                    video = created.get("id")
+                else:
+                    created = self.transport(f"{GRAPH_BASE}/{page['id']}/video_reels", method="POST", token=token,
+                        data={"upload_phase":"start"}, form=True)
+                    video = created.get("video_id")
+                    if not video or not str(video).isdigit():
+                        raise SocialError("Meta did not create a Reel upload.", 502)
+                    uploaded = self.transport(f"https://rupload.facebook.com/video-upload/{GRAPH_API_VERSION}/{video}",
+                        method="POST", token=token, headers_extra={"file_url":url,"Authorization":"OAuth " + token})
+                    if not uploaded.get("success"):
+                        raise SocialError("Meta did not confirm the Reel upload.", 502)
+                if not video:
+                    raise SocialError("Meta did not create a Reel container.", 502)
+            except SocialError as exc:
+                if exc.rejected:
+                    clear_delivery()
+                raise
             state = {"processing":True,"video_id":video}
             save(state)
         video = state["video_id"]
         if platform == "instagram":
-            status = self.transport(f"{GRAPH_BASE}/{video}?fields=status_code", token=token).get("status_code")
+            status_obj = self.transport(f"{GRAPH_BASE}/{video}?fields=status_code,status", token=token)
+            status = status_obj.get("status_code") if isinstance(status_obj, dict) else None
             if status in ("ERROR","EXPIRED"):
-                raise SocialError("Meta rejected the Reel. Review its format and duration.", 400)
+                clear_delivery()
+                detail = str(status_obj.get("status") or "").strip() if isinstance(status_obj, dict) else ""
+                raise SocialError(detail or "Meta rejected the Reel. Review its format and duration.", 400, rejected=True)
             if status != "FINISHED":
                 return state
             save(None) # A timeout during final publication must not cause a duplicate.
-            result = self.transport(f"{GRAPH_BASE}/{page['instagram_business_account']['id']}/media_publish",
-                method="POST", token=token, data={"creation_id":video}, form=True)
+            try:
+                result = self.transport(f"{GRAPH_BASE}/{ig_acct['id']}/media_publish",
+                    method="POST", token=token, data={"creation_id":video}, form=True)
+            except SocialError as exc:
+                if exc.rejected:
+                    clear_delivery()
+                raise
             if not result.get("id"):
                 raise SocialError("Meta did not confirm Reel publication.", 502)
             result = {"ok":True,"post_id":result["id"]}
@@ -1903,17 +2001,26 @@ class SocialWorkspace:
             status = self.transport(f"{GRAPH_BASE}/{video}?fields=status", token=token).get("status", {})
             if state.get("submitted"):
                 if status.get("publishing_phase", {}).get("status") == "complete":
-                    result = {"ok":True,"post_id":video}
-                elif status.get("video_status") == "error":
-                    raise SocialError("Meta could not publish this Reel.", 400)
+                    result = {"ok":True,"post_id":video,"url":f"https://www.facebook.com/reel/{video}"}
+                elif status.get("video_status") == "error" or status.get("publishing_phase", {}).get("status") == "error":
+                    clear_delivery()
+                    raise SocialError("Meta could not publish this Reel.", 400, rejected=True)
                 else:
                     return state
             else:
+                if status.get("uploading_phase", {}).get("status") == "error" or status.get("processing_phase", {}).get("status") == "error":
+                    clear_delivery()
+                    raise SocialError("Meta rejected the Reel video upload. Verify the MP4 format and public HTTPS URL.", 400, rejected=True)
                 if status.get("uploading_phase", {}).get("status") in ("in_progress", "not_started"):
                     return state
                 save(None)
-                result = self.transport(f"{GRAPH_BASE}/{page['id']}/video_reels", method="POST", token=token,
-                    data={"upload_phase":"finish","video_id":video,"video_state":"PUBLISHED","description":body["message"]}, form=True)
+                try:
+                    result = self.transport(f"{GRAPH_BASE}/{page['id']}/video_reels", method="POST", token=token,
+                        data={"upload_phase":"finish","video_id":video,"video_state":"PUBLISHED","description":body["message"]}, form=True)
+                except SocialError as exc:
+                    if exc.rejected:
+                        clear_delivery()
+                    raise
                 if not result.get("success"):
                     raise SocialError("Meta did not accept Reel publication.", 502)
                 state["submitted"] = True

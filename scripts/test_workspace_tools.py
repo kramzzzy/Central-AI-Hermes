@@ -54,7 +54,9 @@ class WorkspaceToolsTests(unittest.TestCase):
         self.assertIn('delete', submissions_tool['properties']['action']['enum'])
         social_tool = TOOLS['mcp__michael_os__manage_social']['schema']['parameters']
         self.assertEqual(['action'], social_tool['required'])
-        self.assertEqual(['create_invite', 'list_outside_posts', 'include_post', 'remove_post', 'delete_post', 'set_post_auto_chat', 'approval_alerts_status', 'configure_approval_alerts', 'resend_approval_alert'], social_tool['properties']['action']['enum'])
+        self.assertEqual(['create_invite', 'list_outside_posts', 'include_post', 'remove_post', 'delete_post', 'set_post_auto_chat', 'approval_alerts_status', 'configure_approval_alerts', 'resend_approval_alert', 'retry_post'], social_tool['properties']['action']['enum'])
+        self.assertIs(TOOLS['mcp__michael_os__social_media']['check_fn'], client.owner_tools_available)
+        self.assertNotIn('publish_post', TOOLS['mcp__michael_os__social_media']['schema']['parameters']['properties']['operation']['enum'])
         self.assertEqual('boolean', social_tool['properties']['enabled']['type'])
         self.assertEqual('array', social_tool['properties']['approver_user_ids']['type'])
         self.assertEqual('string', social_tool['properties']['run_id']['type'])
@@ -78,10 +80,13 @@ class WorkspaceToolsTests(unittest.TestCase):
                 self.assertTrue(json.loads(client.manage_social({'action':'configure_approval_alerts','enabled':True,'approver_user_ids':['u1','u2']}))['ok'])
                 self.assertEqual(call.call_args.args[0], 'central_ai_manage_social')
                 self.assertEqual(call.call_args.args[1]['approver_user_ids'], ['u1','u2'])
+                self.assertTrue(json.loads(client.social_media({'operation':'status'}))['ok'])
+                self.assertEqual(call.call_args.args[0], 'central_ai_social_media')
+                self.assertIn('error', json.loads(client.social_media({'operation':'publish_post','message':'bypass'})))
                 for config in ['phone_business_context: true', 'os_specialist: {id: fixture}']:
                     (home/'config.yaml').write_text(config)
                     call.reset_mock()
-                    for tool in (client.generate_image, client.manage_video, client.manage_communications, client.manage_tasks, client.manage_social):
+                    for tool in (client.generate_image, client.manage_video, client.manage_communications, client.manage_tasks, client.manage_social, client.social_media):
                         self.assertIn('error', json.loads(tool({})))
                     self.assertIn('error', json.loads(client.inspect_workspace({'section':'communications'})))
                     call.assert_not_called()

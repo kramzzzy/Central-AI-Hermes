@@ -318,7 +318,8 @@ def generate_social_image(body):
             pass
     if not key or key.startswith('sk-or-v1-standalone-default'):
         raise ArtworkError('Configure OPENROUTER_API_KEY on Box 1 to generate social images.', 503)
-    model = os.environ.get('SOCIAL_IMAGE_MODEL', '').strip() or 'google/gemini-nano-banana-2.1'
+    raw_model = os.environ.get('SOCIAL_IMAGE_MODEL', '').strip()
+    model = 'google/gemini-2.5-flash-image' if (not raw_model or raw_model == 'google/gemini-nano-banana-2.1') else raw_model
     references = body.get('references', [])
     if not isinstance(references, list) or len(references) > 6:
         raise ArtworkError('Use up to 6 reference images.', 400)

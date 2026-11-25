@@ -423,18 +423,18 @@ TOOLS = {
     },
     "mcp__michael_os__social_media": {
         "handler": social_media,
-        "check_fn": None,
+        "check_fn": owner_tools_available,
         "emoji": "📣",
-        "description": "Manage connected Social Media Pages (Facebook Page, Instagram Business, TikTok, LinkedIn) authorized in Settings -> Connection.",
+        "description": "Inspect connected Social Media Pages (Facebook Page, Instagram Business) and read posts authorized in Settings -> Connection.",
         "schema": {
             "name": "mcp__michael_os__social_media",
-            "description": "Access and control connected Social Media accounts (Facebook Page, Instagram Business, TikTok, LinkedIn) authorized in Settings -> Connection. Operations: 'status' (check connected pages), 'list_posts' (read recent Facebook Page posts and engagement), 'publish_post' (publish a post or photo to Facebook Page or Instagram Business), 'reply_comment' (reply to a post or comment).",
+            "description": "Inspect connected Social Media accounts (Facebook Page, Instagram Business) authorized in Settings -> Connection. Operations: 'status' (check connected pages and auth errors), 'accounts' (exact connected account IDs), 'list_posts' (read recent Facebook Page posts and engagement), 'reply_comment' (reply to a post or comment). Publishing new posts must go through manage_tasks(action='create', agent='social_media') and human Approvals.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["status", "list_posts", "publish_post", "reply_comment"],
+                        "enum": ["status", "accounts", "list_posts", "reply_comment"],
                         "description": "Social media operation to perform.",
                     },
                     "platform": {
@@ -444,19 +444,15 @@ TOOLS = {
                     },
                     "message": {
                         "type": "string",
-                        "description": "Post text content, caption, or comment reply text.",
-                    },
-                    "link": {
-                        "type": "string",
-                        "description": "Optional URL link to attach when publishing a Facebook Page post.",
-                    },
-                    "image_url": {
-                        "type": "string",
-                        "description": "Optional public image URL when publishing a photo post to Facebook or Instagram.",
+                        "description": "Comment reply text when operation='reply_comment'.",
                     },
                     "target_id": {
                         "type": "string",
                         "description": "Post ID or Comment ID when replying with operation='reply_comment'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Optional post limit (1-25) when operation='list_posts'.",
                     },
                 },
                 "required": ["operation"],
@@ -529,8 +525,8 @@ for tool_name, handler, description, properties, required in [
      "Add a website Contact/Quote form submission to the CRM as a qualified lead (action='qualify'), reply by email using the workspace's branded Mailing template (action='reply', message, subject?, assigned_name?), or set its status (action='status', status new|processing|contacted|spam; spam closes its CRM opportunity as lost). Delete an enquiry only when explicitly requested with action='delete'; existing CRM records and sent emails remain. Read submissions first with inspect_workspace(section='submissions').",
      {"action": {"type": "string", "enum": ["qualify", "status", "reply", "delete"]}, "id": {"type": "string"}, "status": {"type": "string", "enum": ["new", "processing", "contacted", "spam"]}, "message": {"type": "string", "maxLength": 4000}, "subject": {"type": "string", "maxLength": 200}, "assigned_name": {"type": "string", "maxLength": 140}}, ["action", "id"]),
     ("manage_social", manage_social,
-     "Facebook & Instagram client invites and Social Media Post controls. AI agents ONLY respond to comments on posts listed in Social Media Post; unlisted posts receive no AI responses. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one. list_outside_posts browses posts excluded from the grid (search/platform/account/offset, refresh/older). remove_post (platform/account/post) hides the card and stops AI comment responses without deleting the published post; include_post restores it. set_post_auto_chat (platform/account/post, enabled=true|false) toggles whether the enquiry agent can auto-DM commenters on a listed post (default false: only the community agent replies publicly to comments). approval_alerts_status inspects WhatsApp social post approval alert settings, eligible approvers, and pending alert codes. configure_approval_alerts (enabled?, approver_user_ids?) enables/disables WhatsApp post approval alerts or chooses authorized approver user_ids. resend_approval_alert (run_id, step) sends/resends the WhatsApp approval alert for a pending social post. delete_post (platform/account/post, confirmed=true) permanently deletes from both App OS and the social platform only after explicit user confirmation of both destinations. include_post adds the explicitly requested platform/account/post without publishing.",
-     {"action": {"type": "string", "enum": ["create_invite", "list_outside_posts", "include_post", "remove_post", "delete_post", "set_post_auto_chat", "approval_alerts_status", "configure_approval_alerts", "resend_approval_alert"]}, "platform":{"type":"string","enum":["all","facebook","instagram"]}, "account":{"type":"string"}, "post":{"type":"string"}, "search":{"type":"string"}, "offset":{"type":"integer"}, "refresh":{"type":"boolean"}, "older":{"type":"boolean"}, "confirmed":{"type":"boolean"}, "enabled":{"type":"boolean"}, "approver_user_ids":{"type":"array","items":{"type":"string"}}, "run_id":{"type":"string"}, "step":{"type":"integer"}}, ["action"]),
+     "Facebook & Instagram client invites and Social Media Post controls. AI agents ONLY respond to comments on posts listed in Social Media Post; unlisted posts receive no AI responses. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one. list_outside_posts browses posts excluded from the grid (search/platform/account/offset, refresh/older). remove_post (platform/account/post) hides the card and stops AI comment responses without deleting the published post; include_post restores it. set_post_auto_chat (platform/account/post, enabled=true|false) toggles whether the enquiry agent can auto-DM commenters on a listed post (default false: only the community agent replies publicly to comments). approval_alerts_status inspects WhatsApp social post approval alert settings, eligible approvers, and pending alert codes. configure_approval_alerts (enabled?, approver_user_ids?) enables/disables WhatsApp post approval alerts or chooses authorized approver user_ids. resend_approval_alert (run_id, step) sends/resends the WhatsApp approval alert for a pending social post. retry_post (run_id, step, confirmed=true) retries publishing a failed ('needs_attention') post after explicit owner confirmation. delete_post (platform/account/post, confirmed=true) permanently deletes from both App OS and the social platform only after explicit user confirmation of both destinations. include_post adds the explicitly requested platform/account/post without publishing.",
+     {"action": {"type": "string", "enum": ["create_invite", "list_outside_posts", "include_post", "remove_post", "delete_post", "set_post_auto_chat", "approval_alerts_status", "configure_approval_alerts", "resend_approval_alert", "retry_post"]}, "platform":{"type":"string","enum":["all","facebook","instagram"]}, "account":{"type":"string"}, "post":{"type":"string"}, "search":{"type":"string"}, "offset":{"type":"integer"}, "refresh":{"type":"boolean"}, "older":{"type":"boolean"}, "confirmed":{"type":"boolean"}, "enabled":{"type":"boolean"}, "approver_user_ids":{"type":"array","items":{"type":"string"}}, "run_id":{"type":"string"}, "step":{"type":"integer"}}, ["action"]),
     ("manage_whatsapp_customer_line", manage_whatsapp_customer_line,
      "Inspect or update the Customer WhatsApp Line settings (enable/disable customer voice call answering, enable/disable public solar inquiry text auto-reply, or change the assigned customer inquiry agent).",
      {"action": {"type": "string", "enum": ["status", "update"]}, "auto_reply": {"type": "boolean"}, "calls_enabled": {"type": "boolean"}, "assigned_agent": {"type": "string"}}, []),

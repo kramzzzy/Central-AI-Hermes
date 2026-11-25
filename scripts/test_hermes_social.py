@@ -27,7 +27,7 @@ class SocialTests(unittest.TestCase):
             if url.endswith('/messages'): return {"message_id": "sent-1"}
             if url.endswith('/likes'): return {"success": True}
             return {"id": "real-post-1"}
-        self.social = SocialWorkspace(self.tmp.name, transport=provider, clock=lambda:self.now)
+        self.social = SocialWorkspace(self.tmp.name, transport=provider, clock=lambda:self.now, sleeper=lambda _: None)
         self.pages = [
             {"id":"101","name":"Page A","access_token":"token-A"},
             {"id":"202","name":"Page B","access_token":"token-B","instagram_business_account":{"id":"303","username":"business"}},
@@ -424,5 +424,57 @@ class SocialTests(unittest.TestCase):
         self.assertFalse(status["platforms"]["instagram"]["connected"])
         # Inbound customer DMs must still be accepted into the inbox while awaiting token reconnection.
         self.assertEqual(1, self.ingest(mid="m-while-expired")["accepted"])
+
+    def test_instagram_photo_waits_for_container_finished_and_retries_9007(self):
+        polls = []
+        publish_attempts = []
+        def provider(url, **kw):
+            if url.endswith('/303/media'):
+                return {"id": "container-77"}
+            if 'container-77?fields=status_code' in url:
+                polls.append(1)
+                return {"status_code": "IN_PROGRESS" if len(polls) < 2 else "FINISHED"}
+            if url.endswith('/303/media_publish'):
+                publish_attempts.append(1)
+                if len(publish_attempts) == 1:
+                    raise SocialError("Media ID is not available (9007)", 400, rejected=True)
+                return {"id": "ig-live-99"}
+            if 'ig-live-99?fields=permalink' in url:
+                return {"permalink": "https://www.instagram.com/p/LIVE99/", "media_url": "https://cdn.instagram.test/live99.jpg"}
+            return {"id": "real-post-1"}
+        self.social.transport = provider
+        res = self.social.handle({
+            "org": ORG,
+            "action": "publish_approved",
+            "platform": "instagram",
+            "account_id": "303",
+            "message": "Solar post",
+            "image_url": "https://example.test/photo.jpg",
+            "delivery_id": "post:ig-poll-1",
+        })
+        self.assertEqual("ig-live-99", res["post_id"])
+        self.assertEqual("https://www.instagram.com/p/LIVE99/", res["url"])
+        self.assertEqual(2, len(polls))
+        self.assertEqual(2, len(publish_attempts))
+
+    def test_rejected_reel_clears_delivery_lock_for_retry(self):
+        fail = True
+        def provider(url, **kw):
+            if fail and url.endswith('/303/media'):
+                raise SocialError("Invalid video format", 400, rejected=True)
+            if url.endswith('/303/media'):
+                return {"id": "reel-ok-1"}
+            if 'fields=status_code' in url:
+                return {"status_code": "FINISHED"}
+            if url.endswith('/303/media_publish'):
+                return {"id": "ig-reel-published"}
+            return {"id": "x"}
+        self.social.transport = provider
+        body = {"org": ORG, "action": "publish_approved", "platform": "instagram", "account_id": "303", "message": "Reel", "video_url": "https://example.test/reel.mp4", "delivery_id": "reel:retry-test"}
+        with self.assertRaises(SocialError):
+            self.social.handle(body)
+        fail = False
+        res = self.social.handle(body)
+        self.assertEqual("ig-reel-published", res["post_id"])
 
 if __name__ == '__main__': unittest.main()

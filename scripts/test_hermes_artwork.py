@@ -38,9 +38,17 @@ class SocialArtworkTests(unittest.TestCase):
         result = artwork.generate({'mode': 'social', 'prompt': prompt})
         payload = json.loads(opener.return_value.open.call_args.args[0].data)
         self.assertEqual(payload['messages'][1], {'role': 'user', 'content': [{'type': 'text', 'text': prompt}]})
-        self.assertEqual(payload['model'], 'google/gemini-nano-banana-2.1')
+        self.assertEqual(payload['model'], 'google/gemini-2.5-flash-image')
         self.assertEqual(result['data'][0]['model'], payload['model'])
         self.assertEqual(payload['image_config']['aspect_ratio'], '3:4')
+
+    @patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-only', 'SOCIAL_IMAGE_MODEL': 'google/gemini-nano-banana-2.1'})
+    @patch('hermes_artwork.urllib.request.build_opener')
+    def test_legacy_invalid_model_aliases_to_valid_openrouter_id(self, opener):
+        opener.return_value.open.return_value = self.response()
+        artwork.generate({'mode': 'social', 'prompt': 'Solar graphic'})
+        payload = json.loads(opener.return_value.open.call_args.args[0].data)
+        self.assertEqual(payload['model'], 'google/gemini-2.5-flash-image')
 
     @patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-only'})
     @patch('hermes_artwork.urllib.request.build_opener')

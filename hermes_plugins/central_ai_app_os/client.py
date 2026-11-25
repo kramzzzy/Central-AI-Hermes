@@ -964,25 +964,47 @@ def google_workspace(arguments=None, **kwargs):
 
 
 def social_media(arguments=None, **kwargs):
+    if not owner_tools_available():
+        return json.dumps({"error": "Owner workspace access required."})
     params = dict(arguments or kwargs or {})
     operation = str(params.get("operation") or "status").strip().lower()
+    if operation in ("publish_post", "facebook_post", "create_post"):
+        return json.dumps({
+            "error": "Direct unapproved publishing is disabled. Create a Social Media task via manage_tasks(action='create', agent='social_media') so an authorized approver confirms in Approvals or via WhatsApp."
+        })
     args = params.get("args") if isinstance(params.get("args"), dict) else {}
     if not args:
         extra = {k: v for k, v in params.items() if k not in ("operation", "args") and v is not None}
         if extra:
             args = extra
+    raw = _call_app_os_mcp("central_ai_social_media", {"operation": operation, **args}, timeout=20, retry=operation in ("status", "accounts", "list_posts"))
+    if raw:
+        return raw
     try:
         import sys
         from pathlib import Path
         scripts_dir = str(Path(__file__).resolve().parent.parent.parent / "scripts")
         if scripts_dir not in sys.path:
             sys.path.insert(0, scripts_dir)
-        from hermes_social import SocialWorkspace, SocialError
+        from hermes_social import SocialWorkspace
         root = Path(os.environ.get("HERMES_PROFILE_ROOT", "/opt/data"))
         if not root.is_dir():
             root = Path(__file__).resolve().parent.parent.parent / ".runtime"
+        snap = _load_box3_snapshot() or {}
+        org_id = (
+            os.environ.get("HERMES_CHAT_ORG_ID", "").strip()
+            or str((snap.get("organization") or {}).get("id") or "").strip()
+        )
         sw = SocialWorkspace(root)
-        result = sw.handle({"action": "tool", "operation": operation, "args": args, **args})
+        if not org_id:
+            with sw.database() as conn_db:
+                rows = conn_db.execute("SELECT DISTINCT org FROM connections WHERE platform='facebook' LIMIT 2").fetchall()
+            if len(rows) == 1:
+                org_id = str(rows[0]["org"])
+        if not org_id:
+            return json.dumps({"error": "Workspace organization ID could not be resolved. Check App OS connection."})
+        action = "accounts" if operation == "accounts" else "tool"
+        result = sw.handle({"org": org_id, "action": action, "operation": operation, "args": args, **args})
         return json.dumps(result)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
