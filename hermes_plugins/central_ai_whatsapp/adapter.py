@@ -1105,6 +1105,107 @@ def _forward_customer_whatsapp_to_box3(data: dict, home, is_customer_line: bool)
     return {'handled_by_box3': False}
 
 
+def _forward_social_approval_whatsapp_to_box3(data: dict, home, is_customer_line: bool) -> dict:
+    global _LAST_WORKING_BOX3_URL
+    if is_customer_line:
+        return {'handled': False}
+    try:
+        import os, socket, urllib.parse, urllib.request
+        msg_text = str(data.get('body') or '').strip()
+        sender_id = str(data.get('senderId') or '').strip()
+        if not msg_text or not sender_id:
+            return {'handled': False}
+
+        urls = []
+        if _LAST_WORKING_BOX3_URL:
+            urls.append(_LAST_WORKING_BOX3_URL)
+        for p in ('/data/app_os_url.json', '/opt/data/app_os_url.json', '/opt/os-adapter/.runtime/app_os_url.json'):
+            f = Path(p)
+            if f.is_file():
+                try:
+                    j = json.loads(f.read_text(encoding='utf-8'))
+                    if isinstance(j.get('urls'), list):
+                        urls.extend(str(u).rstrip('/') for u in j['urls'] if u)
+                    elif j.get('url'):
+                        urls.append(str(j['url']).rstrip('/'))
+                except Exception:
+                    pass
+        for env_k in ('APP_OS_URL', 'MICHAEL_OS_URL'):
+            v = os.environ.get(env_k, '').strip().rstrip('/')
+            if v:
+                urls.append(v)
+        urls.extend(['http://web:3000', 'http://127.0.0.1:3000'])
+        deduped = list(dict.fromkeys(u for u in urls if u.startswith('http')))
+
+        api_key = os.environ.get('HERMES_API_KEY', '').strip()
+        if not api_key and home:
+            try:
+                env_file = Path(home) / '.env'
+                if env_file.is_file():
+                    for line in env_file.read_text(encoding='utf-8').splitlines():
+                        if line.startswith('HERMES_API_KEY='):
+                            api_key = line.split('=', 1)[1].strip().strip('"\'')
+                            break
+            except Exception:
+                pass
+        if not api_key:
+            api_key = 'hermes_standalone_secret_token_32chars'
+
+        payload = json.dumps({
+            'sender_id': sender_id,
+            'sender_name': str(data.get('senderName') or ''),
+            'wire_chat': str(data.get('wireChat') or data.get('chatId') or ''),
+            'message_id': str(data.get('messageId') or ''),
+            'text': msg_text,
+            'quoted_message_id': str(data.get('quotedMessageId') or ''),
+            'quoted_text': str(data.get('quotedText') or ''),
+            'is_group': bool(data.get('isGroup')),
+            'line': 'executive',
+        }).encode('utf-8')
+
+        for base_url in deduped:
+            try:
+                parsed = urllib.parse.urlparse(base_url)
+                host = parsed.hostname
+                port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+                if not host:
+                    continue
+                if base_url != _LAST_WORKING_BOX3_URL:
+                    try:
+                        with socket.create_connection((host, port), timeout=0.8):
+                            pass
+                    except Exception:
+                        continue
+                req = urllib.request.Request(
+                    f'{base_url}/api/connections/whatsapp/social-approval',
+                    data=payload,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Bearer {api_key}',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CentralAI-Hermes/1.0',
+                    },
+                    method='POST',
+                )
+                with urllib.request.urlopen(req, timeout=25) as resp:
+                    if resp.status == 200:
+                        res_data = json.loads(resp.read().decode('utf-8'))
+                        if res_data.get('ok'):
+                            _LAST_WORKING_BOX3_URL = base_url
+                            return {
+                                'handled': bool(res_data.get('handled')),
+                                'reply': res_data.get('reply'),
+                                'decision': res_data.get('decision'),
+                                'code': res_data.get('code'),
+                            }
+            except Exception:
+                if base_url == _LAST_WORKING_BOX3_URL:
+                    _LAST_WORKING_BOX3_URL = ''
+                continue
+    except Exception as exc:
+        logging.error('Box 3 social approval WhatsApp forward error: %s', exc)
+    return {'handled': False}
+
+
 def _calculate_solar_pre_assessment(text: str) -> str:
     # Compatibility for deployed callers; calculations belong to explicit tools, not transport enrichment.
     return ''
@@ -1304,6 +1405,19 @@ def build_engine_adapter(route,member,home,group):
                                     'reply':None,
                                 })
                                 if not live_cfg['customer_auto_reply']:
+                                    await self._complete(data,'complete')
+                                    continue
+
+                            if not treat_as_customer and str(data.get('body') or '').strip():
+                                approval_res={'handled':False}
+                                try:
+                                    approval_res=await asyncio.to_thread(_forward_social_approval_whatsapp_to_box3,data,home,is_customer_line)
+                                except Exception:
+                                    approval_res={'handled':False}
+                                if approval_res.get('handled'):
+                                    reply_val=str(approval_res.get('reply') or '').strip()
+                                    if reply_val:
+                                        await self.send(data['chatId'],reply_val)
                                     await self._complete(data,'complete')
                                     continue
 

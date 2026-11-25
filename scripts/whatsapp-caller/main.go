@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -395,10 +396,14 @@ func main() {
 			return
 		}
 		var req struct {
-			Target  string `json:"target"`
-			Message string `json:"message"`
+			Target      string `json:"target"`
+			Message     string `json:"message"`
+			MediaBase64 string `json:"media_base64,omitempty"`
+			MediaType   string `json:"media_type,omitempty"`
+			Mimetype    string `json:"mimetype,omitempty"`
+			FileName    string `json:"file_name,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Target == "" || req.Message == "" {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 24*1024*1024)).Decode(&req); err != nil || req.Target == "" || (req.Message == "" && req.MediaBase64 == "") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Target and message are required."})
@@ -422,8 +427,42 @@ func main() {
 			targetJID = types.NewJID(cleanTarget, types.DefaultUserServer)
 		}
 		msg := &waE2E.Message{Conversation: proto.String(req.Message)}
-		sendCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		sendCtx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 		defer cancel()
+		if req.MediaBase64 != "" {
+			raw, decErr := base64.StdEncoding.DecodeString(req.MediaBase64)
+			if decErr == nil && len(raw) > 0 && len(raw) <= 16*1024*1024 {
+				waType := wa.MediaImage
+				switch strings.ToLower(strings.TrimSpace(req.MediaType)) {
+				case "video":
+					waType = wa.MediaVideo
+				case "document":
+					waType = wa.MediaDocument
+				default:
+					waType = wa.MediaImage
+				}
+				if uploaded, upErr := socket.Upload(sendCtx, raw, waType); upErr == nil {
+					mimeType := strings.TrimSpace(req.Mimetype)
+					if mimeType == "" {
+						mimeType = "image/png"
+					}
+					switch waType {
+					case wa.MediaVideo:
+						msg = &waE2E.Message{VideoMessage: &waE2E.VideoMessage{URL: proto.String(uploaded.URL), DirectPath: proto.String(uploaded.DirectPath), MediaKey: uploaded.MediaKey, FileSHA256: uploaded.FileSHA256, FileEncSHA256: uploaded.FileEncSHA256, FileLength: proto.Uint64(uint64(len(raw))), Mimetype: proto.String(mimeType), Caption: proto.String(req.Message)}}
+					case wa.MediaDocument:
+						fname := strings.TrimSpace(req.FileName)
+						if fname == "" {
+							fname = "attachment"
+						}
+						msg = &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{URL: proto.String(uploaded.URL), DirectPath: proto.String(uploaded.DirectPath), MediaKey: uploaded.MediaKey, FileSHA256: uploaded.FileSHA256, FileEncSHA256: uploaded.FileEncSHA256, FileLength: proto.Uint64(uint64(len(raw))), Mimetype: proto.String(mimeType), Caption: proto.String(req.Message), FileName: proto.String(filepath.Base(fname))}}
+					default:
+						msg = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{URL: proto.String(uploaded.URL), DirectPath: proto.String(uploaded.DirectPath), MediaKey: uploaded.MediaKey, FileSHA256: uploaded.FileSHA256, FileEncSHA256: uploaded.FileEncSHA256, FileLength: proto.Uint64(uint64(len(raw))), Mimetype: proto.String(mimeType), Caption: proto.String(req.Message)}}
+					}
+				} else {
+					log.Printf("outbound whatsapp media upload to %s failed (falling back to text): %v", cleanTarget, upErr)
+				}
+			}
+		}
 		resp, err := socket.SendMessage(sendCtx, targetJID, msg)
 		if err != nil && socket.Store != nil && socket.Store.LIDs != nil {
 			if targetJID.Server == "lid" {

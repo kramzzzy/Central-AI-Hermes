@@ -297,7 +297,7 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(401,{'error':'Unauthorized'})
    try:
     length=int(self.headers.get('Content-Length','0'))
-    max_len=2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/company','/os/whatsapp/customer-sync'} else (100000 if self.path in {'/google/tool','/os/whatsapp/send','/os/memory/retain','/os/memory/recall','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192))
+    max_len=20971520 if self.path=='/os/whatsapp/send' else (2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/company','/os/whatsapp/customer-sync'} else (100000 if self.path in {'/google/tool','/os/memory/retain','/os/memory/recall','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192)))
     if not 0<length<=max_len:return self.reply(413,{'error':'Tool request too large'})
     body=json.loads(self.rfile.read(length))
     if self.path=='/os/memory/retain':
@@ -407,33 +407,44 @@ class Handler(BaseHTTPRequestHandler):
        else:
         proc_map[reply_to_mid]={'message_id':reply_to_mid,'sending':True}
        _save_customer_processed(proc_map)
+     media_b64=str(body.get('media_base64') or '').strip()
+     media_type=str(body.get('media_type') or '').strip().lower()
+     mimetype=str(body.get('mimetype') or '').strip()
+     file_name=str(body.get('file_name') or '').strip()
      last_err=''
      for cu in caller_urls:
       for ct in candidate_targets:
-       try:
-        sreq=urllib.request.Request(f"{cu}/send",data=json.dumps({'target':ct,'message':message_text}).encode('utf-8'),headers={'Content-Type':'application/json'})
-        with urllib.request.urlopen(sreq,timeout=15) as sresp:
-         sdata=json.loads(sresp.read())
-         if reply_to_mid:
-          try:
-           with customer_wa_lock:
-            proc_map=_load_customer_processed()
-            if not isinstance(proc_map.get(reply_to_mid),dict):
-             proc_map[reply_to_mid]={'message_id':reply_to_mid}
-            proc_map[reply_to_mid]['reply']=message_text
-            proc_map[reply_to_mid]['replied']=True
-            proc_map[reply_to_mid]['sending']=False
-            proc_map[reply_to_mid]['handled']=True
-            _save_customer_processed(proc_map)
-          except Exception:pass
-         if line_pref in {'customer','james','support','booking'}:
-          try:
-           from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
-           threading.Thread(target=_retain_memory_item,args=(f"Human operator reply to {target_name} ({ct}): {message_text}",'Human Operator (Coaching)','customer-whatsapp','human_operator_coaching'),daemon=True).start()
-          except Exception:pass
-         return self.reply(200,{'ok':True,'message_id':sdata.get('message_id',''),'target':ct,'recipient_name':target_name,'line':cu,'message':f'WhatsApp message delivered to {target_name} ({ct}).'})
-       except Exception as err:
-        last_err=str(err)
+       send_payload={'target':ct,'message':message_text}
+       if media_b64 and media_type in {'image','video','document'}:
+        send_payload.update({'media_base64':media_b64,'media_type':media_type,'mimetype':mimetype or 'image/png'})
+        if file_name:
+         send_payload['file_name']=file_name
+       payload_variants=[send_payload,{'target':ct,'message':message_text}] if 'media_base64' in send_payload else [send_payload]
+       for variant in payload_variants:
+        try:
+         sreq=urllib.request.Request(f"{cu}/send",data=json.dumps(variant).encode('utf-8'),headers={'Content-Type':'application/json'})
+         with urllib.request.urlopen(sreq,timeout=25 if 'media_base64' in variant else 15) as sresp:
+          sdata=json.loads(sresp.read())
+          if reply_to_mid:
+           try:
+            with customer_wa_lock:
+             proc_map=_load_customer_processed()
+             if not isinstance(proc_map.get(reply_to_mid),dict):
+              proc_map[reply_to_mid]={'message_id':reply_to_mid}
+             proc_map[reply_to_mid]['reply']=message_text
+             proc_map[reply_to_mid]['replied']=True
+             proc_map[reply_to_mid]['sending']=False
+             proc_map[reply_to_mid]['handled']=True
+             _save_customer_processed(proc_map)
+           except Exception:pass
+          if line_pref in {'customer','james','support','booking'}:
+           try:
+            from hermes_plugins.central_ai_whatsapp.adapter import _retain_memory_item
+            threading.Thread(target=_retain_memory_item,args=(f"Human operator reply to {target_name} ({ct}): {message_text}",'Human Operator (Coaching)','customer-whatsapp','human_operator_coaching'),daemon=True).start()
+           except Exception:pass
+          return self.reply(200,{'ok':True,'message_id':sdata.get('message_id',''),'target':ct,'recipient_name':target_name,'line':cu,'message':f'WhatsApp message delivered to {target_name} ({ct}).'})
+        except Exception as err:
+         last_err=str(err)
      if reply_to_mid:
       try:
        with customer_wa_lock:

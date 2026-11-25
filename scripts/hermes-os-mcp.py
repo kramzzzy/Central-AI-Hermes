@@ -609,8 +609,8 @@ def manage_submissions(action: str, id: str, status: str = '', message: str = ''
 
 
 @server.tool(name='manage_social')
-def manage_social(action: str, platform: str = '', account: str = '', post: str = '', search: str = '', offset: int = 0, refresh: bool = False, older: bool = False, confirmed: bool = False, enabled: bool | None = None) -> dict:
-    """Facebook & Instagram client invites and Social Media Post controls. AI agents ONLY respond to comments on posts listed in Social Media Post; unlisted posts receive no AI responses. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one. list_outside_posts browses posts excluded from the grid; remove_post (platform/account/post) hides the card and stops AI comment responses without deleting the published post; include_post restores it. set_post_auto_chat (platform/account/post, enabled=true|false) toggles whether the enquiry agent can auto-DM commenters on a listed post (default false: only the community agent replies publicly). delete_post (platform/account/post, confirmed=true) permanently deletes from both App OS and the social platform only after explicit user confirmation of both destinations. include_post adds the explicitly requested platform/account/post without publishing."""
+def manage_social(action: str, platform: str = '', account: str = '', post: str = '', search: str = '', offset: int = 0, refresh: bool = False, older: bool = False, confirmed: bool = False, enabled: bool | None = None, approver_user_ids: list[str] | None = None, run_id: str = '', step: int = 0) -> dict:
+    """Facebook & Instagram client invites and Social Media Post controls. AI agents ONLY respond to comments on posts listed in Social Media Post; unlisted posts receive no AI responses. action='create_invite' creates a single-use link (expires in 7 days) a client opens to sign in with Facebook and link their own Page to this workspace without an App OS login; give the returned url to the owner. Only create an invite when the owner asks for one. list_outside_posts browses posts excluded from the grid; remove_post (platform/account/post) hides the card and stops AI comment responses without deleting the published post; include_post restores it. set_post_auto_chat (platform/account/post, enabled=true|false) toggles whether the enquiry agent can auto-DM commenters on a listed post (default false: only the community agent replies publicly). approval_alerts_status inspects WhatsApp social post approval alert settings and eligible approvers; configure_approval_alerts (enabled?, approver_user_ids?) updates them; resend_approval_alert (run_id, step) sends/resends the WhatsApp approval alert. delete_post (platform/account/post, confirmed=true) permanently deletes from both App OS and the social platform only after explicit user confirmation of both destinations. include_post adds the explicitly requested platform/account/post without publishing."""
     try:
         payload = {'action': action}
         if action in ('include_post', 'remove_post', 'delete_post', 'set_post_auto_chat'):
@@ -619,6 +619,13 @@ def manage_social(action: str, platform: str = '', account: str = '', post: str 
                 payload['confirmed'] = confirmed
             elif action == 'set_post_auto_chat' and isinstance(enabled, bool):
                 payload['enabled'] = enabled
+        elif action == 'configure_approval_alerts':
+            if isinstance(enabled, bool):
+                payload['enabled'] = enabled
+            if isinstance(approver_user_ids, list):
+                payload['approver_user_ids'] = approver_user_ids
+        elif action == 'resend_approval_alert':
+            payload.update(run_id=run_id, step=step)
         elif action == 'list_outside_posts':
             payload.update(platform=platform or 'all', account=account, search=search, offset=offset, refresh=refresh, older=older)
         raw = _plugin_client.manage_social(payload)

@@ -54,8 +54,11 @@ class WorkspaceToolsTests(unittest.TestCase):
         self.assertIn('delete', submissions_tool['properties']['action']['enum'])
         social_tool = TOOLS['mcp__michael_os__manage_social']['schema']['parameters']
         self.assertEqual(['action'], social_tool['required'])
-        self.assertEqual(['create_invite', 'list_outside_posts', 'include_post', 'remove_post', 'delete_post', 'set_post_auto_chat'], social_tool['properties']['action']['enum'])
+        self.assertEqual(['create_invite', 'list_outside_posts', 'include_post', 'remove_post', 'delete_post', 'set_post_auto_chat', 'approval_alerts_status', 'configure_approval_alerts', 'resend_approval_alert'], social_tool['properties']['action']['enum'])
         self.assertEqual('boolean', social_tool['properties']['enabled']['type'])
+        self.assertEqual('array', social_tool['properties']['approver_user_ids']['type'])
+        self.assertEqual('string', social_tool['properties']['run_id']['type'])
+        self.assertEqual('integer', social_tool['properties']['step']['type'])
 
     def test_owner_tools_shared_and_restricted_context_denied(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -72,6 +75,9 @@ class WorkspaceToolsTests(unittest.TestCase):
                 self.assertTrue(json.loads(client.manage_social({'action':'set_post_auto_chat','platform':'facebook','account':'123','post':'123_456','enabled':False}))['ok'])
                 self.assertEqual(call.call_args.args[0], 'central_ai_manage_social')
                 self.assertIs(call.call_args.args[1]['enabled'], False)
+                self.assertTrue(json.loads(client.manage_social({'action':'configure_approval_alerts','enabled':True,'approver_user_ids':['u1','u2']}))['ok'])
+                self.assertEqual(call.call_args.args[0], 'central_ai_manage_social')
+                self.assertEqual(call.call_args.args[1]['approver_user_ids'], ['u1','u2'])
                 for config in ['phone_business_context: true', 'os_specialist: {id: fixture}']:
                     (home/'config.yaml').write_text(config)
                     call.reset_mock()
