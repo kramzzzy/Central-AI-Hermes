@@ -290,7 +290,7 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(status,data)
    except ValueError:return self.reply(400,{'error':{'message':'Invalid memory request'}})
    except Exception:return self.reply(503,{'error':{'message':'Memory processor unavailable'}})
-  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/memory/recall','/os/message','/os/sync-snapshot'}:
+  if self.path in {'/os/inspect','/google/tool','/specialists/tool','/os/widget','/os/profile-update','/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/sync-snapshot'}:
    is_admin=self.authorized()
    if is_admin:
     self._record_box3_origin()
@@ -305,11 +305,11 @@ class Handler(BaseHTTPRequestHandler):
      inspection_chat=chat
    else:
     inspection_chat=chat
-   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/company','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/memory/recall','/os/message','/os/sync-snapshot'}:
+   if not inspection_chat and self.path not in {'/os/call','/os/call/drop','/os/call/hangup','/os/contacts','/os/whatsapp/send','/os/whatsapp/customer-sync','/os/memory/retain','/os/sync-snapshot'}:
     return self.reply(401,{'error':'Unauthorized'})
    try:
     length=int(self.headers.get('Content-Length','0'))
-    max_len=20971520 if self.path=='/os/whatsapp/send' else (2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/company','/os/whatsapp/customer-sync'} else (100000 if self.path in {'/google/tool','/os/memory/retain','/os/memory/recall','/os/message'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192)))
+    max_len=20971520 if self.path=='/os/whatsapp/send' else (2097152 if self.path=='/os/sync-snapshot' else (262144 if self.path in {'/os/contacts','/os/whatsapp/customer-sync'} else (100000 if self.path in {'/google/tool','/os/memory/retain'} else 32768 if self.path=='/os/profile-update' else 20000 if self.path=='/specialists/tool' else 8192)))
     if not 0<length<=max_len:return self.reply(413,{'error':'Tool request too large'})
     body=json.loads(self.rfile.read(length))
     if self.path=='/os/memory/retain':
@@ -329,12 +329,6 @@ class Handler(BaseHTTPRequestHandler):
         daemon=True,
        ).start()
      return self.reply(200,{'ok':True,'retained':len(entries)})
-    if self.path=='/os/memory/recall':
-     from hermes_plugins.central_ai_whatsapp.adapter import _recall_memory_items
-     q=str(body.get('query') or '').strip()
-     lim=min(int(body.get('limit') or 5),10)
-     memories=_recall_memory_items(q,lim)
-     return self.reply(200,{'ok':True,'memories':memories})
     if self.path=='/os/whatsapp/customer-sync':
      act=str(body.get('action') or 'pull').strip().lower()
      if act in {'dismiss','ack'}:
@@ -350,7 +344,7 @@ class Handler(BaseHTTPRequestHandler):
        os.chmod(sp,0o666)
       except Exception:pass
      return self.reply(200,{'ok':True,'knowledge_count':len(body.get('knowledge',[]))})
-    if self.path in {'/os/whatsapp/send','/os/message'}:
+    if self.path=='/os/whatsapp/send':
      target=str(body.get('target','')).strip() or str(body.get('recipient','')).strip() or str(body.get('phone_or_name','')).strip()
      message_text=str(body.get('message','')).strip()
      line_pref=str(body.get('line','')).strip().lower()
@@ -466,7 +460,7 @@ class Handler(BaseHTTPRequestHandler):
          _save_customer_processed(proc_map)
       except Exception:pass
      return self.reply(502,{'ok':False,'error':f'WhatsApp connector unavailable: {last_err}'})
-    if self.path in {'/os/contacts','/os/company'}:
+    if self.path=='/os/contacts':
      c_name=body.get('company_name') or body.get('company')
      if c_name:
       c_payload=json.dumps({'company_name':str(c_name).strip()},indent=2)
@@ -480,8 +474,6 @@ class Handler(BaseHTTPRequestHandler):
        target_home=chat.home if hasattr(chat,'home') else ROOT
        configure_identity(target_home)
       except Exception:pass
-     if self.path=='/os/company':
-      return self.reply(200,{'ok':True,'company_name':c_name})
      for cf in ['/data/contacts.json','/data/customer/contacts.json',str(ROOT/'.runtime'/'contacts.json'),str(ROOT/'data'/'contacts.json')]:
       try:
        p=Path(cf);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(body,indent=2),encoding='utf-8')
@@ -856,49 +848,6 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(200,chat.handle(body))
    except Exception as exc:
     return self.reply(400,{'error':str(exc)[:500]})
-  if self.path=='/browser':
-   try:
-    length=int(self.headers.get('Content-Length','0'))
-    if not 0<length<=16384:return self.reply(413,{'error':'Browser request too large'})
-    body=json.loads(self.rfile.read(length))
-    url=body.get('url','').strip()
-    if not url:return self.reply(400,{'error':'Missing url parameter'})
-    if not url.startswith(('http://','https://')):
-     url='https://'+url
-    action=body.get('action','navigate')
-    try:
-     bt=importlib.import_module('tools.browser_tool')
-    except ImportError:
-     hermes_repo=os.environ.get('HERMES_REPO','/opt/hermes')
-     if hermes_repo not in sys.path and os.path.exists(hermes_repo):
-      sys.path.insert(0,hermes_repo)
-     try:
-      bt=importlib.import_module('tools.browser_tool')
-     except ImportError:
-      return self.reply(503,{'error':'Hermes browser tool is not installed or available in this runtime.'})
-    if action=='navigate':
-     raw=bt.browser_navigate(url)
-    elif action=='snapshot':
-     raw=bt.browser_snapshot()
-    elif action=='click':
-     raw=bt.browser_click(body.get('ref',''))
-    elif action=='type':
-     raw=bt.browser_type(body.get('ref',''), body.get('text',''))
-    elif action=='scroll':
-     raw=bt.browser_scroll(body.get('direction','down'))
-    elif action=='back':
-     raw=bt.browser_back()
-    elif action=='press':
-     raw=bt.browser_press(body.get('key','Enter'))
-    else:
-     return self.reply(400,{'error':f'Unsupported browser action: {action}'})
-    try:
-     data=json.loads(raw)
-    except Exception:
-     data={'result':raw}
-    return self.reply(200,data)
-   except Exception as exc:
-    return self.reply(500,{'error':f'Browser tool execution failed: {str(exc)}'})
   if self.path in {'/team/chat','/team/release'}:
    try:
     length=int(self.headers.get('Content-Length','0'))

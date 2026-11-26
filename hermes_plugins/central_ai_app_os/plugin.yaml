@@ -4,6 +4,8 @@ description: App OS dashboard and authenticated workspace integration for Centra
 provides_tools:
   - mcp__michael_os__inspect_workspace
   - mcp__michael_os__manage_crm
+  - mcp__michael_os__manage_tasks
+  - mcp__michael_os__create_task
   - mcp__michael_os__search_knowledge
   - mcp__michael_os__get_knowledge
   - mcp__michael_os__add_knowledge
@@ -18,7 +20,18 @@ provides_tools:
   - mcp__michael_os__control_widget
   - mcp__michael_os__navigate_browser
   - mcp__michael_os__get_live_weather
+  - mcp__michael_os__google_workspace
+  - mcp__michael_os__social_media
   - mcp__michael_os__end_call
+  - mcp__michael_os__calculate_solar
+  - mcp__michael_os__manage_communications
+  - mcp__michael_os__generate_image
+  - mcp__michael_os__manage_files
+  - mcp__michael_os__manage_submissions
+  - mcp__michael_os__manage_social
+  - mcp__michael_os__manage_whatsapp_customer_line
+  - mcp__michael_os__manage_mailing
+  - mcp__michael_os__manage_video
 config_schema:
   dashboard_url:
     type: str
