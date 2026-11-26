@@ -297,10 +297,41 @@ class NativeChat:
             self.info['model'] = target
             self.info['provider'] = provider
 
-    def connect(self, preferred_model=None):
+    def _is_alive(self):
+        return bool(self.sid and self.process and self.process.poll() is None)
+
+    def _resume_known_session(self, target_id, preferred_model=None):
+        if not isinstance(target_id, str) or not target_id.strip():
+            return False
+        self.start()
+        profile = self.settings['HERMES_PROFILE']
+        available = self.sessions()['sessions']
+        target_info = next(
+            (s for s in available if s.get('id') == target_id or s.get('resolved_id') == target_id),
+            None,
+        )
+        if not target_info:
+            return False
+        sess_profile = target_info.get('profile') or profile
+        session = self.resume(sess_profile, target_info['id'])
+        with self.guard:
+            self.sid = session['session_id']
+            self.stored = session.get('stored_session_id') or session.get('session_key') or self.sid
+            self.info = session.get('info', {})
+            self.active_profile = sess_profile
+        if not self.restore_voice_effort(recover=True):
+            raise RuntimeError('Previous voice work is still settling. Reconnect shortly.')
+        if not self.restore_voice_model(recover=True):
+            raise RuntimeError('Previous voice model is still settling. Reconnect shortly.')
+        self._sync_session_model(self._resolve_preferred_model(preferred_model))
+        return True
+
+    def connect(self, preferred_model=None, session_id=None):
         with self.connect_guard:
             self.start()
             if not self.sid:
+                if session_id and self._resume_known_session(session_id, preferred_model=preferred_model):
+                    return self.snapshot(0)
                 profile = self.settings['HERMES_PROFILE']
                 rows = self.rpc('session.list', {'profile': profile, 'title': 'Bot Chat', 'limit': 10}).get('sessions', [])
                 if rows:
@@ -684,8 +715,6 @@ class NativeChat:
         }
         if body.get('profile') and body['profile'] not in allowed_profiles:
             raise RuntimeError('The connected profile changed. Refresh before continuing.')
-        if body.get('expected_session') and body['expected_session'] != self.stored:
-            raise RuntimeError('The active conversation changed. Refresh before sending again.')
         if action == 'sessions':
             return self.sessions()
         if action == 'session_delete':
@@ -701,10 +730,31 @@ class NativeChat:
                 raise RuntimeError('Previous voice work is still settling. Reconnect shortly.')
         if action == 'connect':
             self.bind_workspace(body)
-            state = self.connect(preferred_model=body.get('preferred_model'))
+            state = self.connect(
+                preferred_model=body.get('preferred_model'),
+                session_id=body.get('session_id'),
+            )
             self.bind_workspace(body)
             return state
-        if not self.sid:
+        reconnected = False
+        if not self._is_alive() and action in {'poll', 'options', 'catalog', 'send', 'configure', 'attach'}:
+            self.bind_workspace(body)
+            expected = body.get('expected_session')
+            if expected:
+                with self.connect_guard:
+                    self._resume_known_session(expected, preferred_model=body.get('preferred_model'))
+                reconnected = self._is_alive()
+            elif action in {'poll', 'options', 'catalog'}:
+                self.connect(
+                    preferred_model=body.get('preferred_model'),
+                    session_id=body.get('session_id'),
+                )
+                reconnected = self._is_alive()
+            if reconnected:
+                self.bind_workspace(body)
+        if body.get('expected_session') and body['expected_session'] != self.stored:
+            raise RuntimeError('The active conversation changed. Refresh before sending again.')
+        if not self._is_alive():
             raise RuntimeError('Reconnect to Hermes first.')
         if action == 'options':
             return self.model_options()
@@ -715,7 +765,7 @@ class NativeChat:
                 self.actor = actor or self.actor
                 self.lease = time.monotonic() + 300
                 self.bind_workspace(body, renew=True)
-            return self.snapshot(int(body.get('cursor', 0)))
+            return self.snapshot(0 if reconnected else int(body.get('cursor', 0)))
         if action == 'stop':
             self.clear_workspace()
             result = self.rpc('session.interrupt', self.scoped())
@@ -1071,13 +1121,18 @@ class NativeChat:
             if self.actor and time.monotonic() > self.lease:
                 self.actor = None
                 self.clear_workspace()
-                try:
-                    self.rpc('session.interrupt', self.scoped(), timeout=5)
-                except Exception:
-                    self.close()
+                if self.sid and self.info.get('running'):
+                    try:
+                        self.rpc('session.interrupt', self.scoped(), timeout=5)
+                    except Exception:
+                        self.close()
 
     def close(self):
         self.clear_workspace()
+        with self.guard:
+            self.sid = None
+            self.stored = None
+            self.info = {}
         if self.os_tool_file:
             self.os_tool_file.unlink(missing_ok=True)
         if self.user_context_file:
