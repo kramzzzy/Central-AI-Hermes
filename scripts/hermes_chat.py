@@ -13,6 +13,12 @@ from collections import deque
 from pathlib import Path
 from uuid import uuid4
 from hermes_profile import profile_environment
+from hermes_user_context import (
+    ENV_USER_CONTEXT_FILE,
+    clear_user_context_file,
+    sanitize_signed_in_user,
+    write_user_context_file,
+)
 
 
 def voice_reasoning_effort(model, provider):
@@ -52,6 +58,9 @@ class NativeChat:
         self.workspace_turn = None
         self.os_tool_token = secrets.token_urlsafe(32)
         self.os_tool_file = None
+        self.user_context_file = None
+        self.signed_in_user = None
+        self.signed_in_user_actor = None
         self.epoch = str(uuid4())
         self.disposed = False
         atexit.register(self.close)
@@ -75,6 +84,9 @@ class NativeChat:
             self.os_tool_file = self.root / '.runtime' / ('native-os-tool-' + str(uuid4()) + '.token')
             self.os_tool_file.write_text(self.os_tool_token, encoding='utf-8')
             os.chmod(self.os_tool_file, 0o600)
+            if self.user_context_file:
+                clear_user_context_file(self.user_context_file)
+            self.user_context_file = self.root / '.runtime' / ('native-user-context-' + str(uuid4()) + '.json')
             self.clear_workspace()
             env = profile_environment(self.settings)
             env['HERMES_APPROVAL_MODE'] = 'off'
@@ -85,6 +97,7 @@ class NativeChat:
             env.pop('MICHAEL_RESTRICT_TEAM_TOOLS',None)
             if self.settings.get('HERMES_RESTRICT_TEAM_TOOLS')=='true':env['MICHAEL_RESTRICT_TEAM_TOOLS']='true'
             env['MICHAEL_OS_TOOL_TOKEN_FILE'] = str(self.os_tool_file)
+            env[ENV_USER_CONTEXT_FILE] = str(self.user_context_file)
             python_bin = self.settings.get('HERMES_PYTHON') or os.environ.get('HERMES_PYTHON') or sys.executable
             self.process = subprocess.Popen(
                 [python_bin, '-u', str(self.root / 'scripts/hermes-chat-entry.py')],
@@ -153,12 +166,22 @@ class NativeChat:
             self.clear_workspace()
             self.event_ready.notify_all()
 
+    def _sync_user_context_file(self):
+        if not self.user_context_file:
+            return
+        if self.signed_in_user:
+            write_user_context_file(self.user_context_file, self.signed_in_user)
+        else:
+            clear_user_context_file(self.user_context_file)
+
     def clear_workspace(self):
         cancel=getattr(self,'cancel_specialists',None)
         if cancel:cancel()
         self.workspace_grant = self.workspace_actor = self.workspace_turn = None
+        self.signed_in_user = self.signed_in_user_actor = None
+        clear_user_context_file(self.user_context_file)
 
-    def bind_workspace(self, body, renew=False):
+    def bind_workspace(self, body, renew=False, clear_missing_user=False):
         with self.guard:
             grant = body.get('workspace_grant')
             if isinstance(grant, str) and 0 < len(grant) <= 2048:
@@ -166,6 +189,18 @@ class NativeChat:
                 self.workspace_actor = body.get('actor') or self.workspace_actor
                 if not renew or not self.workspace_turn:
                     self.workspace_turn = str(uuid4())
+            if 'signed_in_user' in body:
+                sanitized = sanitize_signed_in_user(body.get('signed_in_user'))
+                self.signed_in_user = sanitized
+                self.signed_in_user_actor = (body.get('actor') or self.workspace_actor) if sanitized else None
+            elif clear_missing_user or (
+                body.get('actor')
+                and self.signed_in_user_actor
+                and body.get('actor') != self.signed_in_user_actor
+            ):
+                self.signed_in_user = None
+                self.signed_in_user_actor = None
+            self._sync_user_context_file()
 
     def rpc(self, method, params=None, timeout=30):
         self.start()
@@ -626,6 +661,7 @@ class NativeChat:
             self.events.clear()
             self.requests.clear()
             self.actor, self.lease = None, 0
+        self.bind_workspace(body)
         self._sync_session_model(self._resolve_preferred_model(body.get('preferred_model')))
         return self.snapshot(0)
 
@@ -665,7 +701,9 @@ class NativeChat:
                 raise RuntimeError('Previous voice work is still settling. Reconnect shortly.')
         if action == 'connect':
             self.bind_workspace(body)
-            return self.connect(preferred_model=body.get('preferred_model'))
+            state = self.connect(preferred_model=body.get('preferred_model'))
+            self.bind_workspace(body)
+            return state
         if not self.sid:
             raise RuntimeError('Reconnect to Hermes first.')
         if action == 'options':
@@ -690,7 +728,7 @@ class NativeChat:
             if self.info.get('running'):
                 raise RuntimeError('Wait for the active reply before sending another message.')
             self.actor, self.lease = actor, time.monotonic() + 3000
-            self.bind_workspace(body)
+            self.bind_workspace(body, clear_missing_user=True)
             if text.startswith('/'):
                 parts = text[1:].split(maxsplit=1)
                 name, arg = parts[0], parts[1] if len(parts) > 1 else ''
@@ -890,6 +928,7 @@ class NativeChat:
             self.bind_workspace(body)
             try:
                 state = self.connect()
+                self.bind_workspace(body)
                 if state['info'].get('running'):
                     raise RuntimeError('Leo is working. Wait for the current reply to finish.')
                 self.prepare_voice_model(state['info'])
@@ -932,7 +971,7 @@ class NativeChat:
         if action == 'voice_submit':
             text = body.get('text', '').strip()
             voice_context = body.get('voice_context', '')
-            if not isinstance(voice_context, str) or len(voice_context) > 6000:
+            if not isinstance(voice_context, str) or len(voice_context) > 12000:
                 raise RuntimeError('Invalid widget context.')
             if not text or len(text) > 12000 or text.startswith('/'):
                 raise RuntimeError('Speak a request. Run slash commands in text chat.')
@@ -946,7 +985,7 @@ class NativeChat:
                 self.voice_turn = turn
                 cursor = self.sequence
                 self.actor, self.lease = actor, time.monotonic() + 300
-                self.bind_workspace(body)
+                self.bind_workspace(body, clear_missing_user=True)
             restore = None
             try:
                 if not self.restore_voice_effort():
@@ -956,7 +995,7 @@ class NativeChat:
                     from hermes_plugins.central_ai_whatsapp.adapter import _calculate_solar_pre_assessment
                     solar_calc = _calculate_solar_pre_assessment(text)
                     if solar_calc and 'OFFICIAL YOUR CHOICE SOLAR WEBSITE CALCULATOR' not in voice_context:
-                        voice_context = (voice_context + '\n\n' + solar_calc).strip()[:6000]
+                        voice_context = (voice_context + '\n\n' + solar_calc).strip()[:12000]
                 except Exception:
                     pass
                 self.rpc('prompt.submit', self.scoped(text=text, surface='voice-live', voice_context=voice_context))
@@ -1041,6 +1080,9 @@ class NativeChat:
         self.clear_workspace()
         if self.os_tool_file:
             self.os_tool_file.unlink(missing_ok=True)
+        if self.user_context_file:
+            clear_user_context_file(self.user_context_file)
+            self.user_context_file = None
         self.os_tool_token = secrets.token_urlsafe(32)
         if self.process and self.process.poll() is None:
             self.process.stdin.close()

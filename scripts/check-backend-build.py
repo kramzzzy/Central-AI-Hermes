@@ -35,7 +35,7 @@ def main():
     for name in (
         'tools.voice_live', 'tui_gateway.entry', 'tui_gateway.server',
         'hermes_cli.plugins', 'gateway.platform_registry',
-        'hermes_chat', 'hermes_voice', 'hermes_plugins.central_ai_app_os',
+        'hermes_chat', 'hermes_user_context', 'hermes_voice', 'hermes_plugins.central_ai_app_os',
         'hermes_plugins.central_ai_whatsapp', 'whatsapp_audio',
         'whatsapp_text_supervisor', 'whatsapp_stream', 'os_stream_voice', 'native_voice_conversation',
         'faster_whisper', 'msgpack', 'livekit.rtc', 'onnxruntime',
@@ -44,6 +44,9 @@ def main():
     from tools import voice_live
     if not hasattr(voice_live, 'VOICE_LIVE_TURN_NOTE'):
         raise RuntimeError('Native live voice protocol is incompatible')
+    from run_agent import AIAgent
+    if not callable(getattr(AIAgent, 'run_conversation', None)):
+        raise RuntimeError('Native AIAgent.run_conversation hook target is incompatible')
     from livekit import rtc
     processor = rtc.AudioProcessingModule(noise_suppression=True,
                                          echo_cancellation=True,

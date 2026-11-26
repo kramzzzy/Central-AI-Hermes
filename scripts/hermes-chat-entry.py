@@ -64,5 +64,11 @@ elif os.environ.get('HERMES_ROUTINE_ONLY') != 'true':
             native._load_enabled_toolsets = _app_os_toolsets
     except Exception:
         pass
+if os.environ.get('CENTRAL_AI_USER_CONTEXT_FILE'):
+    try:
+        from hermes_user_context import install_signed_in_user_context_hook
+        install_signed_in_user_context_hook()
+    except Exception as exc:
+        sys.stderr.write(f"[hermes-chat-entry] user context hook warning: {exc}\n")
 from tui_gateway.entry import main
 main()

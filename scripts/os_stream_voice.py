@@ -7,6 +7,7 @@ import time
 from uuid import UUID
 
 from hermes_voice import call_greeting
+from hermes_user_context import format_signed_in_user_note, merge_user_context_note, sanitize_signed_in_user
 from fish_conversation import filter_playback_input
 from stream_conversation import FreeSpeech, TurnControl, TurnCancelled, fish_rest_tts
 
@@ -63,6 +64,7 @@ class OSStreamVoice:
                 self.contexts[call] = {'identity': identity, 'scope': dict(scope), 'config': config,
                     'conversation': self.calls.conversation(call, scope), 'control': None, 'turn': None,
                     'until': time.monotonic()+180, 'greeting': call_greeting(body.get('display_name', '')),
+                    'caller_user': sanitize_signed_in_user({'name': body.get('display_name', '')}),
                     'playback': []}
             return handler.reply(200, {'started': True})
         with self.guard:
@@ -139,8 +141,14 @@ class OSStreamVoice:
                 if value is None:
                     text('Speaker audio mixed with your words. Please repeat your request; no new work was started.')
                 elif value.strip():
+                    turn_voice_context = voice_context
+                    if not notice and item.get('caller_user'):
+                        turn_voice_context = merge_user_context_note(
+                            voice_context,
+                            format_signed_in_user_note(item['caller_user']),
+                        )[:12000]
                     item['conversation'].reply(value, text, control, notice=bool(notice), on_event=emit,
-                                               voice_context=voice_context)
+                                               voice_context=turn_voice_context)
             try:
                 speech.finish()
             except Exception:
