@@ -51,5 +51,18 @@ if os.environ.get('MICHAEL_RESTRICT_TEAM_TOOLS')=='true':
     if not callable(getattr(native,'_load_enabled_toolsets',None)):
         raise RuntimeError('Native team tool-selection compatibility check failed')
     native._load_enabled_toolsets=lambda platform=None:['memory','todo','michael_os']
+elif os.environ.get('HERMES_ROUTINE_ONLY') != 'true':
+    # Installed gateway folds desktop_ui in even when disabled in config.yaml, which injects
+    # Hermes Desktop ::preview{file=...} scratch-HTML rules that break App OS web chat images.
+    try:
+        import tui_gateway.server as native
+        _orig_load_toolsets = getattr(native, '_load_enabled_toolsets', None)
+        if callable(_orig_load_toolsets):
+            def _app_os_toolsets(platform=None, _orig=_orig_load_toolsets):
+                loaded = _orig(platform)
+                return [t for t in loaded if t != 'desktop_ui'] if isinstance(loaded, list) else loaded
+            native._load_enabled_toolsets = _app_os_toolsets
+    except Exception:
+        pass
 from tui_gateway.entry import main
 main()

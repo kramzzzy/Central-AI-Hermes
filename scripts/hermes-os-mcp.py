@@ -522,20 +522,48 @@ def manage_communications(action: str, id: str, version: int | None = None) -> d
 
 @server.tool(name='generate_image')
 def generate_image(
-    prompt: str,
+    prompt: str = '',
     aspect_ratio: str = '3:4',
     project: str = '',
     preset: str = '',
     reference_file_ids: list[str] | None = None,
+    action: str = 'generate',
+    model: str = '',
+    logo_position: str = '',
+    file_id: str = '',
+    x_pct: float | None = None,
+    y_pct: float | None = None,
+    width_pct: float | None = None,
+    opacity: float | None = None,
+    shadow: bool | None = None,
+    title: str = '',
+    refresh: bool = False,
 ) -> dict:
-    """Generate and save one image to Files (and optional project folder); ratios 1:1,3:4,4:5,4:3,16:9,9:16; optional preset (/promotion,/product,/educational,/lifestyle) and reference_file_ids. Does not publish."""
-    payload: dict = {'prompt': prompt, 'aspect_ratio': aspect_ratio}
+    """Generate real AI images, visual samples, concepts, or posters and save each to Files Library (action='generate', default), list/set the workspace image model (action='list_models'|'set_model'), or apply the workspace logo (action='apply_logo'). Returns `markdown` (`![Title](/api/files/<id>/download?preview=1)`) — paste each returned `markdown` line on its own line in your reply so actual images render inline in chat. Never use write_file, HTML/SVG galleries, or ::preview. Does not publish."""
+    payload: dict = {'action': action or 'generate'}
+    if prompt.strip():
+        payload['prompt'] = prompt.strip()
+    if aspect_ratio and payload['action'] == 'generate':
+        payload['aspect_ratio'] = aspect_ratio
     if project.strip():
         payload['project'] = project.strip()
     if preset.strip():
         payload['preset'] = preset.strip()
+    if model.strip():
+        payload['model'] = model.strip()
+    if logo_position.strip():
+        payload['logo_position'] = logo_position.strip()
     if reference_file_ids:
         payload['reference_file_ids'] = reference_file_ids
+    if file_id.strip():
+        payload['file_id'] = file_id.strip()
+    if title.strip():
+        payload['title'] = title.strip()
+    for k, v in (('x_pct', x_pct), ('y_pct', y_pct), ('width_pct', width_pct), ('opacity', opacity), ('shadow', shadow)):
+        if v is not None:
+            payload[k] = v
+    if refresh:
+        payload['refresh'] = True
     return json.loads(_plugin_client.generate_image(payload))
 
 
