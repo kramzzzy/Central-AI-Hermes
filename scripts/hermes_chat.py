@@ -726,9 +726,22 @@ class NativeChat:
             name = Path(body.get('name', 'attachment')).name
             if not isinstance(data, str) or not data.startswith('data:') or len(data) > 12000000:
                 raise RuntimeError('Choose a file smaller than 8 MB.')
-            if data.startswith('data:image/'):
-                return self.rpc('image.attach_bytes', self.scoped(content_base64=data.split(',', 1)[1], filename=name))
-            return self.rpc('file.attach', self.scoped(data_url=data, name=name))
+            mime = data[5:].split(';', 1)[0].strip().lower()
+            is_image = data.startswith('data:image/')
+            if is_image:
+                res = self.rpc('image.attach_bytes', self.scoped(content_base64=data.split(',', 1)[1], filename=name))
+            else:
+                res = self.rpc('file.attach', self.scoped(data_url=data, name=name))
+            out = dict(res) if isinstance(res, dict) else {}
+            out.setdefault('attached', True)
+            out.setdefault('kind', 'image' if is_image else 'file')
+            out.setdefault('name', name)
+            if mime:
+                out.setdefault('mime', mime)
+            staged_path = out.get('path') or out.get('image_path') or out.get('file_path') or ''
+            if staged_path:
+                out['path'] = staged_path
+            return out
         raise RuntimeError('Unsupported chat action.')
 
     def handle_voice(self, body):
