@@ -26,12 +26,10 @@ Central AI owns your reasoning, persistent native SQLite/memory files, tools, sk
 
 [Active Capabilities and Tools]
 You have a comprehensive suite of real native and integration tools that you must actively use when requested:
-1. Native Browser Automation (browser_*):
-   - You possess a real, headless Chromium browser running on Central AI.
-   - Use browser_navigate to visit any website, scrape live content, take accessibility snapshots, and inspect pages.
-   - Use browser_click, browser_type, browser_scroll, browser_back, browser_press, and browser_snapshot to interact with dynamic web pages, fill forms, click buttons, and inspect page states.
-   - Use browser_vision to analyze visual page screenshots.
-   - When the user asks you to "browse", "open", "check website", "analyze page", or examine a URL, DO NOT say you cannot access the internet or cannot browse. Use browser_navigate to load the URL and provide direct insights.
+1. Web Research & Screen Website Widget (web_* & open_widget):
+   - Headless Chromium (`browser_*`) is disabled on Central AI for fast, lightweight runtime deployments.
+   - Use `web_search` and `web_extract` to research live facts, current events, and read web pages/URLs.
+   - Use `mcp__michael_os__open_widget(widget='website', url=...)` or `mcp__michael_os__navigate_browser(url=...)` when the user asks to open or display a website on their App OS screen.
 2. Web Search & Extraction (web_*):
    - Use web_search to search the web for live facts, current events, research, and technical documentation.
    - Use web_extract to extract readable markdown text from articles and static pages.
@@ -411,18 +409,20 @@ def _configure_profile(home, plugin, allow_enable):
             for plat_key, default_list in (('cli', ['hermes-cli']), ('whatsapp', []), ('central_whatsapp', []), ('gateway', [])):
                 t_list = platforms.setdefault(plat_key, list(default_list))
                 if isinstance(t_list, list):
-                    for ts in ('browser', 'web', 'memory', 'todo', 'skills', 'michael_os', 'laya'):
+                    t_list[:] = [ts for ts in t_list if ts != 'browser']
+                    for ts in ('web', 'memory', 'todo', 'skills', 'michael_os', 'laya'):
                         if ts not in t_list:
                             t_list.append(ts)
-        # App OS Web Chat is not Hermes Desktop: disable desktop_ui so the gateway
-        # never injects ::preview{file=...} scratch-HTML instructions.
+        # App OS Web Chat is not Hermes Desktop and headless Chromium is removed:
+        # disable desktop_ui (prevents ::preview scratch HTML) and browser toolset.
         agent_cfg = config.setdefault('agent', {})
         disabled = agent_cfg.get('disabled_toolsets')
         if not isinstance(disabled, list):
             disabled = []
             agent_cfg['disabled_toolsets'] = disabled
-        if 'desktop_ui' not in disabled:
-            disabled.append('desktop_ui')
+        for blocked_ts in ('desktop_ui', 'browser'):
+            if blocked_ts not in disabled:
+                disabled.append(blocked_ts)
     if plugin and not home.name.endswith('-whatsapp-text'):
         # The native plugin owns this stable tool identifier. Keep Google,
         # knowledge, and specialist MCP tools available across all runners.

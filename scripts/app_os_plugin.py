@@ -111,13 +111,15 @@ def install_files(home, config, allow_enable=False):
     toolsets = platforms.setdefault("cli", ["hermes-cli"])
     if not isinstance(toolsets, list):
         raise RuntimeError("Unsupported native CLI tool selection")
-    for ts in ["browser", "web", "memory", "todo", "skills", "michael_os", "laya"]:
+    toolsets[:] = [ts for ts in toolsets if ts != "browser"]
+    for ts in ["web", "memory", "todo", "skills", "michael_os", "laya"]:
         if ts not in toolsets:
             toolsets.append(ts)
     for plat_key in ("whatsapp", "central_whatsapp", "gateway"):
         ws_toolsets = platforms.setdefault(plat_key, [])
         if isinstance(ws_toolsets, list):
-            for ts in ["browser", "web", "memory", "todo", "skills", "michael_os", "laya"]:
+            ws_toolsets[:] = [ts for ts in ws_toolsets if ts != "browser"]
+            for ts in ["web", "memory", "todo", "skills", "michael_os", "laya"]:
                 if ts not in ws_toolsets:
                     ws_toolsets.append(ts)
     browser_cfg = config.setdefault("browser", {})

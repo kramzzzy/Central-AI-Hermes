@@ -331,8 +331,8 @@ function nativeProfile(agent, model, provider = 'openrouter') {
     timezone: "Australia/Brisbane",
     terminal: { backend: "local" },
     platform_toolsets: {
-      cli: ["browser", "web", "skills", "memory", "todo", "michael_os", "laya"],
-      whatsapp: ["browser", "web", "skills", "memory", "todo", "michael_os", "laya"],
+      cli: ["web", "skills", "memory", "todo", "michael_os", "laya"],
+      whatsapp: ["web", "skills", "memory", "todo", "michael_os", "laya"],
     },
     browser: { backend: "off" },
     memory: { provider: "hindsight" },

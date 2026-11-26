@@ -60,7 +60,7 @@ elif os.environ.get('HERMES_ROUTINE_ONLY') != 'true':
         if callable(_orig_load_toolsets):
             def _app_os_toolsets(platform=None, _orig=_orig_load_toolsets):
                 loaded = _orig(platform)
-                return [t for t in loaded if t != 'desktop_ui'] if isinstance(loaded, list) else loaded
+                return [t for t in loaded if t not in ('desktop_ui', 'browser')] if isinstance(loaded, list) else loaded
             native._load_enabled_toolsets = _app_os_toolsets
     except Exception:
         pass
