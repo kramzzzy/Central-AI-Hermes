@@ -141,17 +141,29 @@ class Handler(BaseHTTPRequestHandler):
   return False
  def _record_box3_origin(self):
   try:
+   import ipaddress
+   from urllib.parse import urlsplit
+   def _is_internal_url(u):
+    try:
+     host=(urlsplit(u).hostname or '').strip().lower()
+     if not host:return False
+     if host in {'web','localhost','host.docker.internal'} or '.' not in host:return True
+     ip=ipaddress.ip_address(host)
+     return ip.is_private or ip.is_loopback or ip.is_link_local
+    except Exception:return False
    client_ip=(self.client_address[0] if self.client_address else '').strip()
    port=(self.headers.get('X-App-OS-Port') or '3000').strip()
    host_hdr=(self.headers.get('X-App-OS-Host') or '').strip()
    url_hdr=(self.headers.get('X-App-OS-Url') or '').strip().rstrip('/')
    urls=[]
-   if url_hdr and url_hdr.startswith('http'):
+   if url_hdr and url_hdr.startswith('http') and _is_internal_url(url_hdr):
     urls.append(url_hdr)
    if host_hdr:
     urls.append(host_hdr if host_hdr.startswith('http') else f"http://{host_hdr}")
    if client_ip and client_ip not in {'127.0.0.1','::1'}:
     urls.append(f"http://{client_ip}:{port}")
+   if url_hdr and url_hdr.startswith('http') and url_hdr not in urls:
+    urls.append(url_hdr)
    if not urls:
     return
    deduped=list(dict.fromkeys(u.rstrip('/') for u in urls if u))

@@ -304,6 +304,29 @@ class NativeChat:
         # authoritative key again here, including after a compression continuation.
         self.stored = title_info.get('session_key') or self.stored
         title = title_info.get('title')
+        def _message_text(msg):
+            if isinstance(msg.get('text'), str) and msg['text']:
+                return msg['text']
+            content = msg.get('content')
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, str) and item:
+                        parts.append(item)
+                    elif isinstance(item, dict):
+                        val = item.get('text') or item.get('content')
+                        if isinstance(val, str) and val:
+                            parts.append(val)
+                if parts:
+                    return '\n'.join(parts)
+            if isinstance(content, dict):
+                try:
+                    return json.dumps(content, ensure_ascii=False)
+                except Exception:
+                    return ''
+            return ''
         with self.guard:
             active_p = getattr(self, 'active_profile', None) or self.settings['HERMES_PROFILE']
             return {'profile': active_p, 'session_id': self.stored,
@@ -311,7 +334,7 @@ class NativeChat:
                     'epoch': self.epoch, 'cursor': self.sequence, 'info': {k: self.info.get(k) for k in
                     ['model', 'provider', 'running', 'tools', 'skills', 'usage', 'approval_mode', 'reasoning_effort', 'reasoning_effort_wire']},
                     'messages': [{**{k: m.get(k) for k in ['role', 'name', 'timestamp', 'row_id']},
-                                  'text': m.get('text') or (m.get('content') if isinstance(m.get('content'), str) else '')}
+                                  'text': _message_text(m)}
                                  for m in history.get('messages', [])], 'approvals': approvals,
                     'requests': list(self.requests.values()),
                     'events': [e for e in self.events if e['seq'] > cursor]}

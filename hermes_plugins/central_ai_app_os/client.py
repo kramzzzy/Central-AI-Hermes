@@ -1,9 +1,13 @@
 """Use the adapter's active per-process capability; fall back to Box 1 bridge secret and live Box 3 snapshot across Voice & WhatsApp."""
+import errno
+import ipaddress
 import json
 import os
 import re
 import socket
+import ssl
 import urllib.error
+from urllib.parse import urlsplit
 import urllib.request
 from pathlib import Path
 from uuid import uuid4
@@ -75,6 +79,23 @@ def _hermes_api_key():
     return _read_env_key("HERMES_API_KEY") or "hermes_standalone_secret_token_32chars"
 
 
+def _is_internal_app_os_url(url):
+    try:
+        parsed = urlsplit(str(url or "").strip())
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            return False
+        if host in {"web", "localhost", "host.docker.internal"} or "." not in host:
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+            return ip.is_private or ip.is_loopback or ip.is_link_local
+        except ValueError:
+            return False
+    except Exception:
+        return False
+
+
 def _discovered_app_os_urls():
     urls = []
     root_dir = Path(__file__).resolve().parent.parent.parent
@@ -96,7 +117,11 @@ def _discovered_app_os_urls():
                         urls.append(single.strip().rstrip("/"))
         except Exception:
             pass
-    return urls
+    # Prefer direct internal Docker/LAN addresses before public reverse-proxy URLs so
+    # long-running or non-idempotent MCP calls (like image generation) avoid Cloudflare/Traefik blocks and timeouts.
+    internal = [u for u in urls if _is_internal_app_os_url(u)]
+    external = [u for u in urls if not _is_internal_app_os_url(u)]
+    return internal + external
 
 
 def _app_os_urls():
@@ -105,10 +130,13 @@ def _app_os_urls():
         u = _read_env_key(k).rstrip("/")
         if u and u not in urls:
             urls.append(u)
+    internal = [u for u in urls if _is_internal_app_os_url(u)]
+    external = [u for u in urls if not _is_internal_app_os_url(u)]
+    ordered = internal + external
     for fallback in ("http://web:3000", "http://127.0.0.1:3000"):
-        if fallback not in urls:
-            urls.append(fallback)
-    return urls
+        if fallback not in ordered:
+            ordered.append(fallback)
+    return ordered
 
 
 def _bridge_urls(path):
@@ -410,6 +438,21 @@ def inspect_workspace(arguments, **kwargs):
         return json.dumps({"error": "Workspace inspection is unavailable. No data was verified."})
 
 
+def _is_pre_delivery_url_error(reason):
+    if isinstance(reason, (socket.gaierror, ConnectionRefusedError, ssl.SSLError)):
+        return True
+    if isinstance(reason, OSError):
+        err_no = getattr(reason, "errno", None)
+        if err_no in {
+            errno.ECONNREFUSED,
+            errno.EHOSTUNREACH,
+            errno.ENETUNREACH,
+            errno.EADDRNOTAVAIL,
+        }:
+            return True
+    return False
+
+
 def _call_app_os_mcp(tool_name, arguments, timeout=10, retry=True):
     api_key = _hermes_api_key()
     req_body = json.dumps({
@@ -427,6 +470,7 @@ def _call_app_os_mcp(tool_name, arguments, timeout=10, retry=True):
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
+                    "User-Agent": "CentralOS/1.0",
                 },
             )
             with opener.open(req, timeout=timeout) as resp:
@@ -437,15 +481,42 @@ def _call_app_os_mcp(tool_name, arguments, timeout=10, retry=True):
                     text = data["result"]["content"][0]["text"]
                     # Legacy MCP wrappers decode JSON; preserve tool errors instead of hiding them as parse failures.
                     return json.dumps({"error": text}) if data["result"].get("isError") else text
-        except urllib.error.URLError as exc:
-            # DNS failure or refusal happens before any request is delivered; trying another configured address cannot duplicate a task.
-            if isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError)):
+        except urllib.error.HTTPError as exc:
+            parsed_err = None
+            try:
+                raw_err = exc.read(8192).decode("utf-8", errors="replace")
+                if raw_err:
+                    parsed_err = json.loads(raw_err)
+            except Exception:
+                parsed_err = None
+            if isinstance(parsed_err, dict):
+                if isinstance(parsed_err.get("error"), dict) and parsed_err["error"].get("message"):
+                    return json.dumps({"error": str(parsed_err["error"]["message"])})
+                if isinstance(parsed_err.get("result"), dict) and parsed_err["result"].get("content"):
+                    text = parsed_err["result"]["content"][0].get("text", "")
+                    if text:
+                        return json.dumps({"error": text})
+            # Redirects blocked by NoRedirect, proxy/WAF blocks (non-JSON-RPC 403/404/405), and
+            # Cloudflare origin-unreachable codes happen before /api/mcp executes the tool.
+            if exc.code in {301, 302, 303, 307, 308, 521, 522, 523} or (
+                exc.code in {403, 404, 405} and not (isinstance(parsed_err, dict) and parsed_err.get("jsonrpc") == "2.0")
+            ):
                 continue
             if not retry:
-                return json.dumps({"error": "Result unconfirmed; check workspace before retrying."})
-        except Exception:
+                if exc.code in {502, 503, 504, 520, 524}:
+                    return json.dumps({"error": f"Result unconfirmed (HTTP {exc.code}); check workspace before retrying."})
+                return json.dumps({"error": f"Workspace tool request failed (HTTP {exc.code})."})
+            continue
+        except urllib.error.URLError as exc:
+            # DNS failure, connection refusal, TLS handshake, or unreachable route happens before any request is delivered; trying another configured address cannot duplicate a task.
+            if _is_pre_delivery_url_error(exc.reason):
+                continue
             if not retry:
-                return json.dumps({"error": "Result unconfirmed; check workspace before retrying."})
+                reason_name = type(exc.reason).__name__ if exc.reason is not None else "URLError"
+                return json.dumps({"error": f"Result unconfirmed ({reason_name}); check workspace before retrying."})
+        except Exception as exc:
+            if not retry:
+                return json.dumps({"error": f"Result unconfirmed ({type(exc).__name__}); check workspace before retrying."})
             continue
     return None
 
@@ -512,7 +583,8 @@ def generate_image(arguments=None, **kwargs):
     if not owner_tools_available():
         return json.dumps({"error": "Owner workspace access required."})
     params = {k: v for k, v in dict(arguments or kwargs or {}).items() if v not in ("", None)}
-    return _call_app_os_mcp("central_ai_generate_image", params, timeout=180, retry=False) or json.dumps({"error": "Image generation unavailable."})
+    is_read_only = str(params.get("action") or "generate").strip().lower() == "list_models"
+    return _call_app_os_mcp("central_ai_generate_image", params, timeout=180, retry=is_read_only) or json.dumps({"error": "Image generation unavailable."})
 
 
 def manage_tasks(arguments, **kwargs):

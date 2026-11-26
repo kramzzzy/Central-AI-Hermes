@@ -147,6 +147,72 @@ class WorkspaceToolsTests(unittest.TestCase):
                     self.assertEqual(opener.open.call_count, expected_calls)
                     self.assertIn('task_id' if expected_calls == 2 else 'error', result)
 
+    def test_mcp_prioritizes_internal_urls_and_recovers_from_proxy_blocks(self):
+        import errno
+        import io
+        import ssl
+        import urllib.error
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_dir = Path(directory) / '.runtime'
+            runtime_dir.mkdir()
+            (runtime_dir / 'app_os_url.json').write_text(json.dumps({
+                'url': 'https://app.example.com',
+                'urls': ['https://app.example.com', 'http://box3-container:3000', 'http://10.0.1.7:3000'],
+            }), encoding='utf-8')
+            fake_client_path = Path(directory) / 'hermes_plugins' / 'central_ai_app_os' / 'client.py'
+            with patch.object(client, '__file__', str(fake_client_path)):
+                urls = client._app_os_urls()
+            self.assertEqual(urls[:3], ['http://box3-container:3000', 'http://10.0.1.7:3000', 'https://app.example.com'])
+
+        ok_response = MagicMock()
+        ok_response.__enter__.return_value.read.return_value = json.dumps({
+            'result': {'content': [{'text': '{"file_id":"img-1","url":"/api/files/img-1/download"}'}]}
+        }).encode()
+
+        # Non-JSON-RPC 403 (Cloudflare WAF), 308 redirect, SSL error, and EHOSTUNREACH never reach /api/mcp -> safe to fall through even with retry=False.
+        pre_delivery_errors = [
+            urllib.error.HTTPError('https://app.example.com/api/mcp', 403, 'Forbidden', {}, io.BytesIO(b'<html>Cloudflare 1010</html>')),
+            urllib.error.HTTPError('http://app.example.com/api/mcp', 308, 'Permanent Redirect', {}, io.BytesIO(b'')),
+            urllib.error.URLError(ssl.SSLError('handshake failed')),
+            urllib.error.URLError(OSError(errno.EHOSTUNREACH, 'No route to host')),
+        ]
+        for err in pre_delivery_errors:
+            with self.subTest(err=type(err).__name__):
+                opener = MagicMock()
+                opener.open.side_effect = [err, ok_response]
+                with patch.object(client, '_hermes_api_key', return_value='fixture'), patch.object(
+                    client, '_app_os_urls', return_value=['https://app.example.com', 'http://10.0.1.7:3000']
+                ), patch.object(client.urllib.request, 'build_opener', return_value=opener):
+                    result = json.loads(client._call_app_os_mcp('central_ai_generate_image', {'prompt': 'solar'}, retry=False))
+                self.assertEqual(opener.open.call_count, 2)
+                self.assertEqual(result['file_id'], 'img-1')
+                sent_req = opener.open.call_args_list[0].args[0]
+                self.assertEqual(sent_req.get_header('User-agent'), 'CentralOS/1.0')
+
+        # Real JSON-RPC 401 surfaces its actual error message instead of vague "Result unconfirmed".
+        auth_err = urllib.error.HTTPError(
+            'http://10.0.1.7:3000/api/mcp', 401, 'Unauthorized', {},
+            io.BytesIO(json.dumps({'jsonrpc': '2.0', 'error': {'code': -32001, 'message': 'Unauthorized. Supply valid HERMES_API_KEY.'}}).encode())
+        )
+        opener = MagicMock(); opener.open.side_effect = [auth_err, ok_response]
+        with patch.object(client, '_hermes_api_key', return_value='fixture'), patch.object(
+            client, '_app_os_urls', return_value=['http://10.0.1.7:3000', 'http://web:3000']
+        ), patch.object(client.urllib.request, 'build_opener', return_value=opener):
+            result = json.loads(client._call_app_os_mcp('central_ai_generate_image', {'prompt': 'solar'}, retry=False))
+        self.assertEqual(opener.open.call_count, 1)
+        self.assertIn('HERMES_API_KEY', result['error'])
+
+        # 504 Gateway Timeout on retry=False must NOT retry (could duplicate charge/task) and includes HTTP 504 hint.
+        gw_err = urllib.error.HTTPError('https://app.example.com/api/mcp', 504, 'Gateway Timeout', {}, io.BytesIO(b'timeout'))
+        opener = MagicMock(); opener.open.side_effect = [gw_err, ok_response]
+        with patch.object(client, '_hermes_api_key', return_value='fixture'), patch.object(
+            client, '_app_os_urls', return_value=['https://app.example.com', 'http://10.0.1.7:3000']
+        ), patch.object(client.urllib.request, 'build_opener', return_value=opener):
+            result = json.loads(client._call_app_os_mcp('central_ai_generate_image', {'prompt': 'solar'}, retry=False))
+        self.assertEqual(opener.open.call_count, 1)
+        self.assertIn('HTTP 504', result['error'])
+
     def test_public_call_excludes_private_tools(self):
         import types
         import hermes_phone_tools as phone
