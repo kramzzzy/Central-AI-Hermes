@@ -182,7 +182,7 @@ _DEFAULT_YCS_SNAPSHOT = {
             "id": "ycs-kb-1-business-context",
             "title": "YCS — business context",
             "category": "Business",
-            "content": "Your Choice Solar supplies and installs new and replacement grid-connected solar and battery packages for residential, farm and commercial customers across Australia. Published product brands are LONGi and SolaX (featured), alongside Jinko, Trina, Sungrow and GoodWe. No fixed package prices or pre-set offers are published in chat; a solar specialist assesses the customer's electricity usage/bill and property to confirm suitability and quote.",
+            "content": "Your Choice Solar supplies and installs new and replacement grid-connected solar and battery packages for residential, farm and commercial customers across Australia. Published product brands are LONGi and SolaX (featured), alongside Jinko, Trina and Sungrow. No fixed package prices or pre-set offers are published in chat; a solar specialist assesses the customer's electricity usage/bill and property to confirm suitability and quote.",
         },
         {
             "id": "ycs-kb-2-brand-voice",
@@ -212,7 +212,7 @@ _DEFAULT_YCS_SNAPSHOT = {
             "id": "ycs-kb-6-products-summary",
             "title": "YCS — product range summary",
             "category": "Product",
-            "content": "Solar Panels: LONGi Hi-MO X10 Explorer (475-490W, up to 24.0% eff, 25yr product/30yr power warranty), LONGi EcoLife All Black (475-495W, up to 24.3% eff, 30yr warranty), LONGi Hi-MO X6 / X6 Max / Scientist 475W; Jinko Tiger Neo / III / 475W; Trina Vertex S+ / G3 / 475W. Inverters: SolaX X1-VAST (5-10kW 1-ph hybrid), SolaX X3-ULTRA (15-30kW 3-ph hybrid), SolaX X3-Hybrid G4; Sungrow SH5.0RS/SH10RS/SH5T/SH10T/SH15T; GoodWe ESA All-in-One. Batteries: SolaX T-BAT HS36 (7.3-47.9kWh nom / 6.6-43.1kWh usable, 90% DOD), SolaX TSYS-HS51 (10.2-66.5kWh, 100% DOD), T58 & HS25; Sungrow SBR/SBH; GoodWe Lynx F G2/D G2/Home U.",
+            "content": "Solar Panels: LONGi Hi-MO X10 Explorer (475-490W, up to 24.0% eff, 25yr product/30yr power warranty), LONGi EcoLife All Black (475-495W, up to 24.3% eff, 30yr warranty), LONGi Hi-MO X6 / X6 Max / Scientist 475W; Jinko Tiger Neo / III / 475W; Trina Vertex S+ / G3 / 475W. Inverters: SolaX X1-VAST (5-10kW 1-ph hybrid), SolaX X3-ULTRA (15-30kW 3-ph hybrid), SolaX X3-Hybrid G4; Sungrow SH5.0RS/SH10RS/SH5T/SH10T/SH15T. Batteries: SolaX T-BAT HS36 (7.3-47.9kWh nom / 6.6-43.1kWh usable, 90% DOD), SolaX TSYS-HS51 (10.2-66.5kWh, 100% DOD), HS25; Sungrow SBR/SBH.",
         },
         {
             "id": "ycs-kb-6-customer-service-playbook",
