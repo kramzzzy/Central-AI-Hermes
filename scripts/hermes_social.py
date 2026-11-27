@@ -1235,26 +1235,42 @@ class SocialWorkspace:
             token = conn.get("access_token") or ""
             limit = min(max(int(args.get("limit") or 10), 1), 25)
             if token and token != "box1_managed_session":
-                feed = self.transport(
-                    f"{GRAPH_BASE}/{urllib.parse.quote(str(page_id))}/posts?"
-                    + urllib.parse.urlencode(
-                        {
-                            "fields": "id,message,created_time,permalink_url,shares,likes.summary(true),comments.summary(true)",
-                            "limit": str(limit),
-                            "access_token": token,
-                        }
+                rich_fields = "id,message,created_time,permalink_url,shares,reactions.limit(0).summary(true),likes.limit(0).summary(true),comments.filter(stream).limit(0).summary(true)"
+                base_fields = "id,message,created_time,permalink_url,shares,likes.limit(0).summary(true),comments.limit(0).summary(true)"
+                try:
+                    feed = self.transport(
+                        f"{GRAPH_BASE}/{urllib.parse.quote(str(page_id))}/posts?"
+                        + urllib.parse.urlencode(
+                            {
+                                "fields": rich_fields,
+                                "limit": str(limit),
+                                "access_token": token,
+                            }
+                        )
                     )
-                )
+                except SocialError:
+                    feed = self.transport(
+                        f"{GRAPH_BASE}/{urllib.parse.quote(str(page_id))}/posts?"
+                        + urllib.parse.urlencode(
+                            {
+                                "fields": base_fields,
+                                "limit": str(limit),
+                                "access_token": token,
+                            }
+                        )
+                    )
                 posts = []
                 for item in feed.get("data") or []:
                     if isinstance(item, dict):
+                        reactions_total = ((item.get("reactions") or {}).get("summary") or {}).get("total_count")
+                        likes_total = ((item.get("likes") or {}).get("summary") or {}).get("total_count", 0)
                         posts.append(
                             {
                                 "id": item.get("id"),
                                 "message": item.get("message") or "",
                                 "created_time": item.get("created_time"),
                                 "permalink_url": item.get("permalink_url"),
-                                "likes": ((item.get("likes") or {}).get("summary") or {}).get("total_count", 0),
+                                "likes": reactions_total if type(reactions_total) is int and reactions_total >= 0 else likes_total,
                                 "comments": ((item.get("comments") or {}).get("summary") or {}).get("total_count", 0),
                                 "shares": (item.get("shares") or {}).get("count", 0),
                             }
@@ -1689,6 +1705,11 @@ class SocialWorkspace:
         facebook = platform == "facebook"
         def count(value):
             return value if type(value) is int and value >= 0 else None
+        fb_reactions = count(((item.get("reactions") or {}).get("summary") or {}).get("total_count")) if facebook else None
+        fb_likes = count(((item.get("likes") or {}).get("summary") or {}).get("total_count")) if facebook else None
+        fb_shares = count((item.get("shares") or {}).get("count")) if facebook else None
+        # Facebook Graph API omits the `shares` field completely when a post has 0 shares.
+        fb_has_metrics = facebook and any(k in item for k in ("reactions", "likes", "comments", "shares"))
         return {
             "post_id": str(item["id"]),
             "platform": platform,
@@ -1698,9 +1719,9 @@ class SocialWorkspace:
             "post_url": item.get("permalink_url" if facebook else "permalink") or "",
             "image_url": cls._extract_post_image(facebook, item) or None,
             "published_at": item.get("created_time" if facebook else "timestamp"),
-            "likes": count(((item.get("likes") or {}).get("summary") or {}).get("total_count")) if facebook else count(item.get("like_count")),
+            "likes": (fb_reactions if fb_reactions is not None else fb_likes) if facebook else count(item.get("like_count")),
             "comments": count(((item.get("comments") or {}).get("summary") or {}).get("total_count")) if facebook else count(item.get("comments_count")),
-            "shares": count((item.get("shares") or {}).get("count")) if facebook else None,
+            "shares": (fb_shares if fb_shares is not None else (0 if fb_has_metrics else None)) if facebook else None,
         }
 
     def post_feed(self, org, body):
@@ -1714,7 +1735,7 @@ class SocialWorkspace:
         page = self.account_page(org, platform, account)
         facebook = platform == "facebook"
         rich_fields = (
-            "id,message,created_time,permalink_url,full_picture,attachments.limit(1){media{image{src}},subattachments.limit(1){media{image{src}}}},likes.limit(0).summary(true),comments.limit(0).summary(true),shares"
+            "id,message,created_time,permalink_url,full_picture,attachments.limit(1){media{image{src}},subattachments.limit(1){media{image{src}}}},reactions.limit(0).summary(true),likes.limit(0).summary(true),comments.filter(stream).limit(0).summary(true),shares"
             if facebook else
             "id,caption,timestamp,permalink,media_type,media_url,thumbnail_url,children.limit(1){media_url,thumbnail_url},like_count,comments_count"
         )
@@ -1750,7 +1771,7 @@ class SocialWorkspace:
         page = self.account_page(org, platform, account)
         facebook = platform == "facebook"
         rich_fields = (
-            "id,message,created_time,permalink_url,full_picture,attachments.limit(1){media{image{src}},subattachments.limit(1){media{image{src}}}},likes.limit(0).summary(true),comments.limit(0).summary(true),shares"
+            "id,message,created_time,permalink_url,full_picture,attachments.limit(1){media{image{src}},subattachments.limit(1){media{image{src}}}},reactions.limit(0).summary(true),likes.limit(0).summary(true),comments.filter(stream).limit(0).summary(true),shares"
             if facebook else
             "id,caption,timestamp,permalink,media_type,media_url,thumbnail_url,children.limit(1){media_url,thumbnail_url},like_count,comments_count"
         )

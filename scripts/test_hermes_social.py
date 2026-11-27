@@ -53,15 +53,24 @@ class SocialTests(unittest.TestCase):
     def test_post_feed_scopes_media_metrics_and_cursor(self):
         def provider(url, **kw):
             self.calls.append((url, kw))
-            return {"data": [{"id":"101_888","message":"Post","full_picture":"https://example.test/image.jpg","likes":{"summary":{"total_count":0}},"comments":{"summary":{"total_count":3}}}],
+            return {"data": [
+                {"id":"101_888","message":"Post","full_picture":"https://example.test/image.jpg","reactions":{"summary":{"total_count":5}},"likes":{"summary":{"total_count":2}},"comments":{"summary":{"total_count":3}}},
+                {"id":"101_889","message":"Shared post","likes":{"summary":{"total_count":0}},"comments":{"summary":{"total_count":1}},"shares":{"count":4}},
+                {"id":"101_890","message":"Minimal post"},
+            ],
                     "paging":{"next":"https://untrusted.test/never-follow","cursors":{"after":"cursor-2"}}}
         self.social.transport=provider
         result=self.social.handle({"org":ORG,"action":"post_feed","platform":"facebook","account_id":"101","after":"cursor-1"})
-        self.assertEqual(result["posts"][0]["likes"],0)
+        self.assertEqual(result["posts"][0]["likes"],5)
         self.assertEqual(result["posts"][0]["comments"],3)
-        self.assertIsNone(result["posts"][0]["shares"])
+        self.assertEqual(result["posts"][0]["shares"],0)
+        self.assertEqual(result["posts"][1]["likes"],0)
+        self.assertEqual(result["posts"][1]["shares"],4)
+        self.assertIsNone(result["posts"][2]["shares"])
         self.assertEqual(result["after"],"cursor-2")
         self.assertIn("/101/posts?",self.calls[-1][0])
+        self.assertIn("reactions.limit%280%29.summary%28true%29",self.calls[-1][0])
+        self.assertIn("comments.filter%28stream%29.limit%280%29.summary%28true%29",self.calls[-1][0])
         self.assertIn("after=cursor-1",self.calls[-1][0])
         self.assertEqual(self.calls[-1][1]["token"],"token-A")
         with self.assertRaises(SocialError):
@@ -513,5 +522,7 @@ class SocialTests(unittest.TestCase):
         self.assertEqual(len(refreshed["posts"]), 1)
         self.assertEqual(refreshed["posts"][0]["image_url"], "https://scontent.example.test/fresh-2025.jpg")
         self.assertEqual(refreshed["posts"][0]["likes"], 12)
+        self.assertEqual(refreshed["posts"][0]["comments"], 3)
+        self.assertEqual(refreshed["posts"][0]["shares"], 0)
 
 if __name__ == '__main__': unittest.main()
